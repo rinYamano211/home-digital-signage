@@ -8,4 +8,4 @@ Raspberry Piを利用した家庭用デジタルサイネージ。
 
 ## Documentation
 
-- [企画書](docs/home-digital-signage-project-plan)
+- [企画書](docs/home-digital-signage-project-plan.md)
