@@ -998,3 +998,202 @@ FutureでのBackend Service追加時の依存抑制を重視して採用した�
 「デメリットがない方式」を探すのではなく、
 何を優先し、どのデメリットを受け入れるかを説明できる状態で
 設計判断を行うことが重要。
+
+## 2026-09-17：Display設計・State管理
+
+### 1. 表示内容・時間・空間の責務を分ける
+
+Display Serviceの設計では、表示に関する責務を以下の3つに分けた。
+
+- Display Component：何を・どう表示するか
+- ContentSwitcher：いつ・どれを表示するか
+- Layout：どこに・どの大きさで表示するか
+
+「常時表示」「切替表示」といった性質をComponent自体に持たせるのではなく、
+画面構成側の扱いとして決めることで、同じComponentを異なる構成でも再利用しやすくなる。
+
+機能を分割するときは、単に処理単位で分けるのではなく、
+「内容」「時間」「空間」のように変更理由が異なる責務を分離すると、
+将来の変更による影響範囲を小さくしやすい。
+
+### 2. 利用側をデータ取得方法へ直接依存させない
+
+Display ComponentからShared State Storeを直接参照せず、
+Display Service内部にPublished Stateを取得する責務を設ける方針とした。
+
+Componentが「どこからデータを取得するか」まで知ってしまうと、
+データ取得方式やStoreの実装変更がComponentへ波及する。
+
+利用側には必要なデータだけを渡し、
+データの取得方法との間に境界を設けることで、
+将来の実装変更やテストを行いやすくできる。
+
+### 3. Service・State・UIの分割単位は一致しなくてよい
+
+Weather Serviceは1つでも、Published Stateは以下のように複数へ分けられる。
+
+- CurrentWeather
+- HourlyWeather
+- RainForecast
+- WeeklyWeather
+
+さらにDisplay側では、それらを組み合わせて
+TodayWeatherやWeeklyWeatherなどのComponentを構成できる。
+
+それぞれの分割基準は異なる。
+
+- Service：責務、障害境界、ライフサイクル等
+- Published State：鮮度、有効期限、障害状態を独立管理する意味がある単位
+- Display Component：利用者にどのような表示単位として見せるか
+
+各レイヤーの境界を無理に一致させる必要はない。
+
+### 4. データの有効性と「画面として表示できるか」は別の判断
+
+Published Stateが利用可能かどうかと、
+Component全体が表示可能かどうかは同じではない。
+
+例えばRainForecastが期限切れでも、
+CurrentWeatherやHourlyWeatherが有効なら、
+TodayWeatherとして何らかの表示を成立させられる可能性がある。
+
+そのため、
+
+Published Stateの利用可否
+→ Componentとして何を表示できるか
+→ 実際の描画
+
+を別の責務として考える。
+
+これにより、部分障害時の判断をBackendやContentSwitcherへ持ち込まず、
+Display Service内部で整理できる。
+
+### 5. 変換処理を分離するとComponentを描画責務に寄せられる
+
+Published StateをそのままComponentへ渡してすべて解釈させるのではなく、
+Published StateからComponent用のStateを生成する責務を分離した。
+
+概念的には、
+
+Published State
+→ Component State生成
+→ Display Component
+
+とする。
+
+これによりComponentは、
+BackendのState構造や部分障害の判断まで抱え込まず、
+「渡された表示情報をどう描画するか」という責務に寄せやすくなる。
+
+責務を分離するときは、
+単にクラスやModuleを増やすのではなく、
+「変更理由を本当に分離できるか」を考えることが重要。
+
+### 6. Stateは目的ごとに分けて考える
+
+今回、Stateを以下の4種類に整理した。
+
+- Cache State：外部取得失敗からBackendを守る
+- Published State：Service間で現在の情報を共有する
+- Component State：Published Stateを表示に利用できる形へ整理する
+- Display Runtime State：Display自身の現在の動作状態を表す
+
+同じ「State」という名前でも目的・所有者・ライフサイクルが異なる。
+
+Stateを設計するときは、
+「何のためのStateか」「誰が生成・更新するか」「誰が所有するか」
+を明確にすると責務を整理しやすい。
+
+### 7. Stateの生成・更新・保持は別々に考える
+
+Stateについて「誰が持つか」だけではなく、
+
+- 誰が生成するか
+- 誰が更新するか
+- どこで保持するか
+
+を分けて考えることで責務が明確になった。
+
+例えばPublished StateはBackend Serviceが生成・更新するが、
+実行中の共有先はShared State Storeとなる。
+
+「Stateの所有者」と「Stateを物理的に保持する場所」は
+必ずしも同じではない。
+
+### 8. 再生成できるStateをすべて永続化する必要はない
+
+すべてのStateを保存すると、
+再起動後に複数のState間で不整合が発生する可能性がある。
+
+そのため、
+
+「再生成できない、または再生成するために必要なStateを永続化する」
+
+ことを基本方針とした。
+
+今回のMVPでは、
+
+- Cache State：永続化する
+- Published State：実行中は保持するが、再起動後はCache等から再生成する
+- Component State：Published Stateから再生成する
+- Display Runtime State：原則として初期化する
+
+と整理した。
+
+保存できるから保存するのではなく、
+「再起動後に本当に復元する必要があるか」で判断する。
+
+### 9. ConfigとRuntime Stateを区別する
+
+例えば、
+
+- switch order
+- display duration
+- Layout設定
+
+は「どう動くべきか」を表すConfig。
+
+一方、
+
+- 現在表示中のComponent
+- 現在の切替位置
+- 次回切替時刻
+
+は「今どう動いているか」を表すRuntime State。
+
+再起動後に必要なのは必ずしも直前の実行状態ではなく、
+保存されたConfigから正しい初期状態を作り直すことでよい場合がある。
+
+### 10. 復旧では「直前の状態を復元する」以外の方法も考える
+
+再起動時にすべてのStateをそのまま復元するのではなく、
+
+永続化されたConfig / Cache
+→ Published State再生成
+→ Component State再生成
+→ Runtime State初期化
+
+という形で、必要最小限の永続データから現在の正しい状態を再構築する方針とした。
+
+復旧設計では「どのStateを保存するか」だけでなく、
+「何を元に再生成できるか」を考えることで、
+永続化対象と復旧処理をシンプルにできる。
+
+### 11. Stateの流れを一方向にすると変更箇所を追いやすい
+
+今回の基本的なStateフローは、
+
+Backend
+→ Published State
+→ Display
+→ Component State
+→ Display Component
+
+とした。
+
+下流側から上流側のStateを書き換えないことで、
+「誰がこのStateを変更したのか」を追いやすくなる。
+
+共有Stateを利用する場合でも、
+読み書きできる場所を無制限に増やさず、
+Stateの所有者と更新方向を明確にすることが重要。
