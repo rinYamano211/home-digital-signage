@@ -171,7 +171,8 @@ Published State
 - Display Component：渡された表示情報をどう描画するか
 
 Component用Stateは以降、仮称としてComponent Stateと呼ぶ。
-具体的なクラス名、取得方式、Component StateのSchemaや表示可否の表現は後続設計で決定する。
+意味変化ベースの再評価と部分障害時の状態表現は第11章に示す。
+具体的なクラス名、取得方式、Component StateのSchemaや表示可否interfaceは後続設計で決定する。
 
 ---
 
@@ -401,14 +402,11 @@ Service境界、Published State境界、Display Component境界は一致する�
 これらは概念上の情報単位であり、具体的なクラス名やAPIを確定するものではない。
 
 Published Stateには表示データに加え、
-提供元Serviceが停止していてもDisplay側で表示可否を判断できるメタデータを含める。
+提供元Serviceが停止していてもDisplay側で利用可能性を判断できるメタデータを含める。
 
-現時点の概念項目は以下とする。具体的なSchemaは未確定。
-
-- data
-- updatedAt
-- expiresAt
-- status
+A-03ではdata / updatedAt / expiresAt / statusを概念項目として挙げた。
+A-05では、異なる意味の時刻を単一のupdatedAtへまとめず、必要なmetadataを区別する方針へ具体化した。
+具体例と論理Schema原則は11.5に示す。具体Schemaやstatusの値は引き続き未確定。
 
 データの有効期限そのものは、
 そのデータの意味を理解しているBackend Serviceが決定する。
@@ -431,8 +429,8 @@ Stateを以下の4種類として扱う。表示側2種類の名称は仮とす�
 | State | 所有者 | 目的 | 生成・更新 | 実行中の保持先 |
 |---|---|---|---|---|
 | Cache State | 各Backend Service | 外部API等の取得失敗時のデータ再利用とBackend自身の復旧・継続動作 | 各Backend Service | 各Backend Service配下のCache |
-| Published State | 各Backend Service | 他Serviceへ現在提供できる情報の公開 | 各Backend Service | Shared State Store |
-| Component State（仮称） | Display Service | Published StateをComponentが表示に利用できる状態へ整理 | Display内部のComponent State生成責務 | Display Service内部 |
+| Published State | 各Backend Service | 他Serviceへ現在提供可能な情報を公開するService間データ契約 | 各Backend Service | Shared State Store |
+| Component State（仮称） | Display Service | Published State等をComponentが描画に利用しやすい状態へ整理 | Display内部のComponent State生成責務 | Display Service内部 |
 | Display Runtime State（仮称） | Display Service内部の各責務 | Display自身の現在の動作状態 | 原則としてそのStateを必要とする責務 | Display Service内部の各責務 |
 
 Common Cache Moduleは保存・読込等の共通機構を提供し、
@@ -444,7 +442,7 @@ DisplayからBackend内部のCacheを直接参照しない。
 BackendがCacheを利用した場合も、Published Stateを通じて現在状態を提供する。
 
 Component StateはShared State Storeへ戻さず、Backendからも参照しない。
-Display Runtime StateはContentSwitcherの現在位置や次回切替時刻などを指し、
+Display Runtime Stateはcurrent component / current switch index / next switch timeなどを指し、
 一つの巨大なRuntime State Managerへ集約しない。
 
 Component State / Display Runtime Stateの正式名称と具体構造は後続設計で決定する。
@@ -521,7 +519,7 @@ Display ComponentもPublished Stateを直接変更しない。
 |---|---|
 | Cache State | 再起動後の外部取得失敗に備えて保持する。有効なCacheからBackendがPublished Stateを再生成できる |
 | Published State | 実行中はShared State Storeに保持する。システム再起動を跨ぐ永続化はMVPでは必須とせず、有効なCache State等からBackendが再生成する |
-| Component State | 永続化しない。Published Stateから再生成可能な派生Stateとして扱う |
+| Component State | 永続化しない。必要に応じてPublished State等から再生成可能な派生Stateとして扱う |
 | Display Runtime State | 原則として永続化しない。MVPではContentSwitcher等を初期状態から開始してよく、再起動直前の表示位置の復元は要求しない |
 
 Backend Service単体が停止した場合は、Shared State Storeに最後にPublishされたStateを残せる構造とする。
@@ -561,27 +559,156 @@ Display Runtime Stateを初期化
 
 ---
 
-## 11. 未決定事項
+## 11. A-05：State Management
 
-第9章のA-03基本方針に加え、2026-09-17にStateの情報単位、Display内部の責務、
-State分類と永続化・再構築方針を整理した。以下は今回決定しない。
+2026-09-19時点でState Managementの設計方針を確定した。
+State分類・所有権・一方向フローは第9章、永続化と再構築は第10章に統合し、
+本章では再評価・利用可能性・部分障害・論理Schema・State間整合性を定める。
+具体技術と詳細Schemaの確定は含まない。
+
+### 11.1 Component Stateの再評価
+
+MVPでは固定周期を基本とせず、
+Component Stateの表示上の意味に影響する変化を契機に必要なStateを再評価する
+「意味変化ベース」を採用する。
+
+概念的な再評価契機：
+
+- Published Stateの更新
+- expiresAt到達など、時間経過によるPublished Stateの利用可能性変化
+- Config変更
+- 現在時刻・日付の変化によるComponent上の意味変化
+  - Scheduleの「現在の予定 / 次の予定」の切り替わり
+  - 日付変更など
+
+MVPでは更新契機の取りこぼしに対する周期的な再評価を必須としない。
+周期再評価をArchitecture上禁止するものではなく、
+Futureで自己回復性が必要になった場合には追加可能とする。
+時間による意味変化をtimer / scheduler / polling等でどう検出・起動するかは今回決定しない。
+
+### 11.2 再評価の責務分担
+
+Display内部で「共通的な変化の検出」と
+「Component固有の再評価判断・Component State生成」を分離する。
+共通責務はComponent固有の表示ロジックを持たない。
+
+各Component State生成責務が、自身に必要なPublished State、
+Current Time / Date、Config等を基に、
+再評価要否と生成するComponent Stateを判断する。
+共通のTime側が「Scheduleを更新する」といったComponent固有知識を持つ構造にはしない。
+
+具体的な変更検出・通知・スケジューリング方式は技術選定・詳細設計で決定する。
+
+### 11.3 Published Stateの利用可能性
+
+Backendはデータ本体と、利用可能性の判断に必要なmetadataを提供する。
+DisplayはPublished Stateと現在のEvaluation Contextを基に、利用時点で利用可能性を判断する。
+
+Backend内部のAPI取得成功／失敗、Cache利用有無、Retry状況など、
+内部処理の事情にDisplayを依存させない。
+例えばBackendがAPI取得に失敗しても、有効なCacheから利用可能なPublished Stateを生成できれば、
+DisplayはそのPublished Stateを通常の利用可能な情報として扱える。
+
+Shared State Store上に存在することと、現在利用可能であることは別概念とする。
+期限到達時にStoreから必ず削除することは要求せず、
+Displayが利用時点で利用可能性を評価する。
+
+**既存要件との照合事項**
+
+今回の「通常の利用可能な情報」という表現は、
+既存9.7およびR-07が要求する取得異常時の更新状態・最終更新日時の注記まで
+不要にする意味にも読める。
+A-05以前の決定は変更せず、注記要件は維持する。
+利用可能性と利用者向け更新状態の表現を結ぶ具体的なデータ契約は後続設計で具体化する。
+注記要件自体の変更を意図する場合は、別途判断が必要となる。
+
+### 11.4 部分障害時のComponent State
+
+一部のPublished Stateが利用不可でも、
+利用可能なPublished Stateから可能な範囲でComponent Stateを生成する。
+すべてのPublished Stateが揃うことを成立の共通条件にはしない。
+
+各Component State生成責務が以下を判断する。
+
+- どの情報があればComponent Stateを成立させられるか
+- 一部情報が欠落した場合に何をComponent Stateへ含めるか
+
+MVPではFull / Partial / Unavailableのような共通状態enumを
+Component Stateに明示的には保持しない。
+含まれる利用可能な情報そのもので状態を表現する。
+
+TodayWeather Component Stateの概念例：
+
+```text
+currentWeather = data
+hourlyWeather = data
+rainForecast = null
+```
+
+これは一部情報が利用できない状態の例であり、具体的なSchema・型を確定するものではない。
+Component Stateを成立させられない場合の具体的UI
+（非表示、エラー表示、代替表示等）はA-05では決定しない。
+既存R-04/R-07の正常情報の継続表示・取得失敗状態の伝達は維持する。
+
+### 11.5 Stateの論理Schema原則
+
+すべてのStateに同一Schemaを強制せず、各責務に必要な情報のみ保持する。
+
+| State | 保持する情報 |
+|---|---|
+| Cache State | Backendが再利用・復旧するために必要な情報 |
+| Published State | 他Serviceが利用するデータ本体と、利用可能性・鮮度・更新等の判断に必要なmetadata |
+| Component State | Display Componentの描画に必要な情報。Published Stateのmetadataを無条件にコピーせず、UIとして必要な場合のみ含める |
+| Display Runtime State | Display内部の各責務が現在の動作を継続するために必要な情報 |
+
+Published Stateの時刻metadataは、
+意味の異なる情報を曖昧な単一のupdatedAt等へ統合しない。
+必要に応じ、例えば以下の意味を区別する。
+
+| 概念例 | 意味 |
+|---|---|
+| dataTimestamp | データ自体が基準とする時刻 |
+| publishedAt | Published Stateを生成／公開した時刻 |
+| expiresAt | 利用可能期限 |
+
+すべてを全Published Stateの必須項目とはせず、各Stateに必要なmetadataのみ保持する。
+具体的なSchema・型・serialization形式・必須／Optionalは詳細設計で決定する。
+
+### 11.6 Published State間の整合性
+
+MVPでは複数Published State間の厳密な時点整合性・transactional consistencyを要求しない。
+それぞれ独立した情報単位として扱い、
+Component State生成時には各Published Stateを個別に利用可能性評価し、
+その時点で利用可能なものを使用する。
+
+TodayWeatherのCurrentWeather / HourlyWeather / RainForecastについても、
+dataTimestampや更新タイミングが完全に一致することは要求しない。
+複数Published Stateのatomicな取得・更新もMVP要件とはしない。
+
+State間の整合性を要求しないことは、
+個々のPublished Stateの利用可能性確認を省略することではない。
+
+---
+
+## 12. 未決定事項・後続設計への申し送り
+
+A-05の設計方針は第9〜11章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
 
 - Component State / Display Runtime Stateの正式名称
-- Published State / Component Stateの具体的なSchema、メタデータの厳密な意味
-- statusの具体的な種類・粒度
-- displayable等の表示可否interface、Full / Partial / Unavailable等の状態表現
-- 部分障害時のComponentごとの具体的な表示成立条件
-- Shared State Storeの具体技術
-- State取得方式（polling / notification等）
-- Component State生成処理の具体的なクラス構造
-- State更新の具体的なタイミング・同期方式
-- Concurrent access / atomicity / schema versioning
-- Store障害・Service停止時の具体的な状態判定、再公開・復旧手順
-- CacheからPublished Stateへの反映、Component Stateの更新・再生成の詳細
-- 起動・再構築・復旧の詳細
-- FutureのCloud連携方式
-- Futureの具体的なLayoutカスタマイズ方式、Componentのサイズ区分・レスポンシブ方式
+- Published State / Component Stateの具体Schema・型・serialization形式、metadataの必須／Optional
+- Published Stateのstatus等の具体表現、利用可能性と利用者向け更新状態のデータ契約
+- displayable等の具体的な表示可否interface（MVPのComponent Stateに共通状態enumを持たせない方針は確定）
+- Componentごとの具体的な表示成立条件・欠落情報の扱いと、成立しない場合の具体UI
+- Shared State Storeの具体技術、State取得方式（polling / notification等）
+- 共通変化検出とComponent State生成の具体クラス構造・連携方式
+- timer / scheduler等による時間変化検出・再評価起動の実装
+- State更新・通知の具体タイミング・同期方式
+- Concurrent access、個々のPublished Stateの読み書きの扱い、schema versioning
+- 複数Stateの厳密な時点整合性・atomic取得更新をMVPで要求しない方針を踏まえた具体実装
+- Store障害・Service停止時の状態判定、再公開・復旧手順
+- CacheからPublished Stateへの反映、Component State再生成、起動・復旧の具体処理
+- Futureの周期再評価による自己回復性、Cloud連携方式
+- Futureの具体的なLayoutカスタマイズ、Componentのサイズ区分・レスポンシブ方式
 - その他のアーキテクチャ設計項目
 
-これらは後続のIssue #3設計またはIssue #4で具体化する。
-通信・保存技術、フレームワーク、API等は今回選定しない。
+HTTP / DB / MQTT、framework、transaction実装等の採用は今回決定しない。
