@@ -174,39 +174,169 @@ Component用Stateは以降、仮称としてComponent Stateと呼ぶ。
 意味変化ベースの再評価と部分障害時の状態表現は第11章に示す。
 具体的なクラス名、取得方式、Component StateのSchemaや表示可否interfaceは後続設計で決定する。
 
+### 4.5 Display Service内部構造図
+
+データを表示内容へ整理する流れと、時間軸・空間軸の責務を示す。
+実線は情報の流れ、点線は表示対象の選択・配置の関係を表す。呼出し順序や具体的な実装構造は表さない。
+
+```mermaid
+flowchart TB
+    store["Shared State Store<br/>Published State"]
+    time["OS System Time"]
+    subgraph display["Display Service"]
+        receive["Published State取得責務<br/>Read Only"]
+        context["Evaluation Context<br/>現在時刻・日付 / Config等"]
+        generate["Component State生成責務<br/>利用可能性を評価し、表示に使う情報を整理"]
+        state["Component State（仮称）"]
+        subgraph components["Display Component：内容"]
+            fixed["Clock / Date / Weekday"]
+            switched["Schedule / TodayWeather / WeeklyWeather"]
+        end
+        switcher["ContentSwitcher：時間軸<br/>切替対象の中から、いつ・どれを表示するか"]
+        layout["Layout：空間軸<br/>配置位置・割り当て領域"]
+        receive --> generate
+        context --> generate
+        generate --> state
+        state --> switched
+        switched -. 切替対象 .-> switcher
+        switcher -. 選択した表示対象 .-> layout
+        fixed -. MVPでは直接配置 .-> layout
+        layout -. 表示領域・サイズ .-> fixed
+        layout -. 表示領域・サイズ .-> switched
+    end
+    store --> receive
+    time --> fixed
+```
+
+必要な情報はComponentごとに異なり、すべてのPublished Stateが揃うことを生成条件としない。
+時計等の基本画面はBackendや外部APIを待たずに表示する。
+常時表示・切替表示の区分はMVPの画面構成上の扱いであり、Component自体の固定属性ではない。
+再評価の責務・契機は第11章に従う。
+
 ---
 
-## 5. Cache
+## 5. A-06：Cache
+
+2026-09-23時点で、以下のCacheの論理設計を確定した。
+
+### 5.1 位置付けと責務
 
 Cacheは独立Serviceにしない。
+Cache Stateは、外部データを取得できない場合のFallback用の補助データとし、
+各Backend Serviceがその意味・有効性と管理責任を持つ。
 
-Schedule ServiceやWeather Serviceなど、
-各Serviceが自身のキャッシュに対する管理責任を持つ。
+| 担当 | 責務 |
+|---|---|
+| 各Backend Service | 何をCacheするか、有効期限、Fallbackの可否、期限切れ・無効なCacheの扱い |
+| Common Cache Module | ドメインに依存しない保存・読出し・更新・削除、指定された有効期限に基づく期限判定 |
 
-一方、ドメインに依存しないキャッシュ処理は
-共通Cache Moduleとして再利用する。
+保存処理を共通化しながら、Cache Serviceという共通障害点を作らない。
+4種類のStateの所有権は第9章、再起動を跨ぐ永続化は第10章に従う。
+Display ServiceはBackend内部のCacheを直接参照しない。
 
-### 各Serviceの責務
+### 5.2 正常時と起動時の取得方針
 
-- 何をキャッシュするか
-- データをいつまで有効とするか
-- 期限切れデータをどう扱うか
+正常時は外部APIから取得したデータをBackend Serviceが利用し、
+Published Stateを生成・更新すると同時に、Fallback用のCache Stateを更新する。
+Cache保存後の再読出しを経由しなければPublishできない構成にはしない。
 
-### Cache Moduleの責務
+Backendは起動時を含め、原則として外部データソースの最新情報取得を優先する。
+取得できない場合に、有効なCache StateがあればFallbackとして利用する。
+Displayの基本画面起動はBackendや外部APIを待たない既存方針を維持する。
+timeout、retry回数・間隔は後続設計で決定する。
 
-- 保存
-- 読出し
-- 更新
-- 削除
-- 指定された有効期限に基づく期限判定
+### 5.3 有効期限と削除
 
-これにより、保存処理を共通化しながら、
-Cache Serviceという共通障害点を作らない構成とする。
+有効期限は一律に定めず、情報の性質、外部ソースの更新特性、
+取得頻度・制約を理解しているBackend Serviceが決定する。
+具体的な期間はAPIや取得周期等の決定後に設定する。
 
-Cache State、Published State、Component State、Display Runtime Stateは区別する。
-所有権とデータフローは第9章、永続化方針は第10章に示す。
+MVPではデータ鮮度の有効期間とCacheをFallbackとして利用可能な期間を、
+同一の有効期限として扱う。
+期限切れCacheはFallbackに利用せず、削除対象とする。
+期限到達時の即時物理削除は要求せず、
+次回の外部取得成功やCache更新等、適切なタイミングで置換・削除できればよい。
 
-具体的な保存方式はIssue #4で決定する。
+CacheからPublished Stateを生成しても、元データの鮮度期限は延長しない。
+Fallback利用時刻を起点として有効期限を再設定しない。
+
+例えば10:00にAPI取得し有効期限が12:00のCacheを、
+11:50の取得失敗時に再利用してPublishした場合も、Published Stateは12:00までとし、
+12:00以降は利用しない。この例はTTLの採用値を定めるものではない。
+Cache再利用・再Publishによって古いデータを延命しない。
+
+### 5.4 情報単位ごとのFallback
+
+FallbackはBackend全体ではなく、
+独立して鮮度・有効性を管理する意味のある情報単位ごとに判断する。
+WeatherではCurrentWeather / HourlyWeather / RainForecast / WeeklyWeather等を独立して扱える。
+
+一部情報の取得失敗によって、正常に取得できた他の情報までFallbackさせない。
+外部APIの物理的なリクエスト単位とCache State / Published Stateの論理単位の一致は要求しない。
+Published State間の厳密なsnapshot整合性を要求しない第11章の方針は維持する。
+
+### 5.5 取得・Cache異常時
+
+| 状況 | Backendの扱い |
+|---|---|
+| 外部取得失敗、有効Cacheあり | 対象情報のCacheをFallbackとして利用する。元データの鮮度期限を維持する |
+| 外部取得失敗、有効Cacheなし | 過去データを利用可能な情報として再利用せず、現在提供可能なデータがないことをPublished Stateで表現できるようにする |
+| API取得成功、Cache更新失敗 | 最新データからPublished Stateを更新する。Cache更新失敗で公開を妨げず、将来のFallback能力が低下した状態として扱う |
+| Cacheの破損・読出し不可・必要情報の不足等 | 正常なFallbackデータとして使用せず、無効なCacheとして削除対象にする |
+
+必要に応じて、最新の外部データ取得が失敗した事実をConsumerが認識できる情報を提供する。
+BackendはDisplay固有の表示可否・エラー表現を決めず、
+DisplayがPublished StateとEvaluation Contextから利用可否・表示表現を判断する。
+Componentとしての表示判断の責務分離は第4・9章に従う。
+
+### 5.6 Cache由来情報の伝達
+
+CacheをFallbackとしてPublished Stateを生成した場合、
+ConsumerがそのデータをCache由来と識別できるようにする。
+Displayが最新取得データではないことを画面上で表現できるようにするため。
+
+BackendはCache由来という事実を提供するだけとし、
+警告・アイコン等のDisplay固有の表現方法は決定しない。
+Displayは内部Cacheの実装や直接参照に依存せず、Published State経由で事実を受け取る。
+
+source = cache等のSchema、status・エラー分類、具体的なUIは後続設計で決定する。
+Cache保存技術・形式・破損検出・atomic write等も今回選定しない。
+
+### 5.7 Cache / Fallbackの基本フロー
+
+以下の分岐は、独立して鮮度・有効性を管理する情報単位ごとに適用する。
+正常取得時のPublished State生成とCache更新は別の経路とし、Cache保存・再読出しを公開の前提にしない。
+
+```mermaid
+flowchart TB
+    subgraph backend["各Backend Service"]
+        fetch["外部データ取得を優先<br/>起動時を含む"]
+        result{"取得成功？"}
+        latest["最新データから<br/>Published Stateを生成・更新"]
+        update["Fallback用Cache Stateを更新"]
+        valid{"有効なCache Stateあり？"}
+        fallback["自身のCacheをFallbackとして利用"]
+        cached["Cache由来のPublished Stateを生成"]
+        empty["古いデータを再利用せず<br/>現在提供可能なデータがないことを<br/>Published Stateで表現"]
+        fetch --> result
+        result -->|成功| latest
+        result -->|成功| update
+        result -->|失敗| valid
+        valid -->|あり| fallback
+        fallback --> cached
+        valid -->|なし| empty
+    end
+    store["Shared State Store<br/>Published State"]
+    display["Display Service<br/>Published Stateを利用して表示を判断"]
+    latest -->|公開| store
+    cached -->|公開| store
+    empty -->|公開| store
+    store -->|Read Onlyで参照| display
+```
+
+Cacheから生成・再公開しても、元データの鮮度期限は延長しない。
+DisplayはBackend内部Cacheを直接参照せず、Published Stateを通じてCache由来等の事実を受け取る。
+Cache更新失敗・破損等の扱いは5.5に従う。
 
 ---
 
@@ -270,36 +400,51 @@ Web管理・監視等から確認できる構成への拡張を想定する。
 
 ## 8. 現時点の構成イメージ
 
-Raspberry Pi
+Raspberry Pi上で時計・日付・曜日を表示し、予定や天気のコンテンツを切り替えるサイネージを構成する。
+下図をArchitecture全体の地図とし、Display内部は4.5、取得失敗時の分岐は5.7で示す。
 
-- Display Service（Frontend）
-  - Published State取得責務（Read Only）
-  - Component State生成責務・Component State（仮称）
-  - Display Component（時計等の表示要素を含む）・Renderer
-  - Layout
-  - ContentSwitcher
-  - 各責務が持つDisplay Runtime State（仮称）
-  - Config Module
-  - Logging Module
+```mermaid
+flowchart TB
+    external["External API / External Data Source"]
+    subgraph pi["Raspberry Pi"]
+        subgraph schedule["Schedule Service（Backend）"]
+            scheduleData["予定情報の取得・加工・公開"]
+            scheduleCache["自身が所有するCache State<br/>Fallback用"]
+            scheduleData -->|更新| scheduleCache
+            scheduleCache -->|取得不能時のFallback| scheduleData
+        end
+        subgraph weather["Weather Service（Backend）"]
+            weatherData["天気情報の取得・加工・公開"]
+            weatherCache["自身が所有するCache State<br/>Fallback用"]
+            weatherData -->|更新| weatherCache
+            weatherCache -->|取得不能時のFallback| weatherData
+        end
+        store["Shared State Store<br/>Service間でPublished Stateを共有<br/>State管理専用Serviceは設けない"]
+        display["Display Service（Frontend）<br/>表示判断・描画"]
+        time["OS System Time"]
+        common["Common Module（独立Serviceではない）<br/>必要なService内で利用する共通コード<br/>Cache / Config / Logging"]
+        scheduleData -->|schedule Published Stateを公開| store
+        weatherData -->|天気の各Published Stateを公開| store
+        store -->|Published StateをRead Onlyで参照| display
+        time -. 必要に応じて利用 .-> scheduleData
+        time -. 必要に応じて利用 .-> weatherData
+        time -. 必要に応じて利用 .-> display
+    end
+    external -->|外部データ| scheduleData
+    external -->|外部データ| weatherData
+```
 
-- Schedule Service（Backend）
-  - schedule Published Stateの公開
-  - Cache Module
-  - Config Module
-  - Logging Module
+実線はデータの流れ、点線はシステム時刻の利用関係を表す。更新通知方式や起動順序を指定する図ではない。
+Cacheは各Backend自身の復旧・再利用用、Shared State Storeは他Serviceへの情報共有用であり、役割を分ける。
+DisplayからBackend内部Cacheへの参照経路は持たない。
 
-- Weather Service（Backend）
-  - CurrentWeather / HourlyWeather / RainForecast / WeeklyWeatherのPublished State公開
-  - Cache Module
-  - Config Module
-  - Logging Module
+Common Moduleは共有先のServiceではなく、各Service内で利用する。
+DisplayはConfig / Logging、各BackendはCache / Config / Loggingを利用する。
+Cacheの意味・有効性は各Backendが所有し、Common Cache Moduleは保存・読出し等の共通処理を担う。
 
-- Shared State Store
-  - 各Backend Serviceが所有するPublished Stateの共有先
-  - State管理専用Serviceは設けない。実現技術はIssue #4で決定
-
-- OS
-  - System Time
+WeatherのPublished StateはCurrentWeather / HourlyWeather / RainForecast / WeeklyWeatherに分かれる（9.5）。
+Display内部の各責務が持つDisplay Runtime Stateについては9.6、永続化・再構築については第10章を参照する。
+Shared State Store等の実現技術はIssue #4で決定する。
 
 ---
 
@@ -473,8 +618,10 @@ Display ServiceはBackend内部のCacheを直接認識・参照せず、Publishe
 DisplayがPublished State経由で識別・表示できる構成とする。
 具体的なPublished State Schemaやstatusの値・粒度は今回確定せず、
 今後の状態管理設計で具体化する。
-期限切れ・利用可能なデータがない場合は取得失敗状態とし、
-複合コンテンツの一部だけが失敗しても正常・有効な情報は表示を継続する。
+期限切れ・利用可能なデータがない場合は、その情報を表示に利用しない。
+外部データの取得失敗はこれとは別の事実として扱い、
+必要に応じてPublished Stateを通じてConsumerへ伝達する。
+複合コンテンツの一部情報が利用できない場合も、正常・有効な情報は表示を継続する。
 外部情報の取得・利用可否によって基本画面の起動や正常な別コンテンツの表示を妨げない。
 
 Store障害・Service停止を含む具体的な状態判定、再アクセス・再公開・復旧の手順は今後の設計で具体化する。
@@ -518,7 +665,7 @@ Display ComponentもPublished Stateを直接変更しない。
 | State | 再起動を跨ぐ保持方針 |
 |---|---|
 | Cache State | 再起動後の外部取得失敗に備えて保持する。有効なCacheからBackendがPublished Stateを再生成できる |
-| Published State | 実行中はShared State Storeに保持する。システム再起動を跨ぐ永続化はMVPでは必須とせず、有効なCache State等からBackendが再生成する |
+| Published State | 実行中はShared State Storeに保持する。システム再起動を跨ぐ永続化はMVPでは必須としない。起動時は外部取得を優先し、取得不能時は有効なCache Stateから再生成する |
 | Component State | 永続化しない。必要に応じてPublished State等から再生成可能な派生Stateとして扱う |
 | Display Runtime State | 原則として永続化しない。MVPではContentSwitcher等を初期状態から開始してよく、再起動直前の表示位置の復元は要求しない |
 
@@ -533,7 +680,9 @@ switch order、display duration、将来の利用者指定Layoutなど、
 
 ### 10.2 再起動時の基本的な再構築
 
-概念的には以下の流れで、必要最小限の永続Stateから現在の正しい状態を再構築する。
+以下は必要最小限の永続Stateを利用した再構築の概念を示す。
+Backend起動時は第5章に従って最新情報の外部取得を優先し、取得できない場合に有効なCacheを利用する。
+図中のCacheはFallback用であり、Published State生成の必須経路ではない。
 再起動前の派生Stateをすべて復元する方針ではない。
 
 ```text
@@ -604,23 +753,23 @@ Current Time / Date、Config等を基に、
 Backendはデータ本体と、利用可能性の判断に必要なmetadataを提供する。
 DisplayはPublished Stateと現在のEvaluation Contextを基に、利用時点で利用可能性を判断する。
 
-Backend内部のAPI取得成功／失敗、Cache利用有無、Retry状況など、
-内部処理の事情にDisplayを依存させない。
+Backend内部のCache実装やRetry状況など、内部処理の事情にDisplayを依存させない。
+A-06で定めたCache由来・必要な取得失敗の事実は、Published Stateを介してConsumerへ伝達する。
 例えばBackendがAPI取得に失敗しても、有効なCacheから利用可能なPublished Stateを生成できれば、
-DisplayはそのPublished Stateを通常の利用可能な情報として扱える。
+DisplayはそのPublished Stateを利用可能な情報として扱える。
+利用可能であることと、最新取得データではないことの表示は分けて扱う。
 
 Shared State Store上に存在することと、現在利用可能であることは別概念とする。
 期限到達時にStoreから必ず削除することは要求せず、
 Displayが利用時点で利用可能性を評価する。
 
-**既存要件との照合事項**
+**A-06による情報伝達方針の具体化**
 
-今回の「通常の利用可能な情報」という表現は、
-既存9.7およびR-07が要求する取得異常時の更新状態・最終更新日時の注記まで
-不要にする意味にも読める。
-A-05以前の決定は変更せず、注記要件は維持する。
-利用可能性と利用者向け更新状態の表現を結ぶ具体的なデータ契約は後続設計で具体化する。
-注記要件自体の変更を意図する場合は、別途判断が必要となる。
+A-05で照合事項として残していた更新失敗・古い情報の伝達は、
+第5章のCache由来の識別と、必要に応じた最新取得失敗の事実の提供として具体化した。
+Backendは事実・判断材料を公開し、Consumerが利用時点の利用可能性を評価する。
+9.7およびR-07の更新状態・最終更新日時の表示要件は維持する。
+具体的なデータ契約・SchemaとUI表現は引き続き後続設計で決定する。
 
 ### 11.4 部分障害時のComponent State
 
@@ -692,11 +841,11 @@ State間の整合性を要求しないことは、
 
 ## 12. 未決定事項・後続設計への申し送り
 
-A-05の設計方針は第9〜11章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
+A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
 
 - Component State / Display Runtime Stateの正式名称
 - Published State / Component Stateの具体Schema・型・serialization形式、metadataの必須／Optional
-- Published Stateのstatus等の具体表現、利用可能性と利用者向け更新状態のデータ契約
+- Published Stateのstatus・エラー分類等の具体表現、Cache由来・取得失敗の事実と利用者向け更新状態を伝達する具体的データ契約
 - displayable等の具体的な表示可否interface（MVPのComponent Stateに共通状態enumを持たせない方針は確定）
 - Componentごとの具体的な表示成立条件・欠落情報の扱いと、成立しない場合の具体UI
 - Shared State Storeの具体技術、State取得方式（polling / notification等）
@@ -706,7 +855,10 @@ A-05の設計方針は第9〜11章に反映した。以下の具体技術・詳�
 - Concurrent access、個々のPublished Stateの読み書きの扱い、schema versioning
 - 複数Stateの厳密な時点整合性・atomic取得更新をMVPで要求しない方針を踏まえた具体実装
 - Store障害・Service停止時の状態判定、再公開・復旧手順
-- CacheからPublished Stateへの反映、Component State再生成、起動・復旧の具体処理
+- A-06に従うCacheからPublished Stateへの反映、Component State再生成、起動・復旧の具体処理
+- Cache保存技術・ファイル形式・DB Schema、破損検出、atomic write等の具体方式
+- API・取得周期等の決定後のCache有効期間、API timeout・retry回数・間隔
+- 期限切れ・無効Cacheの置換・削除タイミングと具体処理
 - Futureの周期再評価による自己回復性、Cloud連携方式
 - Futureの具体的なLayoutカスタマイズ、Componentのサイズ区分・レスポンシブ方式
 - その他のアーキテクチャ設計項目
