@@ -67,6 +67,7 @@ Display / Schedule / Weather は、
 | Cache Module | キャッシュの保存・読出し・削除等の共通処理 |
 | Config Module | 設定の読出し・保存等の共通処理 |
 | Logging Module | ログ出力形式・保存等の共通処理 |
+| Common Time Module | OSの日時・時刻利用可否、Monotonic Timeによる経過時間、共通Timezoneの利用境界。詳細は第12章 |
 
 Common Moduleは独立プロセスとはせず、
 必要なServiceから共通利用する。
@@ -79,7 +80,7 @@ Common Moduleは独立プロセスとはせず、
 
 Clock Serviceは設けない。
 
-時刻を必要とする各ServiceはOSが管理するシステム時刻を利用する。
+時刻を必要とする各ServiceはCommon Time Moduleを介してOS System Timeを利用する（第12章）。
 時計・日付・曜日の描画はDisplay Serviceの責務とする。
 
 Clock Serviceを共通の依存先にすると、
@@ -182,7 +183,9 @@ Component用Stateは以降、仮称としてComponent Stateと呼ぶ。
 ```mermaid
 flowchart TB
     store["Shared State Store<br/>Published State"]
-    time["OS System Time"]
+    osTime["OS System Time"]
+    time["Common Time Module<br/>Service内で利用する共通Module"]
+    osTime --> time
     subgraph display["Display Service"]
         receive["Published State取得責務<br/>Read Only"]
         context["Evaluation Context<br/>現在時刻・日付 / Config等"]
@@ -206,12 +209,15 @@ flowchart TB
     end
     store --> receive
     time --> fixed
+    time -->|現在時刻・日付| context
 ```
 
 必要な情報はComponentごとに異なり、すべてのPublished Stateが揃うことを生成条件としない。
 時計等の基本画面はBackendや外部APIを待たずに表示する。
 常時表示・切替表示の区分はMVPの画面構成上の扱いであり、Component自体の固定属性ではない。
 再評価の責務・契機は第11章に従う。
+Common Time Moduleは独立Serviceではなく、Display内で利用する共通境界を示す。
+この図はClock / Date / WeekdayにComponent Stateの生成・経由を必須とするものではない。
 
 ---
 
@@ -421,8 +427,10 @@ flowchart TB
         end
         store["Shared State Store<br/>Service間でPublished Stateを共有<br/>State管理専用Serviceは設けない"]
         display["Display Service（Frontend）<br/>表示判断・描画"]
-        time["OS System Time"]
-        common["Common Module（独立Serviceではない）<br/>必要なService内で利用する共通コード<br/>Cache / Config / Logging"]
+        osTime["OS System Time"]
+        time["Common Time Module<br/>Service内で利用する共通Module"]
+        osTime --> time
+        common["Common Module（独立Serviceではない）<br/>必要なService内で利用する共通コード<br/>Cache / Config / Logging / Time"]
         scheduleData -->|schedule Published Stateを公開| store
         weatherData -->|天気の各Published Stateを公開| store
         store -->|Published StateをRead Onlyで参照| display
@@ -434,12 +442,14 @@ flowchart TB
     external -->|外部データ| weatherData
 ```
 
-実線はデータの流れ、点線はシステム時刻の利用関係を表す。更新通知方式や起動順序を指定する図ではない。
+実線はデータの流れ、点線はCommon Time Moduleを介した時刻利用の関係を表す。更新通知方式や起動順序を指定する図ではない。
 Cacheは各Backend自身の復旧・再利用用、Shared State Storeは他Serviceへの情報共有用であり、役割を分ける。
 DisplayからBackend内部Cacheへの参照経路は持たない。
 
 Common Moduleは共有先のServiceではなく、各Service内で利用する。
 DisplayはConfig / Logging、各BackendはCache / Config / Loggingを利用する。
+各ServiceはCommon Time Moduleを自身の内部で利用する。図の共通Moduleは独立した実行単位や共通の時刻Serviceを表さない。
+OS / RTCによる時刻維持・同期と、Applicationからの時刻利用の分担は第12章に示す。
 Cacheの意味・有効性は各Backendが所有し、Common Cache Moduleは保存・読出し等の共通処理を担う。
 
 WeatherのPublished StateはCurrentWeather / HourlyWeather / RainForecast / WeeklyWeatherに分かれる（9.5）。
@@ -703,7 +713,7 @@ Display Runtime Stateを初期化
 
 この図はStateの再構築を示すもので、基本画面の起動をBackendの再生成・外部取得完了まで待たせる順序指定ではない。
 [要件定義](requirements.md)のR-01/R-06に従い、基本画面は外部情報取得を待たずに起動し、
-時刻未同期時は未同期状態を表示する。外部情報が利用できない場合の表示はR-07に従う。
+時刻が利用不能な場合はR-01の未同期状態を表示する。ネットワーク未接続と時刻利用可否の区別は12.2に従い、外部情報が利用できない場合の表示はR-07に従う。
 具体的な起動・再構築のタイミングや同期方式は後続設計で決定する。
 
 ---
@@ -744,7 +754,8 @@ Display内部で「共通的な変化の検出」と
 各Component State生成責務が、自身に必要なPublished State、
 Current Time / Date、Config等を基に、
 再評価要否と生成するComponent Stateを判断する。
-共通のTime側が「Scheduleを更新する」といったComponent固有知識を持つ構造にはしない。
+Common Time Moduleが「Scheduleを更新する」といったComponent固有知識を持つ構造にはしない。
+現在時刻・日付は同Moduleを介して利用し、日時と経過時間の使い分けは12.4に従う。
 
 具体的な変更検出・通知・スケジューリング方式は技術選定・詳細設計で決定する。
 
@@ -839,9 +850,109 @@ State間の整合性を要求しないことは、
 
 ---
 
-## 12. 未決定事項・後続設計への申し送り
+## 12. A-07：Time / Date
 
-A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
+Issue #3の論理設計として、時刻の基準・利用可否、Timezone、時間変化の責務を整理する。
+時刻同期はOS / Hardwareへ委譲し、ApplicationはCommon Time Moduleを介して時間情報を利用する。
+具体的なOS設定・日時API・Timer等の技術選定はIssue #4で行う。
+
+### 12.1 Time BasisとCommon Time Module
+
+現在時刻のSource of TruthはOS System Timeとする。
+各ServiceがOSの時刻機構へ個別に依存するのではなく、
+Common Time ModuleをApplication共通の利用境界とする。
+同Moduleは独立Service / Processではなく、独自のClockや時刻のSource of Truthを持たない。
+
+| 論理責務 | 内容 |
+|---|---|
+| Current Date / Time | OS System Timeに基づく現在日時を利用する |
+| Elapsed Time | Monotonic Timeに基づく経過時間を利用する |
+| Timezone | Application共通のAsia/Tokyoを扱う |
+| Time Usability | OSのTime Sync / RTC情報等を基に時刻の利用可否を扱う |
+
+Domain非依存で再利用価値のある基本時間処理を含めることは許容する。
+一方、予定の開始・終了、Published State / Cacheの期限切れ、Component切替、
+Weather / Scheduleの取得タイミングといったDomain判断は含めない。
+独自の中央Scheduler、Time Adjustment Eventシステム、時刻同期機構も設けない。
+各Serviceとの関係は第8章の既存構成図に統合する。
+
+### 12.2 時刻同期・RTCと利用可否
+
+時刻同期・RTC管理そのものは、可能な限りOS / Hardwareへ委譲する。
+
+- Network利用可能時は、OSの時刻同期機構が外部の信頼できる時刻源と同期・補正する。
+- Offline時はRaspberry Pi 5のRTCによって維持された時刻を利用する。
+- 完全電源断時にもRTCを維持するため、RTC Backup Batteryを使用する方針とする。
+- RTC維持時刻は本Application用途では十分信頼できるものとして扱い、Network切断だけでは信頼できない時刻と扱わない。
+- OS / RTCから明確にinvalid / unavailableと判断できる時刻は、現在時刻として利用しない。
+
+Application独自のisTimeTrustedや「過去に時刻同期したことがある」というTrust履歴は永続化しない。
+Application自身で絶対的な時刻正確性を保証する仕組みは作らない。
+RTC Backup Batteryの使用方針と、具体的な製品・設定・確認方法の選定は区別する。
+
+R-01の「正しい時刻を取得できていない場合はローカル時刻を表示しない」という要件を維持する。
+現在Network同期できていなくても、RTCで維持された利用可能な時刻は表示に使用できる。
+OS / RTCが明確に利用不能を示す場合は、その時刻を通常の時計として表示せず、未同期と分かる状態を表示する。
+同期完了を基本画面起動の条件とせず、利用可能な時刻が得られれば利用者操作なしで通常表示へ移行する。
+利用可否の具体的な取得・判定方法はIssue #4、未同期状態の具体的UIはIssue #5で扱う。
+
+### 12.3 Timezone
+
+日本国内での利用を前提とし、ApplicationのTimezoneはJST（Asia/Tokyo）固定とする。
+Clock / Date / Weekday、Scheduleの「今日」、Weatherの「今日 / 明日」、
+Published State / Cacheの時刻判定など、Application上の日付・時刻に意味がある処理で共通に用いる。
+海外利用・複数Timezone対応はMVP対象外とする。
+
+R-01 / R-08の共通Timezoneを設定値として保持する方針に対し、A-07ではその値をAsia/Tokyoに固定する。
+任意のTimezoneへ変更できる機能をMVPへ追加するものではない。
+RTC内部のUTC / Local Time管理、OSのTimezone設定、Timestampの具体的なデータ表現は固定せず、Issue #4で決定する。
+
+### 12.4 Calendar Date/TimeとElapsed Time
+
+日時そのものに意味がある処理と、どれだけ時間が経過したかに意味がある処理を分離する。
+
+| 基準 | 用途 |
+|---|---|
+| System Time | Clock、Date / Weekday、Schedule、予定の「今日」、天気の「今日 / 明日」、Published State / CacheのexpiresAt |
+| Monotonic Time | ContentSwitcherの表示継続時間、Retry待機、Timeout、その他「N秒経過したら」という処理 |
+
+日時の基準はOS System Timeとし、いずれもCommon Time Moduleを介した時間利用として扱う。
+System Timeの外部同期による前方・後方補正の影響を、経過時間処理へ持ち込まないために区別する。
+Application独自のTIME_ADJUSTED検知や補償Event機構は設けない。
+
+Issue #4では、採用Runtimeの標準Timer等がMonotonic Timeを適切に利用できるか確認し、
+利用可能なら標準機能を優先する。具体的なAPIやTimer実装は本章では確定しない。
+
+### 12.5 時間変化とDomainの責務
+
+時間経過で意味が変わった場合は、必要なStateを再評価する。
+第11章の意味変化ベースのComponent State再評価を維持し、
+Common Time ModuleはDomain非依存の時間情報・基本時間処理を提供する。
+
+対象には、Clockの分更新、日付・曜日の変更、Scheduleの開始・終了とCurrent / Next変更、
+「今日の予定」の日付変更、Published State / Cacheの期限到達、
+ContentSwitcherの表示切替、Backendの定期取得がある。
+
+| 判断内容 | 責務 |
+|---|---|
+| 「現在時刻が10:00である」という時間情報 | Common Time Moduleが扱うDomain非依存の時間情報 |
+| 予定の開始・終了、Current / Next等の予定上の意味 | その意味を扱う各責務。表示向けのComponent State再評価は11.2に従う |
+| Published Stateが利用不可になったか | Display側のState評価など、利用するConsumer |
+| CacheをFallbackに利用できるか | Cacheを所有するBackend |
+| 次のComponentへ切り替えるか | ContentSwitcher |
+| 外部データをいつ取得するか | 各Backend Service |
+
+この分担によって既存のCache / Published State / Component State / Display Runtime Stateの所有権を変更しない。
+Common Time Moduleへ巨大なSchedulerやDomain Event管理機構を集約しない。
+Timer / Schedulerを共通化するかは、採用言語・Runtime・Frameworkを確認し、
+複数箇所で共通化する実益がある場合に検討する。
+Polling / Timer / Scheduler / Event通知等の具体的な時間変化検知方式はIssue #4へ引き継ぐ。
+
+---
+
+## 13. 未決定事項・後続設計への申し送り
+
+A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07のTime / Date論理設計は第12章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
 
 - Component State / Display Runtime Stateの正式名称
 - Published State / Component Stateの具体Schema・型・serialization形式、metadataの必須／Optional
@@ -850,7 +961,7 @@ A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章に反映
 - Componentごとの具体的な表示成立条件・欠落情報の扱いと、成立しない場合の具体UI
 - Shared State Storeの具体技術、State取得方式（polling / notification等）
 - 共通変化検出とComponent State生成の具体クラス構造・連携方式
-- timer / scheduler等による時間変化検出・再評価起動の実装
+- A-07の時間変化検知・Timer / Scheduler関連のIssue #4申し送りは以下にまとめる
 - State更新・通知の具体タイミング・同期方式
 - Concurrent access、個々のPublished Stateの読み書きの扱い、schema versioning
 - 複数Stateの厳密な時点整合性・atomic取得更新をMVPで要求しない方針を踏まえた具体実装
@@ -862,5 +973,18 @@ A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章に反映
 - Futureの周期再評価による自己回復性、Cloud連携方式
 - Futureの具体的なLayoutカスタマイズ、Componentのサイズ区分・レスポンシブ方式
 - その他のアーキテクチャ設計項目
+
+### A-07からIssue #4への申し送り
+
+- OSの時刻同期方式・使用機構、NTP等の具体的な外部時刻同期方式
+- Raspberry Pi 5 RTCの具体的な設定方法
+- RTC Backup Batteryの具体的な設定・確認方法
+- RTC内部のUTC / Local Time管理、OSのTimezone設定
+- Timestampの具体的なデータ表現
+- 使用言語・Runtimeの日時API、Monotonic Clock API
+- OSのTime Sync / RTC情報に基づくTime Usabilityの具体的な取得・判定方法
+- Timer / Schedulerの実装方式と共通化の実益
+- Polling / Event / Timer等の時間変化検知・再評価起動方式
+- Runtime標準TimerがMonotonic Timeを適切に利用するかの確認
 
 HTTP / DB / MQTT、framework、transaction実装等の採用は今回決定しない。
