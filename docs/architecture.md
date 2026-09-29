@@ -65,7 +65,7 @@ Display / Schedule / Weather は、
 | Module | 主な責務 |
 |---|---|
 | Cache Module | キャッシュの保存・読出し・削除等の共通処理 |
-| Config Module | 設定の読出し・保存等の共通処理 |
+| Common Config Module | Config取得・保存・更新、Validation・適用状態等のDomain非依存な共通機構（第6章） |
 | Logging Module | ログ出力形式・保存等の共通処理 |
 | Common Time Module | OSの日時・時刻利用可否、Monotonic Timeによる経過時間、共通Timezoneの利用境界。詳細は第12章 |
 
@@ -346,40 +346,197 @@ Cache更新失敗・破損等の扱いは5.5に従う。
 
 ---
 
-## 6. Config
+## 6. A-08：Config / Secrets
 
-Configは独立Config Serviceとはせず、
-共通Config Moduleを利用しながら、
-各Serviceが自身の設定に対する責任を持つ構成を基本とする。
+Configuration Informationの分類、所有権、変更・復旧、Secretsの扱いを論理設計として整理する。
+Common Config Module / Configuration Boundaryを共通の利用境界とし、
+独立したConfig Service / Secret Serviceプロセスの新設は要求しない。
+MVPではローカルに保持された設定を利用し、保存済み設定を再起動後も維持する。
 
-MVPではローカルに保持された設定を利用する。
-ConfigとDisplay Runtime Stateの区別、再起動を跨ぐ保持方針は第10章に示す。
+### 6.1 Configuration Informationの分類
 
-FutureではiPad等のWeb管理画面から、
-レイアウト・表示内容・各種設定を変更し、
-Raspberry Piへ反映できる構成を想定する。
+| 分類 | 意味 | 例・候補 |
+|---|---|---|
+| User Config | 一般利用者が変更可能な設定 | Weather対象地域、Schedule対象Calendar、ContentSwitcherの表示順・各Contentの表示時間、将来のComponent ON/OFF・Layout・Componentサイズ |
+| System Config | システム管理者が管理・変更する、秘匿性を必要としない設定 | Weather / Schedule取得間隔、Cache TTL、API Timeout、Retry回数・間隔、Log Level・保持期間 |
+| Secrets | 漏洩が不正アクセス・なりすまし・権限悪用等につながるため秘匿性を必要とする情報 | 秘匿性が必要なAPI Key、Access Token、Refresh Token、Password、Client Secret、Private Key |
 
-そのため各Serviceがローカル設定ファイルやCloudへ直接依存せず、
-設定の供給元と設定を利用するServiceの間に境界を設ける。
+「誰が変更可能か」と「秘匿性が必要か」は別の分類軸として扱う。
+System Configの候補すべてを外部Config化する要求ではなく、
+実際の外部化は運用上の必要性・技術選定に応じて判断する。
+既存R-08で必要とされた設定の保持方針は維持する。
+Application TimezoneはA-07のArchitecture / SpecificationとしてAsia/Tokyo固定であり、User Configには含めない。
 
-概念的には以下を想定する。
+この分類はMVPで全設定を利用者が変更できることを意味しない。
+R-04 / R-08に従い、MVPでは専用設定UI・Web管理画面を作らず、開発者が設定を変更できればよい。
+切替順・表示時間の利用者変更、表示内容・配置のカスタマイズはFutureのままとする。
 
-MVP:
+### 6.2 Ownershipと共通境界
 
-Local Config
-→ Config
-→ 各Service
+Configの意味・妥当性・利用方法・変更時の振る舞いは、
+原則としてそのConfigを利用する責務を持つ各Serviceが所有する。
+Weather ServiceはLocationの意味・固有Validation・変更時の振る舞い、
+Schedule ServiceはCalendar設定の意味・固有Validation・変更時の振る舞いを所有する。
 
-Future:
+責務分離と実装重複を混同せず、各ServiceがConfig管理基盤を個別実装することは避ける。
+Common Config Module / Configuration Boundaryでは、Domain非依存で再利用可能な以下の機構を共通化できる構造とする。
 
-Web / Cloud
-→ Config Provider
-→ Config
-→ 各Service
+- Config取得・保存・更新経路
+- 共通的な変更通知・Validation機構
+- Schema / Version / Migrationを扱う共通機構
+- Configの適用状態等を扱う共通的な管理機構
 
-Web管理からの変更を反映操作で適用するか、
-リアルタイム同期するか、
-またCloud-Pi間の具体的な通信方式はFutureの設計で決定する。
+Common Config ModuleはweatherLocation / scheduleCalendar等のDomain固有の意味を所有しない。
+
+設定はまず特定Serviceの責務に属するかを判断する。
+特定Serviceに属さずシステム全体として意味を持つ設定は、将来の拡張点としてSystem-wide Configを許容する。
+複数Serviceから参照されることだけを理由にSystem-wide Configへ分類しない。
+Common Config ModuleがそのDomain上の意味を所有するわけでもない。
+MVPで該当設定がなければ、具体的なSystem-wide Config管理機構は実装不要とする。
+
+### 6.3 Config供給とRuntime変更
+
+各Serviceは起動時に必要なConfigを取得し、初期動作へ適用する。
+ServiceはLocal File / Web / Cloud等の具体的なConfig Sourceへ直接依存せず、
+変更元もServiceへ直接依存させず、Configuration Boundaryを介する。
+
+概念上の供給経路は以下とする。
+
+MVP：Local Config → Configuration Boundary → 各Service
+
+Future：Local Settings UI / Web Management / Cloud Management → Configuration Boundary → 各Service
+
+ArchitectureとしてRuntime変更を許容し、特にUser Configでは、
+将来のSettings UI・Web管理・Layout customizationから不要なService再起動なしで反映できる構造を目指す。
+適用方法は一律にせず、設定の性質に応じてImmediate Apply、Commit後Apply、
+Next OperationでApply、Restart Required、Preview → Commitを許容する。
+
+User Configでは操作性・即応性、System Configでは整合性、Secretsでは安全性を重視する。
+Layout等の連続操作ではRuntime Previewを即時反映し、操作完了時にPersistする方式も許容する。
+これらは管理UIをMVPへ追加する要求ではない。
+具体的な通知・適用・通信方式は第13章へ引き継ぐ。
+
+### 6.4 Persist / ApplyとDesired / Persisted / Actual Configuration
+
+| 概念 | 意味 |
+|---|---|
+| Desired Configuration | 最終的にシステムへ適用したい設定 |
+| Persisted Configuration | 永続化に成功しており、再起動後も復元可能な設定 |
+| Applied / Actual Configuration | 現在Runtimeで実際に使用されている設定 |
+
+通常の安定状態ではDesired = Persisted = Actualとなるが、変更処理中や障害時には一時的な不一致を許容する。
+Apply / Persistの順序はArchitecture全体で固定しない。
+Restart Required等では次回起動まで意図的に不一致となり得るため、Desired != Actualを必ずしも異常と扱わない。
+
+Persist成功後にApplyが失敗しても、可能であれば最後に正常適用されたActualで動作を継続する。
+例えば、変更前の各設定が10秒の場合、以下の状態が成立する。
+
+| 状況 | Desired | Persisted | Actual |
+|---|---|---|---|
+| Apply先行・Persist処理中 | 30秒 | 10秒 | 30秒 |
+| Persist成功・Apply失敗 | 30秒 | 30秒 | 10秒 |
+
+後者ではApply失敗のみを理由に停止せず、10秒での正常動作を継続する。
+Desiredを失わず自動Retryで再Applyを試み、成功時にはPersist済みのDesiredとActualが一致する。最終的には各状態が正常な設定へ収束する。
+不一致が継続する場合は、その状態を利用者・管理者が認識できるようにする。
+
+将来の管理UIでは、Desiredの再Applyや、Desiredを現在のActualへ戻す操作を可能にできる。
+Actualが残っていることとConfig History / Undoは別概念とし、多世代履歴はMVP要件にしない。
+ActualはConfigのRuntime適用状態であり、第10章の「どう動くべきか」と「現在どう動いているか」の区別を崩さない。
+巨大なRuntime State Managerを新設したり、既存のState分類・所有権を変更したりする意図はない。
+
+### 6.5 Validation・外部処理・Config Recovery
+
+ConfigとしてValidであることと、そのConfigを利用した外部処理が成功することは分ける。
+例えばWeather LocationをNagoyaからTokyoへ変更し、TokyoがValidation上Validなら、
+一時的なWeather API通信失敗を理由にNagoyaへRollbackしない。
+Validation失敗はConfig FailureとしてRecoveryし、Valid Configでの外部処理失敗は
+Backend / External Operation Failureとして第5章のCache等によるFallbackで扱う。
+
+Last Known Valid Configurationは、
+「現在Configが欠落・破損・Validation失敗した場合に、Config Recoveryとして利用可能な直近のValid Configuration」
+を意味する。外部API等での処理成功実績を意味せず、API障害によってValid Config自体をInvalidとはしない。
+
+Config障害時も可能な限りシステム全体の動作を継続する。
+Safe Config Fallback / Default、Last Known Valid Configuration、
+有効な既存データによる限定的継続を利用可能とし、
+それらでも継続できない場合のみ影響する機能をUnavailableとする。
+Weather Configの障害はWeatherへ、Schedule Configの障害はScheduleへ局所化し、
+他のServiceやClock / Date等へ波及させない。
+Required / Optionalは、システム全体ではなく対象機能の意味を成立させるために必要かで判断する。
+
+### 6.6 Config FallbackとData Fallback
+
+| 種別 | 補うもの | 例 |
+|---|---|---|
+| Config Fallback | 新しい外部データ取得に必要な設定 | Safe DefaultやLast Known ValidのCalendar設定で、新しいSchedule取得先を特定する |
+| Data Fallback | 外部データそのもの | Schedule Cacheでは新しい取得先は特定できないが、期限内の既存Scheduleを利用できる |
+
+Config Fallbackによって既存データのValidity / Freshnessを不当に延長しない。
+Cache TTL等のFallbackによって、既に期限切れのCacheを再びValidとして扱わない。
+既存データの利用は第5章・第9〜11章に従い、DisplayがBackend Cacheを直接参照する経路は設けない。
+
+### 6.7 Schema変更・Migration・Revision
+
+Schema変更時は可能な限り後方互換性を維持する。
+Optional field追加時に未指定ならDefaultを使える等、旧Configを自然に解釈できる変更ではMigrationを必須としない。
+構造・意味の変更により自然な互換性を維持できない場合に、Current SchemaへMigrationする。
+Runtime側へ無制限に旧Schema互換処理を蓄積することも避ける。
+
+Migration前のConfigを破壊せず、結果をCurrent SchemaとしてValidationした後に正式採用する。
+Migrationまたは変換後Validationに失敗した場合は元Configを保持し、
+Last Known Valid、Safe Default、有効な既存データ等による通常のConfig Recoveryへ移行する。
+継続不能な機能だけをUnavailableとし、MVPではMigration専用の複雑なRecovery機構を設けない。
+
+| 概念 | 意味 |
+|---|---|
+| Migration Source | 今回のMigration元。失敗による元データ消失を防ぐため保持する |
+| Last Known Valid Configuration | Config Recoveryに使う直近のValid Config |
+| Schema Version | Config構造のVersion |
+| Config Revision | Config値の更新世代 |
+
+Migration SourceとLast Known Validを同じ保存データで実現するか、別管理するかは技術選定で決定する。
+将来の複数変更元ではConfig Revisionにより、古いConfigに基づく更新を検出できる構造とする。
+例えばGUI A / BがRevision 5を取得し、Aの保存で6になった後にBが5を前提として更新した場合に競合を検出する。
+Revisionの新しさだけで採用すべき入力を自動判断せず、最新Configの再取得等で解決する。
+Configuration Boundaryを将来の競合制御ポイントとし、MVPは変更元が単一のため具体的な競合制御実装を必須としない。
+
+### 6.8 Secretsの所有権・アクセス境界
+
+Secretの意味・必要性・利用方法は、それを必要とする各Serviceが所有する。
+値の保存・保護・アクセス制御はSecret Managementの責務として分離可能とし、
+ServiceがSecret保存機構そのものを個別実装する構成は避ける。
+
+Least Privilegeを基本とし、WeatherはWeather Credentialのみ、
+ScheduleはSchedule Credentialのみにアクセスし、互いのCredentialへはアクセスしない。
+最小権限化によって可用性・拡張性を過度に損なわない。
+共通のSecret管理機構へDomain固有ロジックを持たせず、
+Service追加のたびに中央の巨大なSecret Manager改修が必要になる構造を避ける。
+Secret取得・更新等の障害は、それを必要とする機能へ局所化する。
+R-08に従い、Secretsを公開GitHubリポジトリへコミットしない。
+
+### 6.9 Secret管理GUIと更新
+
+将来は通常のSecretメンテナンスにSSH・設定ファイル直接編集を必要としない管理GUIを想定する。
+新規登録、更新・置換、削除、設定済み・未設定、Masked表示、必要な接続・利用状態の確認を扱えるようにする。
+現在のSecret平文の再表示や既存値のコピーは原則要求しない。
+Secret Valueの可視性よりSecret Statusの可視性を高める。
+
+Secret Persist Status、Secret Validation Status、External Service Authentication / Connection Statusを分ける。
+保存成功は外部Serviceでの利用成功を意味しない。
+
+更新時は安全側に倒し、正常利用中のActive Secretを新Secret登録直後に破棄しない。
+必要に応じて、利用中のActiveと切替確認中のPendingを扱う。
+
+1. 新Secret Bを安全に保存し、Validationする。
+2. Bによる利用・認証を確認する。
+3. 成功したらBをActiveへ切り替え、旧Active Aを不要化・安全に破棄する。
+4. 明確な認証 / 利用失敗（Credentialが外部ServiceからRejectされた、認証情報として利用できないことが確認された等）なら、AをActiveのまま維持し、Bへ切り替えない。
+5. 確認不能（Network障害、外部Service障害、Timeout等、新Secret自体の正否を判断できない一時的要因）なら、AをActiveのまま維持し、BをInvalidとは断定しない。BをPendingとして必要に応じて再確認できるようにする。
+
+Secret Historyは原則保持せず、必要に応じActive / Pendingの最大2状態程度を扱う。
+高度な自動Rotation・履歴・複数世代管理はMVP対象外とする。
+具体的な保存・切替・確認方式とFuture範囲は第13章にまとめる。
 
 ---
 
@@ -687,6 +844,8 @@ switch order、display duration、将来の利用者指定Layoutなど、
 「現在どう動いているか」ではなく「どう動くべきか」を表す情報はRuntime StateではなくConfigとして扱う。
 必要なConfigは永続化し、MVPの保存済み設定は再起動後も保持する。
 利用者指定Layoutの機能自体はFutureのままとする。
+A-08のDesired / Persisted / Actual Configurationは、適用したい設定・永続化済み設定・Runtime適用済み設定を区別する（6.4）。
+ActualはConfigのRuntime適用状態であり、Display Runtime Stateを集約する新しいManagerではない。
 
 ### 10.2 再起動時の基本的な再構築
 
@@ -904,7 +1063,7 @@ Published State / Cacheの時刻判定など、Application上の日付・時刻�
 海外利用・複数Timezone対応はMVP対象外とする。
 
 R-01 / R-08の共通Timezoneを設定値として保持する方針に対し、A-07ではその値をAsia/Tokyoに固定する。
-任意のTimezoneへ変更できる機能をMVPへ追加するものではない。
+任意のTimezoneへ変更できる機能をMVPへ追加するものではなく、A-08のUser Configには含めない。
 RTC内部のUTC / Local Time管理、OSのTimezone設定、Timestampの具体的なデータ表現は固定せず、Issue #4で決定する。
 
 ### 12.4 Calendar Date/TimeとElapsed Time
@@ -952,7 +1111,7 @@ Polling / Timer / Scheduler / Event通知等の具体的な時間変化検知方
 
 ## 13. 未決定事項・後続設計への申し送り
 
-A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07のTime / Date論理設計は第12章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
+A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07のTime / Date論理設計は第12章、A-08のConfig / Secrets論理設計は第6章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
 
 - Component State / Display Runtime Stateの正式名称
 - Published State / Component Stateの具体Schema・型・serialization形式、metadataの必須／Optional
@@ -986,5 +1145,29 @@ A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07�
 - Timer / Schedulerの実装方式と共通化の実益
 - Polling / Event / Timer等の時間変化検知・再評価起動方式
 - Runtime標準TimerがMonotonic Timeを適切に利用するかの確認
+
+### A-08からIssue #4・実装設計への申し送り
+
+- Config保存形式（JSON / YAML / DB等）、.envを利用するか
+- Secretsの具体的保存方法・暗号化方式、OS Permission / Access Control
+- Atomic Write方式
+- Config変更通知方式（Event / Watch / Callback / Polling等）
+- Runtime Apply / Retryの具体実装
+- Last Known Valid Configの保存方式、Migration Sourceとの保存上の関係
+- Schema Migration Library / 実装方式
+- Config Revision / Optimistic Lock等の具体的な競合制御方式（将来設計を含む）
+- 管理GUI Framework・管理者認証方式、Local / Web / Cloud間の通信方式（管理UIはFuture）
+- Secret切替・Connection Testの具体方式
+
+### A-08のFuture / Out of Scope
+
+専用のLocal Settings UI・Web管理・Secret管理GUIはFutureとし、MVPでの実装は要求しない。
+以下もMVPでは実装を要求しない。
+
+- Cloud Config Management、Multi-device Config Sync
+- 複数管理者Account、Fine-grained RBAC
+- 自動Secret Rotation、Secret History、複数世代管理
+- 高度なAudit Trail、Config Approval Workflow、Enterprise Secret Management
+- Configの多世代History / Undo
 
 HTTP / DB / MQTT、framework、transaction実装等の採用は今回決定しない。

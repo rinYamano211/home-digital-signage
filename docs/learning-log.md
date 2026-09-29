@@ -1502,17 +1502,384 @@ Current Time = 10:20
 
 ---
 
+## 2026-09-29 Config / Secrets設計
+
+### 設定の分類と設定の責務は別の観点
+
+Configを整理する際、
+
+- User Config
+- System Config
+- Secrets
+
+という分類を行った。
+
+しかし、この分類と「どのServiceがその設定を所有するか」は別の問題である。
+
+例えばWeatherの対象地域はUser Configだが、その設定の意味や妥当性、変更された場合の振る舞いを理解しているのはWeather Service。
+
+また、Secretは管理者が操作する場合があっても、「管理者が操作する」という理由だけでSystem Configと同じ扱いにはできない。
+
+今回の検討から、
+
+```text
+誰が変更する情報か
+秘匿性が必要か
+Domain上の意味を誰が所有するか
+```
+
+は別の観点として考える必要があると分かった。
+
+情報を分類するときは、一つの分類軸だけで責務まで決めないことが重要。
+
+---
+
+### Domainの意味と共通Mechanismを分離する
+
+各ServiceがConfigを所有すると、Configの取得・保存・更新なども各Serviceへ実装したくなる。
+
+一方、それらをすべてCommon Configへ集約すると、Common Moduleが各Domainの設定内容まで理解する巨大なConfig Managerになる可能性がある。
+
+そこで、
+
+```text
+Domain固有
+- 設定の意味
+- Domain固有のValidation
+- 設定の利用方法
+- 変更時の振る舞い
+
+Domain非依存
+- 設定の取得
+- 保存
+- 更新
+- 共通的な変更通知
+- Schema / Migration等の共通Mechanism
+```
+
+と分けて考える。
+
+これはCacheやTimeの設計でも検討した考え方と共通している。
+
+責務を各Serviceへ分離することと、同じ処理を各Serviceへ重複実装することは同じではない。
+
+Common化するときは、Domain上の意味ではなく、Domain非依存で本当に再利用できるMechanismかを確認する。
+
+---
+
+### ConfigではDesired・Persisted・Actualを分けて考える
+
+Runtime中にConfigを変更できるようにすると、
+
+```text
+利用者が変更したい値
+保存されている値
+Runtimeで実際に使用されている値
+```
+
+が常に同じとは限らない。
+
+今回の設計では、概念的に以下を区別した。
+
+```text
+Desired Configuration
+→ 最終的に適用したい設定
+
+Persisted Configuration
+→ 永続化に成功している設定
+
+Actual / Applied Configuration
+→ Runtimeで現在使用している設定
+```
+
+通常は、
+
+```text
+Desired = Persisted = Actual
+```
+
+となる。
+
+しかし変更途中や障害時には、
+
+```text
+Desired = 30秒
+Persisted = 30秒
+Actual = 10秒
+```
+
+のような一時的不一致も発生し得る。
+
+重要なのは、すべての状態を常に一致させることではなく、
+
+> 一時的な不一致を把握し、最終的に正常な状態へ収束できるようにする
+
+こと。
+
+また、論理的に状態を区別することと、それぞれを別のファイルやState Storeとして実装することは別の問題である。
+
+---
+
+### ApplyとPersistの順序は設定の性質によって変わる
+
+Config変更では、
+
+```text
+Persist
+↓
+Apply
+```
+
+だけが正しいとは限らない。
+
+例えばUser Configでは、設定画面の操作へ素早く反応するため、
+
+```text
+Runtime Apply
+↓
+Persist
+```
+
+が適している場合がある。
+
+Layoutのような連続操作では、
+
+```text
+Preview
+↓
+Commit
+```
+
+という方法も考えられる。
+
+一方、System ConfigやSecretsでは操作性より整合性・安全性を優先する場合がある。
+
+そのため、
+
+> すべてのConfigへ同じ更新手順を適用するのではなく、設定の性質に応じて適切なApply Policyを選ぶ
+
+ことが重要。
+
+共通化する場合も、特定の更新順序を強制するのではなく、変更状態を把握し、失敗時にRecoveryし、最終的に収束できる仕組みを考える。
+
+---
+
+### Configの妥当性と外部処理の成功は別の状態
+
+例えばWeatherの対象地域をNagoyaからTokyoへ変更した場合、
+
+```text
+Tokyoという設定値
+→ ConfigとしてValid
+
+Weather API
+→ 一時的なNetwork障害で取得失敗
+```
+
+という状態が成立する。
+
+このときWeather取得に失敗したことを理由に、TokyoというConfigまでInvalidと判断してNagoyaへ戻すべきではない。
+
+そのため、
+
+```text
+Config Validation
+↓
+ServiceがConfigを利用
+↓
+External Operation
+```
+
+を別の段階として考える。
+
+これはSecretsでも同じで、
+
+```text
+Secretを保存できた
+SecretとしてValidationできた
+外部Serviceで認証できた
+```
+
+はそれぞれ異なる状態。
+
+設定そのものの妥当性と、その設定を使った外部処理結果を混同しないことが重要。
+
+---
+
+### Config FallbackとData Fallbackを区別する
+
+Config障害時のFallbackを検討する中で、設定を代替することとデータを代替することは目的が異なると分かった。
+
+例えばScheduleでは、
+
+```text
+Last Known Valid Calendar
+→ 新しいScheduleの取得先を補う
+
+Schedule Cache
+→ 既に取得済みのSchedule Dataを補う
+```
+
+という違いがある。
+
+前者はConfig Fallbackであり、後者はData Fallback。
+
+またConfig Fallbackによって、既存データのValidityやFreshnessまで変更してはいけない。
+
+例えばCache TTLの設定が欠落した場合にFallback値を利用しても、既に期限切れとなったCacheを再びValidにしてはいけない。
+
+Fallbackを設計するときは、
+
+> 何を代替しているFallbackなのか
+
+を明確にすることが重要。
+
+---
+
+### 後方互換性で対応できる変更までMigrationしない
+
+Config Schemaが変化すると、すぐにMigration処理が必要になるように考えやすい。
+
+しかし例えば、
+
+```text
+旧Config
+displayDuration: 10
+
+新Config
+displayDuration: 10
+showClock: true
+```
+
+のようなOptional項目の追加であれば、項目が存在しない場合にDefaultを利用することで旧Configをそのまま解釈できる。
+
+そのため、
+
+```text
+Schema変更
+↓
+旧Configを自然に解釈できるか
+├─ Yes → 後方互換で対応
+└─ No  → Migration
+```
+
+という順番で考える。
+
+Migrationする場合も、元Configを破壊せず、新SchemaとしてValidationできてから採用する。
+
+Migration機構を作ること自体を目的にせず、本当に必要になった場合だけ利用することで不要な複雑化を避けられる。
+
+---
+
+### Schema VersionとConfig Revisionは目的が違う
+
+Configについて「Version」という言葉を使う場合も、何をVersioningしているのかを区別する必要がある。
+
+今回の設計では、
+
+```text
+Schema Version
+→ Config構造の世代
+
+Config Revision
+→ Config値の更新世代
+```
+
+として分けて考えた。
+
+Schema VersionはSchema変更やMigrationの判断に利用できる。
+
+Config Revisionは、複数の設定画面等から変更する場合に、古いConfigを基にした更新を検出するために利用できる。
+
+ただしRevisionによって競合を検出できても、
+
+```text
+Revisionが新しい
+=
+その変更内容が正しい
+```
+
+とは限らない。
+
+競合を検出することと、どの変更を採用するか判断することは別の問題として考える。
+
+---
+
+### SecretはValueではなくStatusを観測できるようにする
+
+SecretをGUIから管理できるようにする場合、現在のSecret値を表示できることが管理性につながるように思える。
+
+しかし実際の運用で重要なのは、
+
+```text
+設定されているか
+保存できているか
+Validationできているか
+外部Serviceで利用できているか
+```
+
+といった状態を確認できること。
+
+そのため、
+
+> Secret Valueの可視性ではなく、Secret Statusの可視性を高める
+
+という考え方にした。
+
+管理性を高めるためにSecretそのものへのアクセス範囲を広げる必要はない。
+
+---
+
+### Secretでは「失敗」と「確認不能」を区別する
+
+新しいSecretを外部Serviceで確認できなかった場合でも、原因がSecretとは限らない。
+
+例えば、
+
+```text
+CredentialがRejectされた
+→ Secretの利用失敗を確認できた
+
+Network障害
+→ Secretが正しいか確認できない
+```
+
+では意味が異なる。
+
+後者の場合、
+
+```text
+確認できない
+≠
+SecretがInvalid
+```
+
+である。
+
+そのためSecret更新では、新Secretの利用を確認できるまで現在正常に利用できているActive Secretを維持し、Network等の一時障害で確認できなかった場合はPendingとして再確認できるようにする。
+
+状態を設計するときは、
+
+> FailureとUnknownを区別する
+
+ことが重要。
+
+---
+
 ### 今回の設計検討から得た考え方
 
-今回のTime / Date設計では、単に「時計をどう表示するか」ではなく、時間という横断的な関心事をどこまでApplicationが責任を持つべきかを検討した。
+今回のConfig / Secrets設計では、設定値をどこへ保存するかだけではなく、設定の責務、Runtime変更、障害時Recovery、Secret管理まで含めて検討した。
 
 特に以下を今後の設計でも意識する。
 
-- 既存のOS / Hardware / Runtimeが持つ責務を確認してからApplication側の仕組みを設計する
-- 共通利用と中央集約を区別する
-- Domain非依存の処理とDomain上の意味判断を分離する
-- 共通化可能だからという理由だけでCommon Moduleへ処理を追加しない
-- 完全性を高めるための仕組み自体にも管理コストがある
-- 同じ「時間」でも、日時と経過時間のように意味の異なる概念を分離する
-- 再起動・永続化を考慮して適切な時間表現を選択する
-- Architectureでは責務・保証したい振る舞いを定義し、具体的な実現技術は技術選定と分離する
+- 情報の分類軸とDomain上の責務を分けて考える
+- Domain固有の意味とDomain非依存の共通Mechanismを分離する
+- 論理的な状態の違いと具体的な保存・実装方法を混同しない
+- 一時的不一致を禁止するのではなく、状態を把握して正常状態へ収束できるようにする
+- ConfigのValidationと、そのConfigを利用した外部処理結果を分離する
+- Fallbackでは何を代替しているのかを明確にする
+- 後方互換性で対応できる場合は不要なMigrationを増やさない
+- Versionが何のVersionなのかを明確にする
+- Secretは値そのものではなく、運用に必要なStatusを観測可能にする
+- FailureとUnknownを区別する
+- 安全性・可用性・操作性の優先度に応じて適切な設定変更方式を選択する
