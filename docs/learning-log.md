@@ -1883,3 +1883,592 @@ SecretがInvalid
 - Secretは値そのものではなく、運用に必要なStatusを観測可能にする
 - FailureとUnknownを区別する
 - 安全性・可用性・操作性の優先度に応じて適切な設定変更方式を選択する
+
+## 2026-10-04 Startup / Recovery設計
+
+### Startupでは「すべて準備できた状態」を待つ必要はない
+
+当初は、Serviceを起動する場合、
+
+```text
+Config読込
+↓
+Cache読込
+↓
+Network確認
+↓
+外部API取得
+↓
+Published State生成
+↓
+Service起動完了
+```
+
+のように、必要なものを順番に準備してからServiceを利用可能にするイメージを持っていた。
+
+しかし、外部APIやNetworkのような外部依存をStartupの成立条件にすると、依存先の障害によってService自身まで起動できなくなる。
+
+特に複数Serviceを持つシステムでは、
+
+```text
+Weather Serviceが起動できない
+↓
+Display Serviceも待つ
+↓
+本来表示できる時計等も表示できない
+```
+
+という不要な障害波及につながる。
+
+そのため、ServiceのStartupでは、
+
+- Service自身が動作できること
+- 外部依存を利用できること
+- データを提供できること
+
+を分けて考える必要がある。
+
+今回の設計では、各Application Serviceを原則として独立起動可能とし、他Service、Network、External API、外部データ取得完了を起動前提にしないことにした。
+
+Service自身がRecovery処理を実行できる状態までを最低限のInitializationとし、外部データ等は起動後に利用可能になったものから取り込む。
+
+---
+
+### Initialization FailureとDependency Failureを分けて考える
+
+外部APIに接続できない場合、単純に「Serviceの起動失敗」としてしまうと、
+
+```text
+External API Failure
+=
+Service Failure
+```
+
+という扱いになる。
+
+しかし実際には、
+
+```text
+Service自身は正常
+External Dependencyだけが利用不能
+```
+
+という状態が存在する。
+
+例えばWeather APIが停止していても、Weather Service自身は、
+
+- Configを読み取る
+- Cacheを評価する
+- Retryする
+- API復旧後に再取得する
+
+といった処理を実行できる可能性がある。
+
+この場合、Serviceを異常終了させるよりも、Serviceを動作させたままRecovery可能な状態を維持した方がよい。
+
+今回の設計では、
+
+```text
+Service Failure
+External Dependency Failure
+Data Unavailable
+```
+
+を別の状態として考えることにした。
+
+「現在機能を提供できないこと」と「Service自身が壊れていること」は同じではない。
+
+---
+
+### Recoveryは障害に対して最小の範囲から行う
+
+Recoveryについて考え始めたときは、「異常が発生したら再起動する」という考え方を持っていた。
+
+しかし、再起動にも影響範囲がある。
+
+例えばExternal APIが一時的に失敗しただけでRaspberry Pi全体をRebootすると、正常に動いているDisplay ServiceやSchedule Serviceまで停止してしまう。
+
+そのため、Recoveryでは障害の範囲に対応したRecovery手段を選ぶ必要がある。
+
+```text
+External Dependency Failure
+↓
+Retry / Backoff
+
+Process Crash
+↓
+Process Restart
+
+Crash Loop
+↓
+Restart頻度を抑制して再試行
+
+OS Hang
+↓
+System Reboot
+```
+
+このように、可能な限り小さい影響範囲からRecoveryする。
+
+特に、
+
+```text
+Weather Service Crash Loop
+↓
+Raspberry Pi Reboot
+```
+
+を無条件に行うと、局所的な障害をシステム全体の障害へ拡大してしまう。
+
+Recoveryは「強い手段を使えば安全」というものではなく、障害境界に合わせてEscalationすることが重要だと学んだ。
+
+---
+
+### 自分自身の完全な停止は自分自身では検知できない
+
+Application内でRetryやException Handlingを実装すれば多くの障害に対応できるが、Application Processそのものが停止した場合、そのProcess自身はRecovery処理を実行できない。
+
+同様に、OS自体がHangした場合、OS上で動作するService SupervisorだけではRecoveryできない。
+
+そのためRecoveryは複数Layerで考える必要がある。
+
+```text
+Application
+↓
+External Dependency Failureを検知
+Retry / Backoff
+
+OS / Service Supervisor
+↓
+Process停止を検知
+Process Restart
+
+Hardware / Watchdog
+↓
+OS Hangを検知
+System Reboot
+```
+
+重要なのは、
+
+> あるLayerが完全に停止した場合、そのLayer自身だけでは停止を検知・Recoveryできない
+
+という点である。
+
+将来的にDevice全体の停止や電源断まで外部から検知したい場合は、Cloud等からHeartbeatを監視するさらに外側のLayerが必要になる。
+
+ただし今回のMVPではRemote Monitoringまでは必要ないと判断し、Local Device内のRecoveryまでを対象とした。
+
+---
+
+### Recoveryでは「元の状態へ戻す」ことが常に正解ではない
+
+当初はRecoveryという言葉から、Crash直前の状態を保存して、その状態へ戻すイメージを持っていた。
+
+しかしStateによっては、保存して復元するよりも、信頼できる情報から作り直した方が単純で安全である。
+
+そこでRecovery時のStateを、
+
+```text
+Preserve
+Reconstruct
+Initialize
+```
+
+の3種類に分けて考えた。
+
+#### Preserve
+
+再生成できない情報、またはRecovery時の再生成に必要な情報。
+
+例：
+
+- Config
+- Secrets
+- Last Known Valid Config
+- Backend Cache
+- Cache Metadata
+
+#### Reconstruct
+
+他の信頼可能な情報から再生成できるDerived State。
+
+例：
+
+```text
+Config / Cache / External API
+↓
+Published State
+
+Published State
+↓
+Component State
+```
+
+#### Initialize
+
+Crash前の状態を復元する必要性が低く、新しく開始した方がよいRuntime State。
+
+例：
+
+- ContentSwitcherの現在位置
+- 残り表示時間
+- Retry Timer
+- Timeout
+- その他Process固有のRuntime State
+
+この整理から、
+
+> 永続化できるものをすべて永続化するのではなく、再生成できない情報と再生成に必要な情報を永続化する
+
+という考え方を学んだ。
+
+Derived Stateまで永続化すると、保存対象が増えるだけでなく、
+
+```text
+Cacheは新しい
+Published Stateは古い
+
+Published Stateは新しい
+Cacheは古い
+```
+
+といったState間の同期問題も増える。
+
+Recoveryでは「保存して戻す」だけでなく、「何を残し、何を作り直し、何を捨てるか」を考える必要がある。
+
+---
+
+### Recovery Sourceが存在することと利用可能であることは別
+
+CacheやPublished Stateが保存されていても、それを無条件にRecoveryへ利用できるとは限らない。
+
+例えばCacheが存在していても、
+
+- Expired
+- Corrupted
+- 必要な情報が不足している
+- 現在時刻が利用不能で期限を正しく評価できない
+
+といった可能性がある。
+
+そのため、
+
+```text
+State Exists
+≠
+State Usable
+```
+
+として考える必要がある。
+
+Recovery時にも保存Stateをそのまま信用せず、通常時と同じValidity / Freshnessの原則で再評価する。
+
+RecoveryだからといってExpired Cacheを利用したり、Cacheを再Publishした時点からTTLを延長したりすると、障害時だけ通常時と異なるデータ品質ルールになってしまう。
+
+Recoveryは通常のState Managementルールを破る特別処理ではなく、既存のUsability評価を再利用する方が一貫性を保ちやすい。
+
+---
+
+### 早期復旧と最新性は別の目的として考える
+
+Recovery時には、
+
+- できるだけ早く機能を戻したい
+- できるだけ最新の情報を表示したい
+
+という2つの目的がある。
+
+当初のCache設計では、StartupでもExternal APIからの最新情報取得を優先し、失敗した場合にCacheへFallbackする考え方だった。
+
+しかしこの方式では、
+
+```text
+Valid Cacheあり
+↓
+API Request
+↓
+Timeoutを待つ
+↓
+Cache利用
+```
+
+となり、利用可能なRecovery Sourceがあるにもかかわらず機能復旧が遅れる可能性がある。
+
+そこで今回、
+
+```text
+Early Recovery
+↓
+Refresh
+↓
+Convergence
+```
+
+として分けて考えた。
+
+概念的には、
+
+```text
+              ┌→ Valid Recovery Source → Early Recovery
+Service Start ┤
+              └→ External Acquisition → Latest State
+```
+
+となる。
+
+Valid Cache等から提供可能な機能は早期に復旧し、それとは別にExternal Acquisitionも速やかに開始する。
+
+最新情報の取得に成功したら、
+
+```text
+External Acquisition
+↓
+Published State Update
+↓
+Component State Reconstruction
+↓
+Display Update
+```
+
+によって最新状態へ収束する。
+
+これによって、
+
+> Cacheを使うか最新情報を取得するか
+
+という二者択一ではなく、
+
+> Cacheで早く戻し、その後最新状態へ収束する
+
+という設計ができる。
+
+ただし、Cache-first / API-firstという具体的な実行順序や並列処理方式までArchitectureで固定する必要はない。
+
+Architectureでは「Early RecoveryをExternal Acquisition完了まで不要に待たせない」という性質を決め、具体的なConcurrencyや非同期処理は採用技術を見て決めることにした。
+
+---
+
+### Recoveryによって情報を古くしてはいけない
+
+Recovery SourceからStateを再生成する場合、単純に「CacheがあればCacheから再生成する」だけでは問題になることがある。
+
+例えば、
+
+```text
+API取得成功
+↓
+Published State更新成功
+↓
+Cache更新失敗
+```
+
+という状態では、
+
+```text
+Published State = 新しい
+Cache = 古い
+```
+
+となる。
+
+この後BackendがCrashして、
+
+```text
+Restart
+↓
+古いCacheを読込
+↓
+Published Stateを上書き
+```
+
+すると、Recoveryした結果として情報が古くなる。
+
+そのためRecoveryでは、
+
+> Recovery Sourceから再生成できるか
+
+だけでなく、
+
+> 既存のUsableなStateより退行しないか
+
+も考える必要がある。
+
+今回の設計では、既存の`dataTimestamp`、`expiresAt`、Usability等を利用してFreshnessを評価し、不必要な退行を防ぐ方針とした。
+
+一方、このためだけにRevision / Generation等の複雑な同期機構をMVPへ追加することは避けた。
+
+必要な性質をArchitectureで定義し、Backend側・Shared State Store側等のどこで実現するかは、具体技術を選定してから判断する。
+
+---
+
+### Recovery Timeは一律の値では考えにくい
+
+当初の要件では「異常終了後1分以内に自動復旧」のように、Recoveryを一つの時間として考えていた。
+
+しかし実際には、
+
+```text
+Processが再び動作可能になる
+```
+
+ことと、
+
+```text
+Weather等の機能が再び利用可能になる
+```
+
+ことと、
+
+```text
+利用者が正常に見える状態へ戻る
+```
+
+ことは同じではない。
+
+そこで、
+
+- Service Recovery Time
+- Functional Recovery Time
+- Visible Impact Time
+
+を分けて考えた。
+
+例えばWeather ServiceがCrashしても、有効なPublished Stateが残っていれば、
+
+```text
+Backend Service Recovery = 30秒
+Visible Impact = 0秒
+```
+
+ということもあり得る。
+
+またExternal API自体が5分停止している場合、その5分をDevice側のRecovery性能として保証することもできない。
+
+そのため外部依存障害では、
+
+```text
+External Dependencyが復旧
+↓
+Deviceが正常状態へ収束
+```
+
+の時間を測定対象とする考え方が必要になる。
+
+Recovery目標値は最初から絶対値として固定するのではなく、
+
+```text
+Initial Target
+↓
+障害注入試験
+↓
+実測
+↓
+UX / CPU / Network / API負荷との比較
+↓
+調整
+```
+
+という形で決める方がよい。
+
+今回設定した30秒、1分、5分等は最終保証値ではなく、実機試験で評価するためのInitial Targetとして扱うことにした。
+
+---
+
+### RecoveryではWall ClockとElapsed Timeの違いも影響する
+
+Recoveryを検討すると、Time設計との関係も重要になる。
+
+例えば、
+
+```text
+CacheのexpiresAt
+Published StateのexpiresAt
+TodayScheduleの日付判定
+```
+
+には現在日時が必要になる。
+
+一方、
+
+```text
+Retryまで30秒待つ
+Timeoutまで10秒待つ
+Crash LoopのCooldown
+```
+
+では、現在日時よりも「どれだけ時間が経過したか」が重要になる。
+
+そのためA-07で整理した、
+
+```text
+Calendar Date / Time
+→ System Time
+
+Elapsed Time
+→ Monotonic Time
+```
+
+という区別がRecoveryにもそのまま適用できる。
+
+またSystem TimeがUnusableな場合、Service自体を停止する必要はないが、正しい現在時刻を必要とするStateのUsabilityを誤って判断してはいけない。
+
+時刻が再びUsableになったら、Time-dependent Stateを再評価して正常状態へ収束させる。
+
+個別機能ごとにRecovery専用の時刻処理を作るのではなく、既存のTime設計をRecoveryでも再利用することが重要だと分かった。
+
+---
+
+### StartupとRuntime Recoveryを同じ考え方で扱えるようにする
+
+StartupとRuntime Failureを完全に別の仕組みにすると、
+
+```text
+Startup用処理
+Runtime Recovery用処理
+```
+
+の2種類を持つことになり、状態遷移や例外処理が複雑になる。
+
+しかし、
+
+- External APIが利用できない
+- Networkが利用できない
+- Cacheしか利用できない
+- Configが不足している
+
+といった状態はStartup時にもRuntime中にも発生する。
+
+そのため、
+
+> 利用可能な情報から可能な機能を成立させ、依存先が復旧したら正常状態へ収束する
+
+という同じ原則をStartupとRuntime Recoveryの両方へ適用できる。
+
+Startupを「完全な正常状態になるための特別なシーケンス」と考えるのではなく、
+
+> 何もない状態から通常のRuntimeへ収束していくRecoveryの一種
+
+として考えると、設計を統一しやすい。
+
+---
+
+### 今回の設計検討から得た考え方
+
+- Serviceが起動していることと、すべての機能が利用可能であることは分けて考える
+- External Dependency FailureをService自身のFailureへ不要に波及させない
+- Startupの正しさを特定のApplication Service起動順序へ依存させない
+- Recoveryは障害範囲に対応した最小の手段から行う
+- Application / Supervisor / Watchdog等、異なるLayerで検知・Recoveryできる障害が異なる
+- すべてのStateを復元するのではなく、Preserve / Reconstruct / Initializeに分けて考える
+- Derived Stateは可能であれば保存ではなく再構築する
+- Recovery Sourceの存在とUsabilityを区別する
+- Recoveryでも通常時のValidity / Freshnessルールを維持する
+- Early Recoveryと最新情報へのConvergenceを分けることで、復旧速度とFreshnessを両立できる
+- Recoveryによって既存のUsableなStateより情報を退行させない
+- Architectureでは必要な性質を決め、Concurrency等の具体Mechanismは技術選定後に決める
+- Recovery TimeはService / Function / User-visible impact等、何の復旧時間かを明確にする
+- 外部依存の停止時間とDevice自身のRecovery性能を混同しない
+- Recovery目標値はInitial Targetとして置き、障害注入試験・実測から調整する
+- RecoveryでもSystem TimeとMonotonic Timeを目的に応じて使い分ける
+- StartupとRuntime Recoveryで共通のRecovery原則を利用すると、例外的な処理を減らせる

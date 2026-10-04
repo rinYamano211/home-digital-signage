@@ -228,7 +228,7 @@ Common Time Moduleは独立Serviceではなく、Display内で利用する共通
 ### 5.1 位置付けと責務
 
 Cacheは独立Serviceにしない。
-Cache Stateは、外部データを取得できない場合のFallback用の補助データとし、
+Cache Stateは、外部データを取得できない場合のFallbackやStartup / Recovery時のRecovery Sourceとなる補助データとし、
 各Backend Serviceがその意味・有効性と管理責任を持つ。
 
 | 担当 | 責務 |
@@ -246,8 +246,12 @@ Display ServiceはBackend内部のCacheを直接参照しない。
 Published Stateを生成・更新すると同時に、Fallback用のCache Stateを更新する。
 Cache保存後の再読出しを経由しなければPublishできない構成にはしない。
 
-Backendは起動時を含め、原則として外部データソースの最新情報取得を優先する。
-取得できない場合に、有効なCache StateがあればFallbackとして利用する。
+Normal OperationではExternal Data SourceをSource of Truthとして最新情報を取得する。
+CacheはFallback / Recovery Sourceであり、Normal OperationのSource of Truthにはしない。
+Startup / Recoveryでは、Valid Cache等によるState ReconstructionをExternal Acquisitionの完了まで不要に待たせない。
+利用可能なRecovery Sourceから早期復旧するとともに、External Acquisitionも速やかに開始し、成功後に最新Stateへ自動収束する。
+Cache-first / API-firstという厳密な実装順序や具体的な並列処理方式は固定しない。
+具体的なConcurrency・非同期処理・Task管理はIssue #4 / 詳細設計で決定する。復旧後の収束は10.8に示す。
 Displayの基本画面起動はBackendや外部APIを待たない既存方針を維持する。
 timeout、retry回数・間隔は後続設計で決定する。
 
@@ -310,13 +314,14 @@ Cache保存技術・形式・破損検出・atomic write等も今回選定しな
 
 ### 5.7 Cache / Fallbackの基本フロー
 
-以下の分岐は、独立して鮮度・有効性を管理する情報単位ごとに適用する。
+以下は外部データ取得結果に対する基本分岐を、独立して鮮度・有効性を管理する情報単位ごとに示す。
+Startup / Recovery全体の処理順序を示す図ではなく、Valid Cacheの早期利用は5.2に従い外部取得の完了を不要に待たせない。
 正常取得時のPublished State生成とCache更新は別の経路とし、Cache保存・再読出しを公開の前提にしない。
 
 ```mermaid
 flowchart TB
     subgraph backend["各Backend Service"]
-        fetch["外部データ取得を優先<br/>起動時を含む"]
+        fetch["外部データ取得"]
         result{"取得成功？"}
         latest["最新データから<br/>Published Stateを生成・更新"]
         update["Fallback用Cache Stateを更新"]
@@ -574,13 +579,13 @@ flowchart TB
             scheduleData["予定情報の取得・加工・公開"]
             scheduleCache["自身が所有するCache State<br/>Fallback用"]
             scheduleData -->|更新| scheduleCache
-            scheduleCache -->|取得不能時のFallback| scheduleData
+            scheduleCache -->|Fallback / Recovery Source| scheduleData
         end
         subgraph weather["Weather Service（Backend）"]
             weatherData["天気情報の取得・加工・公開"]
             weatherCache["自身が所有するCache State<br/>Fallback用"]
             weatherData -->|更新| weatherCache
-            weatherCache -->|取得不能時のFallback| weatherData
+            weatherCache -->|Fallback / Recovery Source| weatherData
         end
         store["Shared State Store<br/>Service間でPublished Stateを共有<br/>State管理専用Serviceは設けない"]
         display["Display Service（Frontend）<br/>表示判断・描画"]
@@ -822,7 +827,10 @@ Display ComponentもPublished Stateを直接変更しない。
 
 ---
 
-## 10. Stateの永続化と再構築
+## 10. A-09：Startup / RecoveryとStateの再構築
+
+各Serviceの独立起動、局所的なRecovery、State再構築と最新状態への収束を整理する。
+既存の永続化方針を維持し、具体的なSupervisor・Retry・Watchdog等はIssue #4で決定する。
 
 ### 10.1 永続化の基本方針
 
@@ -831,8 +839,8 @@ Display ComponentもPublished Stateを直接変更しない。
 
 | State | 再起動を跨ぐ保持方針 |
 |---|---|
-| Cache State | 再起動後の外部取得失敗に備えて保持する。有効なCacheからBackendがPublished Stateを再生成できる |
-| Published State | 実行中はShared State Storeに保持する。システム再起動を跨ぐ永続化はMVPでは必須としない。起動時は外部取得を優先し、取得不能時は有効なCache Stateから再生成する |
+| Cache State | 再起動後の早期復旧・外部取得失敗に備えて保持する。有効なCacheからBackendがPublished Stateを再生成できる |
+| Published State | 実行中はShared State Storeに保持する。システム再起動を跨ぐ永続化はMVPでは必須としない。起動時は5.2の方針に従い、有効なRecovery Sourceによる再生成と速やかな外部取得による最新化を行う |
 | Component State | 永続化しない。必要に応じてPublished State等から再生成可能な派生Stateとして扱う |
 | Display Runtime State | 原則として永続化しない。MVPではContentSwitcher等を初期状態から開始してよく、再起動直前の表示位置の復元は要求しない |
 
@@ -847,11 +855,23 @@ switch order、display duration、将来の利用者指定Layoutなど、
 A-08のDesired / Persisted / Actual Configurationは、適用したい設定・永続化済み設定・Runtime適用済み設定を区別する（6.4）。
 ActualはConfigのRuntime適用状態であり、Display Runtime Stateを集約する新しいManagerではない。
 
+A-09ではRecovery時の扱いを以下に分類する。第9章のState分類・所有権とは別に、復旧時に何を行うかを示す。
+
+| Recovery時の扱い | 対象・方針 |
+|---|---|
+| Preserve | 再生成できない情報、またはRecovery時の再取得を保証できず再生成に必要な情報。User / System Config、Secrets、Last Known Valid Config、Backend CacheとCache Metadata |
+| Reconstruct | 信頼可能なStateから再生成できるDerived State。BackendがConfig / Cache / External API等からPublished Stateを、DisplayがUsableなPublished State等からComponent Stateを再生成する |
+| Initialize | Crash前の復元を要求せず初期化するRuntime State。Display Runtime State、ContentSwitcherの現在位置・残り表示時間、Retry Timer、Timeout、Backend内部Runtime State |
+
+現在時刻はApplicationが復元せず、Common Time Moduleを介してOS System Timeを利用する。
+保存情報は無条件に信用せず、Config / Cache / Published State等のUsabilityを再評価してから使う。
+新しいPublished Stateが残る場合のFreshness退行防止は10.6に従う。
+
 ### 10.2 再起動時の基本的な再構築
 
 以下は必要最小限の永続Stateを利用した再構築の概念を示す。
-Backend起動時は第5章に従って最新情報の外部取得を優先し、取得できない場合に有効なCacheを利用する。
-図中のCacheはFallback用であり、Published State生成の必須経路ではない。
+Backend起動時は5.2に従い、有効なRecovery Sourceによる再構築を外部取得完了まで不要に待たせず、最新情報の取得も速やかに開始する。
+図中のCacheはFallback / Recovery Sourceであり、Published State生成の必須経路ではない。
 再起動前の派生Stateをすべて復元する方針ではない。
 
 ```text
@@ -870,10 +890,134 @@ Display Runtime Stateを初期化
 画面表示
 ```
 
-この図はStateの再構築を示すもので、基本画面の起動をBackendの再生成・外部取得完了まで待たせる順序指定ではない。
+この図はState Reconstructionの概念図であり、以下を意味しない。
+
+- DisplayがBackend起動完了を待つこと
+- Application Serviceが特定順序で起動すること
+- External Acquisition完了後でなければCacheを利用できないこと
+- Config / Cache / Published Stateの存在がService起動成功の必須条件になること
+
 [要件定義](requirements.md)のR-01/R-06に従い、基本画面は外部情報取得を待たずに起動し、
 時刻が利用不能な場合はR-01の未同期状態を表示する。ネットワーク未接続と時刻利用可否の区別は12.2に従い、外部情報が利用できない場合の表示はR-07に従う。
 具体的な起動・再構築のタイミングや同期方式は後続設計で決定する。
+
+### 10.3 Startup Modelと最小限のInitialization
+
+各Application Serviceは原則独立して起動可能とし、
+他Application Service、Network、External API、外部データ取得完了を起動前提としない。
+起動順序を性能上の最適化として利用しても、正しい動作を特定のApplication Service起動順序へ依存させない。
+
+Service Initializationは、自身が継続動作とRecovery処理を実行できるための最小限の初期化とする。
+概念上、以下の段階を区別する。
+
+| 段階 | 内容 |
+|---|---|
+| Essential Initialization | Service自身が動作・Recovery処理を実行できる状態にする |
+| State Reconstruction | 利用可能な永続State等から、必要なStateを再構築する |
+| External Acquisition / Normal Operation | 外部取得等の通常処理を開始し、提供可能な機能を成立させる |
+
+他Service・Network・External API・外部データ・Cache・Published Stateの利用可能性は、起動成功の必須条件にしない。
+これらは論理的な段階であり、厳密な処理順序を固定しない。State Reconstructionは全データが揃うまで待たず、早期復旧と外部取得の関係は5.2に従う。
+依存先が未準備でも、利用可能なConfig / Cache / Published State等を評価して、提供可能な機能とRecovery処理を継続する。
+
+Service自身のFailure、External Dependency Failure、Data Unavailableは分ける。
+Config不足・Cache Failure等で一部機能を提供できなくても、Recovery処理を実行可能なら動作を継続する。
+自身がRecovery処理を実行できない致命的な状態のみService Initialization Failureとする。
+全Service共通の単純なINITIALIZING / READY / DEGRADED / FAILED等へ集約せず、必要な状態は各責務で管理する。
+
+### 10.4 依存先障害とRecoveryの境界
+
+Other Application Service、Shared State、Config / Secrets、Cache、System Time、Network、
+External APIの各境界で、依存先のUnavailable / Failureを原則Service自身のFailureと分離する。
+外部依存の障害だけで不要に異常終了せず、可能な機能を継続する。
+
+Recoverableな依存先障害は、依存先復旧後にService Restartなしで正常状態へ収束可能とする。
+RetryはFailureの性質に応じて変えられる構造とし、無意味なRetry Loopを前提としない。
+Shared State障害時の継続は9.7、Config / SecretsのRecovery・変更反映は第6章、
+Cacheの利用可否は第5章、System Timeの復旧は10.7に従う。
+ConfigのValidityと外部処理成功、Secretの明確な失敗と確認不能は引き続き分けて扱う。
+OS / HardwareがApplication自体を実行できない障害は、Application-level Recoveryの保証対象外とする。
+
+### 10.5 Recovery Escalationと初期目標
+
+影響範囲が最も小さいRecovery手段から使用する。
+
+| 障害 | Recoveryの責務・方針 |
+|---|---|
+| External Dependency Failure | Application Service自身によるRetry / Backoff |
+| Process Crash | OS / Service SupervisorによるProcess Restart |
+| Crash Loop | Restart頻度を抑制し、一定時間後に自動Recoveryを再試行する |
+| OS Hang | WatchdogによるSystem Reboot |
+
+Crash Loopによる永久停止を基本とせず、抑制後に再試行できる構造とする。
+Application ServiceのCrash Loopだけで無条件にSystem RebootへEscalationしない。
+例えばWeatherのみのCrash Loopで正常なDisplay / Scheduleまで巻き込む再起動を基本動作としない。
+
+以下は最終保証値ではなく、設計段階のInitial Targetである。
+Issue #4および障害注入試験・72時間連続試験等で実測し、
+UX、CPU・Network・External API負荷とのバランスを見て調整する。
+
+| 対象 | 計測起点・復旧到達点と初期目標 |
+|---|---|
+| Display Service Crash | CrashからBasic Screen再表示まで30秒以内 |
+| Backend Service Crash | CrashからServiceが処理可能になるまで30秒以内 |
+| Backend Functional Recovery | 必要なConfig / Cache / External Dependency等が利用可能な場合、Restart後1分以内 |
+| Network Temporary Failure | Networkが再び利用可能になってから1分以内に再取得処理を開始 |
+| External API Temporary Failure | APIが再び利用可能になってから5分以内に正常なデータ取得へ収束 |
+| Shared State Temporary Failure | Shared Stateが再び利用可能になってから1分以内にPublish / Readを再開 |
+| Config / Secret Correction | Validな変更が利用可能になってから1分以内にRecovery処理を開始・反映 |
+| OS Hang | Hang検知からBasic Screen再表示まで3分以内。Watchdog timeoutは60秒程度を検討値とする |
+| Power Loss | 停電中はRecovery Time保証対象外。電源復旧後は自動Bootし、通常のStartup / Recovery Flowへ入る |
+
+Crash Loop判定は「5分以内に3回程度」、Restart抑制後の再試行は「5〜15分程度」を検討値とし、確定しない。
+外部依存自体が利用不能な期間はDevice側で復旧時間を保証できないため、
+必要に応じて依存先が再び利用可能になった時点を起点とする。
+Service Recovery TimeとFunctional Recovery Timeに加え、
+可能なら利用者が機能停止を認識するVisible Impact Timeも実測する。
+
+この表はR-06の受け入れ条件（電源投入後2分以内の基本画面、アプリ異常終了後1分以内の基本画面復旧）を置き換えない。
+Displayの30秒は設計上の初期目標であり、R-09の72時間試験と合わせて検証する。
+具体的なSupervisor・抑制値・Watchdog実装や測定方法は第13章へ引き継ぐ。
+
+### 10.6 RecoveryによるFreshness退行の防止
+
+Recoveryによって既存のUsableなStateを不必要に古いStateへ退行させない。
+API取得後にPublished State更新は成功してもCache更新が失敗し、
+Cacheより新しいPublished Stateが残ることがある。
+この状態でBackendがRestartしても、古いCacheから無条件に再生成して新しいPublished Stateを上書きしない。
+
+Existing Published StateとRecovery Sourceが双方利用可能な場合は、
+既存のdataTimestamp / expiresAt / Usability等を評価して、より適切な情報を使用する。
+これは11.5のmetadataを利用する方針であり、全Stateへの新しい必須Schemaを追加するものではない。
+MVPではこの目的だけに複雑なRevision / Generation管理や厳密な同期機構を追加しない。
+Freshness比較・退行防止をBackend側、Shared State Store側、その他の更新制御方式のどこで実現するかは未決定とする。
+具体的な実現責務・Mechanismは、Shared State Storeの採用技術やConcurrent Updateの扱いと合わせ、Issue #4 / 詳細設計で決定する（第13章のA-09申し送り）。
+
+### 10.7 System Time Recovery
+
+System TimeがUnusableでも、自身が動作可能なServiceは停止させない。
+ただしClock / Date表示、TodayScheduleの日付判定、Cache / Published StateのexpiresAt評価、
+Weatherの日付・時刻依存処理等へ、誤った現在時刻を使用しない。
+
+System Timeが再びUsableになったら、Time-dependent StateのUsabilityと必要なStateを再評価し、
+必要に応じてReconstruction / Refreshを行って正常状態へ自動収束する。
+OS System Timeの利用境界、System Time / Monotonic Timeの使い分けは第12章に従い、
+独自の時刻同期・Time Adjustment Event機構は追加しない。
+
+### 10.8 Early Recoveryから最新データへの収束
+
+Early Recovery、Refresh、Convergenceを分けて考える。
+5.2に従い、Valid Cache等の利用可能なRecovery Sourceから提供可能な機能を早期復旧する。
+その再構築をExternal Acquisition完了まで不要に待たせず、外部依存が利用可能なら最新データ取得も速やかに開始する。
+
+取得成功後は最新データからPublished Stateを生成・更新すると同時に、Fallback用Cacheを更新し、
+Display側で必要なComponent Stateを再生成して表示を更新する。
+A-06に従い、Cache保存・再読出しやCache更新成功をPublished State更新の必須経路・条件にしない。
+
+最新取得に失敗しても、現在のStateがUsableな間は維持し、Retry / Backoffによる最新化を継続する。
+Recoveryを理由にExpired CacheやUnusable Published Stateを延命せず、Cache再利用でも元の鮮度期限を延長しない。
+既存metadataと通常の取得・更新フローを再利用し、
+最新性向上だけを目的とした複雑なState同期・競合制御はMVPへ導入しない。
 
 ---
 
@@ -1111,7 +1255,7 @@ Polling / Timer / Scheduler / Event通知等の具体的な時間変化検知方
 
 ## 13. 未決定事項・後続設計への申し送り
 
-A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07のTime / Date論理設計は第12章、A-08のConfig / Secrets論理設計は第6章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
+A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07のTime / Date論理設計は第12章、A-08のConfig / Secrets論理設計は第6章、A-09のStartup / Recoveryは第10章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
 
 - Component State / Display Runtime Stateの正式名称
 - Published State / Component Stateの具体Schema・型・serialization形式、metadataの必須／Optional
@@ -1169,5 +1313,16 @@ A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07�
 - 自動Secret Rotation、Secret History、複数世代管理
 - 高度なAudit Trail、Config Approval Workflow、Enterprise Secret Management
 - Configの多世代History / Undo
+
+### A-09からIssue #4・実機試験への申し送り
+
+- Service Supervisorの具体的選定・設定
+- Failureの性質に応じたRetry / Backoff Algorithm
+- Restart Rate Limit / Crash Loop判定・抑制後再試行の具体設定
+- Hardware / Software Watchdogの具体方式・timeout
+- State StoreのAtomicity、Concurrent Request / State更新競合への具体対策。10.6のFreshness比較・退行防止の実現責務（Backend / Shared State Store等）とMechanismを、採用技術・Concurrent Updateの扱いと合わせて決定する
+- Startup / Recoveryで早期復旧と速やかな外部取得を両立する具体的なConcurrency・非同期処理・Task管理
+- Recovery Event / Triggerの実装方式
+- Recovery Timeの実機測定方法・最終調整（Service / Functional Recovery、可能ならVisible Impactを測定）
 
 HTTP / DB / MQTT、framework、transaction実装等の採用は今回決定しない。
