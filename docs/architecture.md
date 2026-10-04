@@ -545,24 +545,75 @@ Secret Historyは原則保持せず、必要に応じActive / Pendingの最大2�
 
 ---
 
-## 7. Logging
+## 7. A-10：Logs / Monitoring
 
-Loggingは独立Logging Serviceとはせず、
-各Serviceが共通Logging Moduleを利用する。
+### 7.1 Observabilityの目的と観測対象
 
-各Serviceは自身で発生したイベント・エラー等のログを生成する。
+異常時に何が起きているか、どの責務・Layerに問題があるか、
+Process自身の障害・External Dependency Failure・Data Unavailableのどれか、
+User-visible Functionへどの程度影響するかを切り分けられるObservabilityを確保する。
 
-Logging Moduleは、
-ログの形式や保存等の共通処理を担当する。
+観測対象は論理的に以下の4層とする。
 
-ログにはServiceを識別できる情報を含め、
-Service単位・ログレベル等で調査できる構造を目指す。
+| Layer | 観測対象 |
+|---|---|
+| System / Hardware | CPU、Memory、Temperature、Disk、Network |
+| Process | Service Start / Stop、Crash、Restart、Crash Loop |
+| Function | External Dependency、Data Acquisition、Cache、Published State、Recovery |
+| User-visible | Displayが現在提供可能な機能・情報 |
 
-これによりログを統一的に管理しながら、
-Logging Serviceを全Serviceの共通依存先にすることを避ける。
+Process Running、Function Healthy、User-visible Function Availableは別の状態であり、
+Processの生死だけを正常性として扱わない。
 
-FutureではローカルログをCloudへ転送し、
-Web管理・監視等から確認できる構成への拡張を想定する。
+### 7.2 Logs / Metricsと状態の解釈
+
+Logsは「何が起きたか」を時系列で調査するために、
+MetricsはCPU・Memory・Temperature等の数値や傾向を観測するために利用する。
+
+HEALTHY / DEGRADED / FAILED等のSystem-wideな共通Health State / Health enumは作らない。
+各責務が実際の観測事実を保持・提供し、
+将来Management UI等が必要になった場合に、それらをHealth表示へ解釈できる構造とする。
+第11章のState Managementおよび10.3の責務ごとの状態管理を維持し、
+観測のために既存Stateを共通Health enumへ集約しない。
+
+### 7.3 Logging ResponsibilityとEventの重要度
+
+独立したLogging Serviceは設けず、各Serviceが自身のイベント・エラー等のLog Eventを生成する。
+Common Logging Moduleは形式・保存等の共通的なLogging処理を担当する。
+Logから発生元Serviceを識別可能とし、Service単位・Eventの重要度等で調査できる構造を目指す。
+Logging FailureによってCore Functionを不要に停止させない。
+
+Log Eventは少なくとも通常動作、Recovery可能な異常、Function提供へ影響する異常など、
+運用時に重要度を判別可能にする。
+DEBUG / INFO / WARN / ERROR等の具体的なLog Level体系はIssue #4で決定する。
+Log Level・保持期間等をSystem Configとして外部化するかは6.1の方針に従い、一律に要求しない。
+
+### 7.4 MonitoringとRecoveryの責務分離
+
+Monitoringは状態を観測して診断可能にする責務、
+RecoveryはRetry / Restart / Reboot等で障害から復旧する責務として分離する。
+Monitoring自身をRecovery Managerにはしない。
+Application / Supervisor / WatchdogのRecovery Layerは10.5に従い、
+本章で復旧処理の所有権やEscalation方針を変更しない。
+
+### 7.5 Observability自身のResource Consumption
+
+Logging / Monitoring自身が障害原因にならないよう、
+Storage・CPU・Memory等のDevice Resource消費を制限し、
+Core Functionへ重大な影響を与えないようにする。
+特にFailure時の大量LogによるStorage枯渇が、正常なServiceの停止へ波及することを避ける。
+
+Rotation、Retention、最大容量、圧縮、Rate Limit等の具体方式・値はIssue #4で決定する。
+R-09の実機測定方針と整合させ、この段階でCPU・Memory等の固定上限や警告Thresholdを追加しない。
+
+### 7.6 MVP / Futureの境界
+
+MVPはLocal Observabilityを対象とする。
+CloudへのLog / Metrics転送、Remote Dashboard、Alert、Heartbeat、
+Device Offline Detection等のCloud / Remote MonitoringはFutureとし、MVPでは実装しない。
+将来追加できるよう、観測情報を生成する責務と保存・転送方法を分離可能なBoundaryを維持する。
+R-09に従い、MVPで専用監視画面を必須とはしない。
+具体技術は第13章のA-10申し送りにまとめる。
 
 ---
 
@@ -1255,7 +1306,7 @@ Polling / Timer / Scheduler / Event通知等の具体的な時間変化検知方
 
 ## 13. 未決定事項・後続設計への申し送り
 
-A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07のTime / Date論理設計は第12章、A-08のConfig / Secrets論理設計は第6章、A-09のStartup / Recoveryは第10章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
+A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07のTime / Date論理設計は第12章、A-08のConfig / Secrets論理設計は第6章、A-09のStartup / Recoveryは第10章、A-10のLogs / Monitoringは第7章に反映した。以下の具体技術・詳細は後続のIssue #3設計またはIssue #4以降で扱う。
 
 - Component State / Display Runtime Stateの正式名称
 - Published State / Component Stateの具体Schema・型・serialization形式、metadataの必須／Optional
@@ -1324,5 +1375,14 @@ A-05の設計方針は第9〜11章、A-06のCache論理設計は第5章、A-07�
 - Startup / Recoveryで早期復旧と速やかな外部取得を両立する具体的なConcurrency・非同期処理・Task管理
 - Recovery Event / Triggerの実装方式
 - Recovery Timeの実機測定方法・最終調整（Service / Functional Recovery、可能ならVisible Impactを測定）
+
+### A-10からIssue #4への申し送り
+
+- Log保存方式・Log Format・具体的なLog Level体系
+- Rotation / Retention方式と値、Log最大容量・圧縮・Rate Limit
+- Metrics収集方式、CPU / Memory / Temperature / Disk / Network等の具体的取得方法
+- Monitoring周期・Threshold
+- Supervisorとの具体的な連携方法（A-09のSupervisor選定・設定と合わせて検討）
+- FutureのCloud転送 / Alert / Dashboard / Heartbeat / Device Offline Detection等の方式（MVP対象外）
 
 HTTP / DB / MQTT、framework、transaction実装等の採用は今回決定しない。

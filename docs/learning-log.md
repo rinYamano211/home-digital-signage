@@ -2472,3 +2472,417 @@ Startupを「完全な正常状態になるための特別なシーケンス」�
 - Recovery目標値はInitial Targetとして置き、障害注入試験・実測から調整する
 - RecoveryでもSystem TimeとMonotonic Timeを目的に応じて使い分ける
 - StartupとRuntime Recoveryで共通のRecovery原則を利用すると、例外的な処理を減らせる
+
+## 2026-10-04 Logs / Monitoring設計
+
+### 1. Processが動いていることと、機能が正常であることは同じではない
+
+Monitoringを考え始めると、最初はServiceが起動しているかを確認できればよいように思える。
+
+しかし実際には、
+
+```text
+Weather Service
+Process = Running
+
+Weather API
+= Failure
+
+Published State
+= Valid Cache由来で利用可能
+
+Weather表示
+= 継続可能
+```
+
+のような状態が存在する。
+
+逆にProcessがRunningでも、APIもCacheも利用できず、利用者へWeatherを提供できない場合もある。
+
+そのため、
+
+```text
+Process Running
+≠
+Function Healthy
+≠
+User-visible Function Available
+```
+
+として分けて考える必要がある。
+
+Monitoringでは単純なProcessの生死だけを見るのではなく、どのLayerで何が起きているかを観測できることが重要だと学んだ。
+
+---
+
+### 2. Observabilityでは「正常か異常か」より事実を残す
+
+当初は、
+
+```text
+HEALTHY
+DEGRADED
+FAILED
+```
+
+のような共通Health Stateを持つ方法も考えられると思った。
+
+しかし、実際の状態は単純な3段階では表現しにくい。
+
+例えば、
+
+- ProcessはRunning
+- External APIはUnavailable
+- CacheはUsable
+- Published StateはUsable
+- User-visible FunctionはAvailable
+
+という状態を`DEGRADED`だけで表すと、何が問題なのかという情報が失われる。
+
+そのため今回のMVPでは、共通Health Stateへ集約するのではなく、
+
+- Process状態
+- External Dependency状態
+- Data Acquisition結果
+- Cache / Published Stateの状態
+- Recovery状況
+- System / Hardware情報
+
+などの観測事実を扱う方針とした。
+
+必要になった場合に、それらの事実をManagement UI等でHealth表示へ変換できる。
+
+Observabilityでは、早い段階で抽象的な「正常 / 異常」にまとめるより、原因分析に必要な事実を失わないことが重要。
+
+---
+
+### 3. Logs / Metrics / Healthは目的が異なる
+
+Monitoringという言葉でまとめて考えていたが、観測情報にも役割の違いがある。
+
+Logsは、
+
+```text
+何が起きたか
+```
+
+を時系列で追跡するための情報。
+
+Metricsは、
+
+```text
+CPU使用率
+Memory使用量
+Temperature
+Disk使用量
+```
+
+のような数値や傾向を見るための情報。
+
+Healthは、それらの事実から、
+
+```text
+現在システムや機能をどう評価するか
+```
+
+という解釈に近い。
+
+これらを同じものとして扱う必要はない。
+
+特にMVPでは、専用Health管理機構を作らなくても、必要なLogs / Metrics / Stateを観測できれば原因調査は可能になる。
+
+目的を分けることで、必要以上に大きなMonitoring機構を作らずに済む。
+
+---
+
+### 4. Loggingの共通化とLogging Service化は別
+
+複数ServiceでLoggingを利用するため、Loggingを共通化したくなる。
+
+しかし、
+
+```text
+Display ─┐
+Weather ─┼→ Logging Service
+Schedule ─┘
+```
+
+のように独立Serviceへすると、そのLogging Service自体が新しいRuntime Dependencyや共通障害点になる。
+
+今回の構成では、
+
+```text
+各Service
+↓
+Common Logging Module
+```
+
+として、Logging処理は共通化するが独立Serviceにはしない。
+
+これは以前のService Boundary設計でも学んだ、
+
+> 共通化したいことと、共通Serviceとして独立実行したいことは別
+
+という考え方をLoggingにも適用したものになる。
+
+共通処理を見つけたときは、すぐService化するのではなく、実行時依存を増やす必要があるかを考える。
+
+---
+
+### 5. MonitoringとRecoveryを分けて考える
+
+Monitoringを設計していると、
+
+```text
+異常を検知
+↓
+自動Recovery
+```
+
+まで一つのMonitoring機能へ持たせたくなる。
+
+しかし、
+
+- Monitoring：何が起きているか観測・診断可能にする
+- Recovery：障害から正常状態へ戻す
+
+では責務が異なる。
+
+今回の設計ではRecoveryは既に、
+
+```text
+External Dependency Failure
+→ Application Retry / Backoff
+
+Process Crash
+→ Supervisor Restart
+
+OS Hang
+→ Watchdog Reboot
+```
+
+と整理している。
+
+そのためMonitoring側へ別のRecovery Managerを追加すると、誰がRecoveryを実行するのかが重複する。
+
+MonitoringはRecovery判断に必要な情報を観測可能にしても、Recoveryそのものを所有する必要はない。
+
+既に責務を持つ仕組みが存在する場合、新しい機能を検討するときにその責務を重複させないことが重要。
+
+---
+
+### 6. Logでは「何が起きたか」だけでなく重要度も判断できる必要がある
+
+同じFailureでも影響は異なる。
+
+例えば、
+
+```text
+API取得失敗
++
+Valid Cacheあり
+→ Function継続可能
+```
+
+と、
+
+```text
+API取得失敗
++
+Valid Cacheなし
+→ Function提供不可
+```
+
+では、運用上の重要度が違う。
+
+そのためLog Eventは、Eventの内容だけでなく、
+
+- 通常動作
+- Recovery可能な異常
+- Function提供へ影響する異常
+
+など、調査時に重要度を判断できる必要がある。
+
+一方で、この段階で`DEBUG / INFO / WARN / ERROR`という具体的なLevelまで固定する必要はない。
+
+Architectureでは、
+
+```text
+何を区別できなければならないか
+```
+
+を決め、
+
+```text
+どのLevel体系で実現するか
+```
+
+は技術選定で決める。
+
+論理要件と具体Mechanismを分けることで、Architecture段階での過剰設計を避けられる。
+
+---
+
+### 7. Observability自身もResourceを消費する
+
+LoggingやMonitoringはシステムを安定運用するための機能だが、それ自体も、
+
+- Storage
+- CPU
+- Memory
+
+を消費する。
+
+特にFailure時には、
+
+```text
+Failure発生
+↓
+大量のError Log
+↓
+Storage消費
+↓
+Disk Full
+↓
+正常なServiceまでFailure
+```
+
+という状態が起こり得る。
+
+つまりObservabilityは、作れば作るほど安全になるわけではない。
+
+Observability自身がCore Functionへ重大な影響を与えないよう、Resource Consumptionを制限する必要がある。
+
+Rotation、Retention、最大容量、圧縮、Rate Limit等はそのための具体的なMechanismになるが、今回のArchitectureでは方式や値までは決めず、
+
+> Observability自身を新しい障害原因にしない
+
+という性質を要求することにした。
+
+補助機能を設計するときも、その機能自身のFailure ModeやResource Consumptionを考える必要がある。
+
+---
+
+### 8. Local MonitoringとRemote Monitoringでは検知できる範囲が違う
+
+Raspberry Pi自身がLogsやMetricsを保持すれば、
+
+- Service Failure
+- API Failure
+- CPU / Memory異常
+- Temperature
+- Network状態
+
+などを調査できる。
+
+しかしDevice自体が完全に停止した場合、
+
+```text
+Device
+↓
+Monitoringも停止
+```
+
+するため、Device自身だけでは「自分がOfflineであること」を外部へ通知できない。
+
+Device Offline Detectionには、
+
+```text
+Device
+↓ Heartbeat
+External / Cloud Monitoring
+```
+
+のような外側の観測Layerが必要になる。
+
+これはStartup / Recovery設計で学んだ、
+
+> あるLayerの完全な停止は、そのLayer自身だけでは検知できない
+
+という考え方と同じ。
+
+ただし、必要だからといってMVPでCloud Monitoringまで実装する必要はない。
+
+今回のMVPではLocal Observabilityまでとし、Remote MonitoringはFutureとした。
+
+---
+
+### 9. FutureへのObservability拡張も先行実装ではなく境界で備える
+
+将来的には、
+
+- Cloud Log転送
+- Remote Dashboard
+- Alert
+- Heartbeat
+- Device Offline Detection
+
+などが必要になる可能性がある。
+
+しかし、そのためにMVPからCloud Monitoring基盤を構築すると、現在必要のない複雑さや外部依存が増える。
+
+そのため、
+
+```text
+観測情報を生成する責務
+        ↓
+保存・転送する仕組み
+```
+
+を分離可能にしておき、保存・転送先を将来変更できるBoundaryを残す。
+
+これによってMVPではLocalに利用し、必要になった時点でRemote Monitoringを追加できる。
+
+Futureへの拡張性は、
+
+> Future機能を先に実装することではなく、Futureで変わる部分との境界を作ること
+
+というこれまでの設計方針をObservabilityにも適用できる。
+
+---
+
+### 10. Monitoring設計では「何を使うか」より「何を知りたいか」を先に決める
+
+Monitoringを考えると、
+
+- Log Framework
+- Metrics Collector
+- Dashboard
+- Cloud Monitoring
+- Log Storage
+
+などの具体技術から検討しやすい。
+
+しかし、技術から入ると、その技術が提供する機能に設計が引っ張られる可能性がある。
+
+今回の検討では先に、
+
+```text
+障害発生
+↓
+何が分からなければ原因を切り分けられないか
+↓
+何を観測する必要があるか
+↓
+Logs / Metrics等の役割
+↓
+具体的な実現技術
+```
+
+という順番で考えた。
+
+その結果、Architectureでは、
+
+- 何を観測可能にするか
+- どの状態を区別するか
+- 誰が情報を生成するか
+- MonitoringとRecoveryをどう分離するか
+- Resource Consumptionをどう考えるか
+
+までを決め、具体的なLog保存方式、Level体系、Rotation、Metrics取得方法、Threshold等を技術選定へ送ることができた。
+
+Monitoringに限らず、
+
+> Architectureでは必要な性質と責務を先に決め、実現技術はその後に選ぶ
+
+という順序が重要だと学んだ。
