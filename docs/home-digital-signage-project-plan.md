@@ -45,7 +45,7 @@ Raspberry Piを実際のエッジデバイスとして利用し、Linux上でア
 
 ### 2.3 組み込み・クラウド技術を学ぶ
 
-Raspberry Pi側のソフトウェアとクラウド側のサービスを連携させ、エッジデバイスとクラウドが連携するシステムを構築する。
+MVPでは、予定・天気等の外部サービス/APIを利用するRaspberry Pi側のエッジシステムをまず完成させる。クラウド管理との連携はFutureとし、将来的な連携を通じてエッジとクラウドを組み合わせる技術も学習対象とする。
 
 ---
 
@@ -138,7 +138,8 @@ MVPでは以下の固定順で自動的に切り替える。
 新しいコンテンツを追加する際に、既存機能への影響を最小限にする。
 コンテンツ単位で独立して追加できる構造を目指し、将来の写真などのFutureコンテンツ追加を妨げないようにする。
 
-具体的なソフトウェア構造やインターフェースは、Issue #3のシステムアーキテクチャ設計で決定する。
+Logical Architecture上の責務境界・依存関係・Data Contract等はIssue #3で決定済みであり、[architecture.md](architecture.md)を正本とする。具体的な実現技術はIssue #4で選定する。
+拡張性は既存の責務境界によって確保し、Futureのためだけの機能や基盤をMVPへ先行導入しない。
 
 ---
 
@@ -213,11 +214,12 @@ MVPでは以下を実現する。
 | 本体 | Raspberry Pi 5 2GB |
 | 冷却 | Raspberry Pi 5 Official Active Cooler |
 | 本体電源 | Raspberry Pi 27W USB-C Power Supply |
+| RTC時刻維持 | Raspberry Pi公式 RTC Backup Battery |
 | ディスプレイ | 10.1インチ、1280×800、IPS、500cd/m²、Mini HDMI入力、USB-C 5V/2A給電 |
 | 給電構成 | Raspberry Piとディスプレイは独立給電 |
 | ストレージ | SanDisk High Endurance 64GB microSD |
 
-記録済みの電子部品・配線関係の合計は **41,387円**。個別の価格・購入状況は[ハードウェア検討](hardware.md)で管理する。
+記録済みの電子部品・配線関係の合計は **41,387円**。価格未確定のRTC Backup Batteryは含まない。RTC Backup Batteryは製品選定済み・購入状態未確認とし、個別の価格・購入状況は[ハードウェア検討](hardware.md)で管理する。
 
 ### 外装と予算方針
 
@@ -324,7 +326,8 @@ Merge
 - [ ] 開発環境構築（Issue #6）
 
 「開発ルール決定」は、基本的な開発方針・進め方の決定を指し、詳細なコーディング規約をすべて確定したという意味ではない。
-MVP要件定義（Issue #2）は完了。アーキテクチャ・技術スタック・UIはIssue #3/#4/#5で具体化する。
+MVP要件定義（Issue #2）とLogical Architecture（Issue #3）は完了。正本はそれぞれ[requirements.md](requirements.md)、[architecture.md](architecture.md)とする。
+具体技術・実現方式の選定（Issue #4）と具体的なUI・レイアウト設計（Issue #5）は未完了。実装後、Issue #13でMVPの実機受入確認を行う。
 
 ### Phase 1：Raspberry Piサイネージ（MVP）
 
@@ -350,6 +353,8 @@ MVP要件定義（Issue #2）は完了。アーキテクチャ・技術スタッ
 
 Phase 1・2の実装後、Issue #13で結合・視認性・異常時動作・長時間稼働を含むMVP v0.1の受入確認を行う。
 専用外装・壁掛けはv1.0で扱い、以降のFutureフェーズと区別する。
+
+Phase 3〜6は現時点のFuture候補であり、実装自体や記載順による優先順位を確定したロードマップではない。MVP完成後、実利用から得た要求・学習目的・必要性に基づいて再評価する。Futureのためだけの機能・技術・基盤をMVPへ先行導入しない。Phase 7の継続運用・改善は、これらのFuture機能の実装完了を前提としない。
 
 ### Phase 3：写真サイネージ（Future）
 
@@ -495,12 +500,11 @@ MVPで必要なログ・状態確認・長時間稼働の検証を基礎に、�
 
 ## 14. 今後決定する事項
 
-MVP要件定義はIssue #2で完了した。決定済みのハードウェア・予算方針、リポジトリ構成やIssue / Milestone / Sprint運用・AI駆動開発の基本方針を前提に、以下を詳細化する。
+MVP要件定義（Issue #2）とLogical Architecture（Issue #3）は完了済み。詳細は[requirements.md](requirements.md)と[architecture.md](architecture.md)を正本とする。決定済みのハードウェア・予算方針と開発・運用の基本方針を前提に、以下を具体化する。
 
 | 対象 | 後続で決定・詳細化する事項 |
 |---|---|
-| Issue #3：システムアーキテクチャ | Raspberry Pi側の構成、設定・状態・キャッシュ等のデータ構造、コンテンツ管理構造、自動起動・復旧・監視、時刻同期・タイムゾーンの実現方式 |
-| Issue #4：技術選定 | 技術スタック、天気等の外部サービス/API、予定連携サービス、設計を実現する技術 |
+| Issue #4：技術選定 | 外部サービス/API・予定連携サービス、Display Runtime、Shared State Store、Cache / Config保存、Supervisor・Retry / Backoff、Logging / Metrics、Data Schema / Serialization、RTC・OS・時刻同期の具体方式・設定等。詳細はarchitecture.md 第15章に従う |
 | Issue #5：UI設計 | MVP画面の具体的な表示・レイアウトと視認性 |
 | v1.0 | 専用外装・壁掛け構造 |
 | Future | クラウド構成、Raspberry Piとクラウド間の通信方式、Web管理画面 |
@@ -517,7 +521,7 @@ MVPのDefinition of Doneは[要件定義](requirements.md)で管理し、Issue #
 
 クラウド管理、スマートフォン/PCからの管理、写真、ニュース、株価、利用者によるレイアウト・コンテンツ・切り替え設定の変更はMVP対象外のFutureとする。
 
-まずRaspberry Pi上で動作する「使えるサイネージ」を完成させ、その後クラウド管理・Web管理機能等を追加する。
+まずRaspberry Pi上で動作する「使えるサイネージ」を完成させ、その後のクラウド管理・Web管理機能等は、実利用から得た要求や必要性に応じて追加を検討する。
 
 詳細なMVP要件と受入条件は[要件定義](requirements.md)および[Issue #13](https://github.com/rinYamano211/home-digital-signage/issues/13)を参照する。Issue #13はMVP v0.1の受入確認として扱う。
 

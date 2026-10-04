@@ -764,84 +764,7 @@ CPU使用率やメモリ使用量などは、
 根拠のない数値を無理に決めないことの
 両方が重要。
 
-## 2026-09-15：システムアーキテクチャ設計
-
-### 1. 責務を分けることとService化は別
-
-機能ごとに責務を分離して考えることは重要だが、
-責務が異なるからといって、すべてを独立Serviceにする必要はない。
-
-Serviceとして分離するかは、責務の違いだけでなく、
-
-- 変更理由が異なるか
-- 外部依存が異なるか
-- 障害を分離する意味があるか
-- 独立して起動・停止する意味があるか
-
-などを考慮して判断する。
-
-責務は分けたいが独立実行するメリットが小さい場合は、
-Service内部のModuleとして分離する方法もある。
-
----
-
-### 2. Serviceを分けると新しい障害点も生まれる
-
-Serviceを独立させると障害を局所化できる一方で、
-Service間の通信や依存関係が増え、新しい障害点を作ることにもなる。
-
-独立Serviceを追加するときは、
-「このServiceが停止した場合、依存するServiceはどうなるか」
-まで考える必要がある。
-
-障害を分離するためのService化によって、
-逆にシステム全体の可用性を下げないようにする。
-
----
-
-### 3. 共通化と共通Service化は別
-
-複数Serviceで同じ処理を利用したい場合でも、
-必ずしも共通Serviceを作る必要はない。
-
-共通Serviceにすると再利用しやすい反面、
-すべてのServiceが依存する共通障害点になる可能性がある。
-
-独立した実行単位にする必要がなければ、
-共通ModuleやLibraryとして再利用することで、
-Serviceの独立性を保ちながら処理を共通化できる。
-
----
-
-### 4. 既存の仕組みが持つ責務を重複して作らない
-
-独立した機能に見えても、
-OSや既存の基盤がすでにその責務を提供している場合がある。
-
-新しいServiceを作る前に、
-既存の仕組みで要件を満たせないか確認する。
-
-不要なServiceを追加すると、
-構成が複雑になるだけでなく、
-本来存在しなかった依存関係や障害点を増やす可能性がある。
-
----
-
-### 5. Futureへの備えは先行実装ではなく境界を作る
-
-将来必要になる機能を、
-MVPの段階ですべて実装しておく必要はない。
-
-将来変更される可能性が高い部分について、
-現在の実装と変更される部分の境界を分離しておくことで、
-後から機能を追加・交換しやすくできる。
-
-Futureを考慮する際は、
-「今から何を実装するか」だけでなく、
-「将来どこが変わる可能性があり、その変更をどこで吸収するか」
-を考えることが重要。
-
-## 2026-09-16 システムアーキテクチャ設計
+## 2026-09-15〜16 システムアーキテクチャ設計
 
 ### 1. 責務を分けることとService化は別
 
@@ -1197,6 +1120,32 @@ Backend
 共有Stateを利用する場合でも、
 読み書きできる場所を無制限に増やさず、
 Stateの所有者と更新方向を明確にすることが重要。
+
+## Issue #3 Cache設計から得た学び
+
+### Cacheは通常時のSource of Truthとは限らない
+
+Cacheを設計するときは、保存先や読出し方法に目が向きやすい。
+しかし今回の検討では、まず「何のために保持するStateなのか」を分ける必要があると分かった。
+
+外部から最新情報を取得するシステムでは、次のように役割を分けて考えられる。
+
+- External Data Source：通常時に最新情報を得るSource of Truth。
+- Cache：外部取得失敗時やStartup / Recovery時に利用するFallback / Recovery Source。
+
+この役割分担なら、正常に取得できた最新データを利用するために、必ずCacheへ保存して読み直す必要はない。
+API取得には成功してもCache保存だけ失敗する場合があるため、Cacheが常に最も新しいStateだとも仮定できない。
+補助的な保存処理の失敗と、最新情報を提供できるかどうかは分けて考える。
+
+また、Cacheが存在していても、現在利用してよいかはValidity / Freshnessの評価が必要になる。
+これはStartup / Recovery章の「State Exists ≠ State Usable」と同じ観点である。
+
+特に、**Cacheから読み直したことは、情報そのものが新しくなったことを意味しない**。
+CacheからPublished State等を再生成する際も、元データのFreshness / Expirationを延長しない。
+保存・読込時刻だけで鮮度を決めず、「いつのデータで、いつまで利用可能か」というSource Data側の意味を維持することが重要になる。
+
+今回の設計では、CacheをFallback / Recovery用の補助データとして扱い、再利用によって古い情報が延命されないようにした。
+他の設計でも、保持目的、最新情報の取得元、利用可能期間を先に整理すると、保存処理とデータ提供の責務を混同しにくくなる。
 
 ## 2026-09-23 Time / Date設計
 
@@ -2597,35 +2546,9 @@ Healthは、それらの事実から、
 
 ### 4. Loggingの共通化とLogging Service化は別
 
-複数ServiceでLoggingを利用するため、Loggingを共通化したくなる。
-
-しかし、
-
-```text
-Display ─┐
-Weather ─┼→ Logging Service
-Schedule ─┘
-```
-
-のように独立Serviceへすると、そのLogging Service自体が新しいRuntime Dependencyや共通障害点になる。
-
-今回の構成では、
-
-```text
-各Service
-↓
-Common Logging Module
-```
-
-として、Logging処理は共通化するが独立Serviceにはしない。
-
-これは以前のService Boundary設計でも学んだ、
-
-> 共通化したいことと、共通Serviceとして独立実行したいことは別
-
-という考え方をLoggingにも適用したものになる。
-
-共通処理を見つけたときは、すぐService化するのではなく、実行時依存を増やす必要があるかを考える。
+システムアーキテクチャ設計で得た「共通化と共通Service化は別」という原則を、Loggingにも適用した。
+今回は各ServiceがLog Eventを生成し、共通処理をCommon Logging Moduleで再利用することで、Logging専用Serviceへの実行時依存を増やさない構成とした。
+Loggingの共通化でも、処理の再利用と新たな共通障害点を作ることを分けて判断できる。
 
 ---
 
@@ -2765,79 +2688,23 @@ Rotation、Retention、最大容量、圧縮、Rate Limit等はそのための�
 
 ### 8. Local MonitoringとRemote Monitoringでは検知できる範囲が違う
 
-Raspberry Pi自身がLogsやMetricsを保持すれば、
+Raspberry Pi上のLogs / Metricsからは、Service・APIの障害やCPU・Memory・Temperature・Networkの状態を調査できる。
+一方、Device自体が完全に停止するとLocal Monitoringも停止し、Device自身からOfflineを通知できない。
+これはStartup / Recovery章で得た「あるLayerの完全な停止は、そのLayer自身だけでは検知できない」という原則の適用になる。
 
-- Service Failure
-- API Failure
-- CPU / Memory異常
-- Temperature
-- Network状態
-
-などを調査できる。
-
-しかしDevice自体が完全に停止した場合、
-
-```text
-Device
-↓
-Monitoringも停止
-```
-
-するため、Device自身だけでは「自分がOfflineであること」を外部へ通知できない。
-
-Device Offline Detectionには、
-
-```text
-Device
-↓ Heartbeat
-External / Cloud Monitoring
-```
-
-のような外側の観測Layerが必要になる。
-
-これはStartup / Recovery設計で学んだ、
-
-> あるLayerの完全な停止は、そのLayer自身だけでは検知できない
-
-という考え方と同じ。
-
-ただし、必要だからといってMVPでCloud Monitoringまで実装する必要はない。
-
-今回のMVPではLocal Observabilityまでとし、Remote MonitoringはFutureとした。
+Device Offline Detectionを行うなら、例えばHeartbeatを外部から確認するなど、Deviceの外側の観測Layerが必要になる。
+ただし、その観測範囲が必要かどうかと、今実装するかどうかは別の判断である。
+今回はMVPをLocal Observabilityに絞り、Remote MonitoringはFutureとした。
+監視を設計する際は、観測できる障害と、その監視自体が停止して観測できなくなる障害を区別することが重要だと学んだ。
 
 ---
 
 ### 9. FutureへのObservability拡張も先行実装ではなく境界で備える
 
-将来的には、
-
-- Cloud Log転送
-- Remote Dashboard
-- Alert
-- Heartbeat
-- Device Offline Detection
-
-などが必要になる可能性がある。
-
-しかし、そのためにMVPからCloud Monitoring基盤を構築すると、現在必要のない複雑さや外部依存が増える。
-
-そのため、
-
-```text
-観測情報を生成する責務
-        ↓
-保存・転送する仕組み
-```
-
-を分離可能にしておき、保存・転送先を将来変更できるBoundaryを残す。
-
-これによってMVPではLocalに利用し、必要になった時点でRemote Monitoringを追加できる。
-
-Futureへの拡張性は、
-
-> Future機能を先に実装することではなく、Futureで変わる部分との境界を作ること
-
-というこれまでの設計方針をObservabilityにも適用できる。
+将来のCloud Log転送、Remote Dashboard、Alert、Heartbeat、Device Offline Detectionへの備えにも、既出の「先行実装ではなく境界を作る」という原則を適用した。
+Observabilityでは、観測情報を生成する責務と、その保存・転送を担う仕組みを分離可能にすることが、その境界になる。
+MVPではLocalに利用し、Remote Monitoringが必要になった時点で保存・転送先を拡張する。
+将来のためだけにCloud Monitoring基盤を導入せず、変更される部分を見極めて備えることができる。
 
 ---
 
