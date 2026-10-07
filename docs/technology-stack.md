@@ -4,7 +4,7 @@
 
 Raspberry Pi 5を使用する家庭用デジタルサイネージ（Home Digital Signage）の、Issue #4「[Research] 技術スタックを選定する」における技術の選定結果を記録する。
 
-今回記録するのは、確定済みの **Frontend開発・Build環境：React + TypeScript + Vite** のみである。Issue #4全体の技術選定完了を意味しない。
+本書では、確定済みの **Frontend開発・Build環境：React + TypeScript + Vite**、**Development PCでのProduction Build**、**scp + Release Directory + symbolic linkによるDeploy**を記録する。Issue #4全体の技術選定完了を意味しない。
 
 Issue #1〜#3の確定事項・関連文書を正本として扱う。Architectureはarchitecture.mdに従う。採用技術、比較済みの選択肢、判断理由と未決定事項を分けて記録する。
 
@@ -192,15 +192,25 @@ Lint → Type Check → Test → Build
 
 ## 7. Production Runtimeとの境界
 
-今回確定する範囲は、**Source → Build → dist/** までである。
+Frontend開発・Build用ツールの選定に加え、MVPでは**Development PCでProduction Buildを実行し、scp + Release Directory + symbolic linkでRaspberry PiへDeployする**ことを確定した。
+Production Serving方式とReact UIの接続方法は後続の技術選定で検討する。
 
 ```text
-【今回の選定範囲】
-Source → Vite Build → dist/
-
-【後続の技術選定】
-dist/ → Deploy → Production Serving → Chromium Kiosk
+Development PC
+  React + TypeScriptのソース
+    ↓ Vite Build
+  dist/
+    ↓ Deploy（scp / SSH）
+Raspberry Pi
+  新しいRelease Directoryへ転送
+    ↓ 転送完了後にcurrent symbolic linkを切替
+  Production Serving（方式は未決定）
+    ↓
+  Chromium Kiosk
 ```
+
+BuildはProduction Piの必須作業とせず、Build環境とProduction Runtimeを分離する。
+選定理由と比較結果は第8・9章に示す。
 
 Chromium Kioskは確定済みのDisplay Runtimeである。
 ReactのUI実行とViteの開発・Build処理を区別する。ProductionではBuild済みJavaScriptがBrowser上で動作する。Vite Development ServerをProduction Serving方式として決定しない。
@@ -223,16 +233,132 @@ Browser上のReact UIとDisplay ServiceのPublished State取得部分をどの�
 
 ---
 
-## 8. 今後の検討事項
+## 8. Frontend Build実行場所
 
-Production側は以下の順序で後続の技術選定を進める。
+### 8.1 選定結果
 
-1. **Build実行場所**：Development PC / Raspberry Pi / CI。
-2. **Deploy方法**：生成した`dist/`をRaspberry Piへどう配置・更新するか。
-3. **Production Serving方式**：`file://` / Local HTTP Server / その他。
-4. **接続方法**：React UIとDisplay ServiceのPublished State取得部分の接続。Published State取得 → Component State生成 → Display Componentの責務境界を維持する。
+**MVPでは、FrontendのProduction BuildをDevelopment PCで実行する。**
+React + TypeScriptのソースからVite Buildで`dist/`を生成し、成果物をRaspberry PiへDeployする。
 
-そのほか、バージョン、具体的な型・Schema、Type Check / Linter / Formatter / Test用ツール、CI構成は今回未決定とする。Issue #4の他領域の技術選定も本書の対象外である。
+### 8.2 選定理由
+
+- Raspberry Pi 5 2GBへ不要なBuild負荷をかけず、Production環境としての責務に集中させる。
+- Node.js / npm / TypeScript / Vite等のBuild環境をProduction Piへ必須化せず、Build環境とProduction Runtimeを分離する。
+- Development PCでのBuildは、開発中の試行錯誤が容易である。
+- MVPでCI/CDを先行導入して構成を複雑化しない。
+- 将来的なCI Buildへの移行を妨げない。
+
+### 8.3 比較した選択肢
+
+| 比較対象 | 判断・理由 |
+|---|---|
+| Development PC Build | 採用。PiへのBuild負荷を避け、開発中の試行錯誤を容易にする |
+| Raspberry Pi Build | 非採用。PiへのBuild負荷、Build環境のProductionへの持ち込み、責務の混在を避ける |
+| CI Build | Futureでは有力な候補。MVPではCI Workflow、Artifact、Secrets、Deploy認証等の検討事項が増えるため採用しない |
+
+### 8.4 Futureとの境界
+
+FutureではDevelopment PC BuildからCI Buildへの移行を検討する。
+Build主体が変わっても、以下の成果物・Deployの境界を維持する。
+
+```text
+Build
+  ↓
+dist/
+  ↓ Deploy
+Raspberry Pi
+```
+
+CI/CDの具体的な構成は本選定では固定しない。
+
+---
+
+## 9. Raspberry PiへのDeploy方式
+
+### 9.1 選定結果
+
+**MVPでは、scp + Release Directory + symbolic linkを採用する。**
+
+Development PCで生成した`dist/`を、SSH経由の`scp`でRaspberry Pi上の新しいRelease Directoryへ転送する。
+転送完了後、Productionが参照する`current` symbolic linkを新Releaseへ切り替える。
+Productionが参照しているDirectoryへ直接上書きしない。
+
+以下は配置と切替の概念例であり、`/opt/signage/`やRelease名を実装上の確定値とするものではない。
+
+```text
+Raspberry Pi
+/opt/signage/
+├── releases/
+│   ├── release-A/  ← 現在のRelease
+│   └── release-B/  ← 新しいdist/の転送先
+└── current ──────→ releases/release-A/
+
+転送完了後：currentの参照先をreleases/release-B/へ切替
+```
+
+### 9.2 選定理由
+
+- Production Directoryへの直接上書きを避け、Deploy途中の不完全な成果物が表示対象になるリスクを抑える。
+- 転送失敗時も既存Releaseを維持しやすい。
+- 旧Releaseを保持することでRollback可能な構成にできる。
+- Pi側でBuildする必要がない。
+- DockerやBlue-Green Deploymentほど大きな構成をMVPへ持ち込まず、安全性を高められる。
+- SSH / filesystem / symbolic link / permission / atomicな切替 / rollback等、Linux運用の学習につながる。
+- FutureでCI/CDへ移行した場合も、同じDeploy境界を再利用しやすい。
+
+### 9.3 転送方法の比較
+
+| 比較対象 | 判断・理由 |
+|---|---|
+| scp | 採用。シンプルでMVP向き |
+| rsync + SSH | 差分同期や不要ファイル削除に優れるが、Release Directory方式を採用する今回のMVPではscpで十分と判断 |
+| Git pull | 非採用。ソース管理とBuild成果物のDeploy責務が混ざりやすく、Pi Buildへ戻る可能性がある |
+| SFTP | 手動操作中心になりやすく、自動化・CI/CDへの発展性で劣るため今回は採用しない |
+| tar/zip + scp | Artifact単位で扱えるが、今回の規模では追加手順に対するメリットが小さいため採用しない |
+| CI/CDから直接Deploy | Future候補。MVPでは先行導入しない |
+
+### 9.4 安全な切替方式の比較
+
+以下の方式を比較した。
+
+- Production Directoryへの直接上書き。
+- Temporary Directoryからの切替。
+- Release Directory + symbolic link。
+- Blue-Green Deployment。
+- Container/Image単位のDeploy。
+- A/B・Canary Deployment。
+
+1台のRaspberry Piによる家庭用サイネージでは、**Release Directory + symbolic link**が安全性と構成の単純さのバランスに優れると判断した。
+atomicな切替やRollbackの具体的な実装は、後続の実装設計で扱う。
+
+---
+
+## 10. 今後の検討事項
+
+次の技術選定は、以下の順序で進める。
+
+1. **Production Serving方式**：`file://` / Local HTTP Server / その他。
+2. **接続方法**：React UIとDisplay ServiceのPublished State取得部分の接続。Published State取得 → Component State生成 → Display Componentの責務境界を維持する。
+
+Build実行場所とDeploy方式は第8・9章で確定済みとし、未決定事項から外す。
+Raspberry Pi実機上のRuntime・起動方式・Service間通信等の具体化は、既存Architectureに従って後続の検討で扱う。
+
+### 10.1 Build・Deployの実装詳細
+
+以下は今回固定しない。
+
+- Release Directoryの具体的なパス。
+- Release名の方式（日時・Git commit hash等）。
+- 旧Releaseの保持世代数。
+- Deploy Scriptの具体的実装。
+- symbolic link切替の具体的コマンド。
+- Deploy後のChromium Reload方法。
+- SSH Key等の認証方式。
+- CI/CDの具体的構成。
+
+### 10.2 その他の未決定事項
+
+バージョン、具体的な型・Schema、Type Check / Linter / Formatter / Test用ツールは未決定とする。Issue #4の他領域の技術選定も本書の対象外である。
 
 Future機能や追加ライブラリを、本選定に付随して設計・実装しない。
 Issue #4のClose前には、文書・Issue間の整合性を確認する。
