@@ -235,6 +235,7 @@ Published Stateには表示データに加え、
 データ本体と、利用可能性・鮮度・取得結果等の判断材料を提供する。
 異なる意味の時刻を単一のupdatedAtへまとめず、必要なmetadataを区別する（7.8）。
 具体Schemaやstatusの値はIssue #4・詳細設計で決定する。
+Issue #4で確定したPublished Stateの共通Metadata、Cache由来の識別、および表示用API Responseの具体的な契約は、[技術スタック選定 第10章](technology-stack.md#10-published-state-apiのdata-contract)を参照する。
 
 データの有効期限そのものは、
 そのデータの意味を理解しているBackend Serviceが決定する。

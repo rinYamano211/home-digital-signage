@@ -470,7 +470,7 @@ type PublishedStateMetadata = {
 | `lastAttemptAt` | `string \| null` | 最後に完了した外部取得試行の開始時刻 |
 | `lastAttemptResult` | `"success" \| "failure" \| null` | 上記取得試行の結果 |
 | `publishedAt` | `string` | Published StateのSnapshot生成時刻 |
-| `dataSource` | `"externalApi" \| "cache" \| null` | API Responseで提供するデータの供給経路 |
+| `dataSource` | `"externalApi" \| "cache" \| null` | 保存Snapshotでは生成時に採用した供給経路、表示用API Responseでは現在提供するデータの供給経路 |
 
 日時はRFC 3339形式のUTCとする。`publishedAt`はStoreへの書込み完了時刻ではなく、Snapshot生成時刻を表す。
 
@@ -478,13 +478,13 @@ type PublishedStateMetadata = {
 
 #### dataSourceと保存Snapshot・表示用APIの区別
 
-`dataSource`はSnapshot生成時に採用したデータの供給経路を表す。
+保存Published StateのSnapshotでは、`dataSource`はSnapshot生成時に採用したデータの供給経路を表す。期限切れデータが内部に残っている場合も、元の供給経路を保持できる。
 
 - `externalApi`：外部APIから取得したデータを使用。
 - `cache`：Backend Cacheから読み出したデータを使用。
 - `null`：表示用APIで提供するデータが存在しない。
 
-保存Snapshotでは最後に生成した際の供給経路を保持できる。一方、表示用APIでは期限切れデータを除外するときに`dataSource`も`null`へ変換する（10.8）。
+表示用API Responseでは、`dataSource`は現在APIで提供するデータの供給経路を表す。期限切れで`data: null`へ変換するときは、`dataSource`も`null`へ変換する（10.8）。
 `dataSource`と`lastAttemptResult`は独立した情報である。最後の外部取得が失敗していても、有効Cacheからデータを提供できる。取得結果だけでCache由来を判定しない。
 
 ### 10.5 外部データ取得時の更新ルール
@@ -512,6 +512,8 @@ Cacheから既存データを読み出しただけの場合は、`dataUpdatedAt`
 - `data === null`でも、`dataUpdatedAt`と`expiresAt`が非`null`の場合がある。期限切れデータをResponseから除外しても取得履歴は維持する。
 - 一度も正常取得していない場合、`dataUpdatedAt`と`expiresAt`は両方`null`。
 - 正常取得履歴がある場合、`dataUpdatedAt`と`expiresAt`は両方非`null`。
+- `data !== null`の場合、`dataUpdatedAt`と`expiresAt`は両方非`null`。
+- 表示用API Response生成時点で`data !== null`の場合、`now < expiresAt`が成立する。
 - `lastAttemptAt`と`lastAttemptResult`は両方`null`、または両方非`null`。
 - API Responseに含まれるPublished Stateの`publishedAt`は非`null`。
 - `data === null`なら`dataSource === null`。
