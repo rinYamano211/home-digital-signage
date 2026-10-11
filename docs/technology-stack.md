@@ -4,7 +4,7 @@
 
 Raspberry Pi 5を使用する家庭用デジタルサイネージ（Home Digital Signage）の、Issue #4「[Research] 技術スタックを選定する」における技術の選定結果を記録する。
 
-本書では、確定済みの **Frontend開発・Build環境：React + TypeScript + Vite**、**Development PCでのProduction Build**、**scp + Release Directory + symbolic linkによるDeploy**を記録する。Issue #4全体の技術選定完了を意味しない。
+本書では、Frontend開発・Build環境、Build・Deploy方式に加え、nginxによるProduction Serving・Reverse Proxy、HTTP Polling、Published State APIの契約を記録する。確定事項・暫定採用・検討中の案は各節で区別する。Issue #4全体の技術選定完了を意味しない。
 
 Issue #1〜#3の確定事項・関連文書を正本として扱う。Architectureはarchitecture.mdに従う。採用技術、比較済みの選択肢、判断理由と未決定事項を分けて記録する。
 
@@ -88,7 +88,7 @@ TypeScriptはType SafetyとData Contractの明確化を担う。
 Published State、Component State、Metadata、Config、Data Contractを型として明示し、Architecture上の契約を実装で扱いやすくする。
 
 今回の用途ではJavaScriptを単独採用する明確なメリットがないと判断し、TypeScriptを採用する。
-具体的なSchema、Interface、型定義は本選定では固定しない。
+Published Stateの共通構造・Metadataは第10章に選定状況を記録する。その他の具体Schema・Interface・型定義は未決定とする。
 
 TypeScriptのソースはBuildによってJavaScriptへ変換される。Production環境のRaspberry Pi上でTypeScript Compilerを常時実行する構成を意味しない。
 
@@ -160,7 +160,7 @@ Frontendと開発・Build用ツールについて、以下の選択肢を比較�
 | Create React App | 過去の代表的なReact環境として比較。今回の新規プロジェクトで積極的に採用する理由がないため非採用 |
 
 Next.jsの機能数ではなく、今回の要件に対する必要十分性で判断する。
-Public Web Serverが不要という判断は、Production ServingにLocal HTTP Serverを採用しないという決定ではない。Serving方式は未決定である。
+Public Web Serverが不要という判断とローカルのHTTP配信は別である。Production Servingにはnginxを採用する（7.1）。
 
 ---
 
@@ -190,46 +190,106 @@ Lint → Type Check → Test → Build
 
 ---
 
-## 7. Production Runtimeとの境界
+## 7. Production ServingとPublished State取得
 
-Frontend開発・Build用ツールの選定に加え、MVPでは**Development PCでProduction Buildを実行し、scp + Release Directory + symbolic linkでRaspberry PiへDeployする**ことを確定した。
-Production Serving方式とReact UIの接続方法は後続の技術選定で検討する。
+### 7.1 Production Serving
+
+**確定事項**
+
+- Production Servingに`nginx`を採用する。
+- Development PCでViteによるProduction Buildを実行する。
+- Build成果物の`dist/`をRaspberry PiへDeployする。
+- Raspberry Pi上のnginxが静的ファイルをHTTP配信する。
+- Chromium KioskがnginxからReact UIを取得・表示する。
+- Production環境でVite Development Serverを常時稼働させない。
+
+既存のBuild・Deploy方式（第8・9章）は維持する。
 
 ```text
 Development PC
-  React + TypeScriptのソース
-    ↓ Vite Build
+  React + TypeScript + Vite
+    ↓ Production Build
   dist/
-    ↓ Deploy（scp / SSH）
+    ↓ scp
 Raspberry Pi
-  新しいRelease Directoryへ転送
-    ↓ 転送完了後にcurrent symbolic linkを切替
-  Production Serving（方式は未決定）
-    ↓
+  Release Directory
+    ↓ current symbolic link
+  nginx
+    ↓ HTTP
   Chromium Kiosk
 ```
 
-BuildはProduction Piの必須作業とせず、Build環境とProduction Runtimeを分離する。
-選定理由と比較結果は第8・9章に示す。
+nginxの具体的な設定、Listen Port、Directory Path等は未決定とする。
 
-Chromium Kioskは確定済みのDisplay Runtimeである。
-ReactのUI実行とViteの開発・Build処理を区別する。ProductionではBuild済みJavaScriptがBrowser上で動作する。Vite Development ServerをProduction Serving方式として決定しない。
+### 7.2 React UIとPublished State APIの接続
 
-Node.jsの開発ツール実行用途は確定しているが、これによってProduction側のNode.js利用要否やDisplay Serviceの実行構造は確定しない。
+**確定事項**
 
-また、次の論理上の責務を維持する。
+- nginxのReverse Proxyを利用する。
+- React UIは同一OriginのHTTP APIからPublished Stateを取得する。
+- nginxはAPI RequestをRaspberry Pi上のローカルなAPI提供処理へ転送する。
+- React UIからShared State Storeの内部実装を直接参照しない。
+- API提供処理はShared State StoreからPublished Stateを読み取り、API Responseへ変換する。
+- Shared State Storeの内部構造とAPI ResponseのData Contractを分離する。
+- Display ComponentはPublished State取得処理を直接担当せず、Component State生成の責務を介して表示する。
+
+概念図：
 
 ```text
-Shared State Store
-  ↓ Display側Published State取得
+React UI（Chromium Kiosk） → nginx → API提供処理：HTTP Request
+React UI（Chromium Kiosk） ← nginx ← API提供処理：HTTP Response
+API提供処理 → Shared State Store：Published StateのRead
+Weather Service / Schedule Service → Shared State Store：Published State公開
+
+React UIのPublished State取得処理
+    ↓ 取得したPublished State
 Component State生成
-  ↓
-ReactによるDisplay ComponentのRendering
+    ↓
+Display Component
 ```
 
-Browser / ReactからShared State Storeへ直接アクセスする構成は、本書では定めない。
-Browser上のReact UIとDisplay ServiceのPublished State取得部分をどのように接続するかは、後続の技術選定で検討する。
-上記の図は論理上の責務境界を示し、プロセス分割・API・通信方式を指定しない。
+図は概念的な責務と通信経路を示すものとし、具体的なプロセス分割、API Serverの技術、Port番号は確定させない。
+
+`/api/...`はパスの例であり、具体的なEndpointは未決定。
+
+API提供処理のためだけに新しい独立Serviceを追加することは、現時点では決定していない。
+
+### 7.3 Published Stateの取得方式
+
+**確定事項**
+
+React UIによるPublished Stateの取得には、HTTP Pollingを採用する。
+
+SSEやWebSocketはMVPでは採用しない。
+
+Polling仕様：
+
+| 項目 | 決定内容 |
+|---|---|
+| 初回取得 | React UI起動直後に実行 |
+| Polling間隔 | 前回Requestの完了から30秒後 |
+| Request Timeout | 5秒 |
+| 同時Request数 | 最大1件 |
+| 取得成功 | 取得したPublished Stateを反映 |
+| HTTP Request全体の失敗 | 最後に正常取得したResponseを保持し、各Stateの有効期限を評価 |
+| Retry | 即時Retryなし |
+| Backoff | MVPでは導入しない |
+| 次回取得 | 成功・失敗にかかわらず、Request完了から30秒後 |
+| Cleanup | ComponentのUnmount時にRequest・TimerをCancelし、重複Pollingを防止 |
+
+補足：
+
+- 30秒はRequest開始間隔ではなく、Request完了後の待機時間。
+- Requestの処理時間に応じて、実際の開始間隔は30秒より長くなる。
+- HTTP Polling間隔とBackendの外部API取得周期は別物。
+- HTTP取得失敗時も、保持済みデータの`expiresAt`による有効期限判定を継続する。
+- HTTP取得失敗をBackendの`lastAttemptResult`へ反映しない。
+- Backendの外部API取得Retry方針は、React UIのPolling Retry方針とは独立して扱う。
+
+HTTP Requestが成功しても、一部のPublished Stateが利用不能、またはResponseから省略されている場合は、Request全体の失敗と区別する。State Key省略時のReact側の保持・削除は未決定であり、11.2に記録する。
+
+Stateの保持は期限切れ情報の表示継続を意味しない。基本画面の起動はBackend/API取得完了を待たない既存方針を維持する。
+Node.jsの開発ツール実行用途は確定済みだが、Production側でのNode.js利用要否やProcess構成を確定するものではない。
 
 ---
 
@@ -333,17 +393,173 @@ atomicな切替やRollbackの具体的な実装は、後続の実装設計で扱
 
 ---
 
-## 10. 今後の検討事項
+## 10. Published State APIのData Contract
 
-次の技術選定は、以下の順序で進める。
+### 10.1 一括取得方式
 
-1. **Production Serving方式**：`file://` / Local HTTP Server / その他。
-2. **接続方法**：React UIとDisplay ServiceのPublished State取得部分の接続。Published State取得 → Component State生成 → Display Componentの責務境界を維持する。
+**確定事項**
 
-Build実行場所とDeploy方式は第8・9章で確定済みとし、未決定事項から外す。
-Raspberry Pi実機上のRuntime・起動方式・Service間通信等の具体化は、既存Architectureに従って後続の検討で扱う。
+- MVPでは複数のPublished Stateを1回のHTTP GETでまとめて取得する方式を採用する。
+- 各Published StateはShared State Store内で独立して管理する。
+- 一括取得APIを採用しても、複数State間の厳密なTransactional Snapshot Consistencyは要求しない。
+- 一部のStateが未公開・利用不能でも、他のStateを取得できる構成とする。
+- 将来、必要に応じて個別State取得APIを追加できるようにする。
 
-### 10.1 Build・Deployの実装詳細
+一括APIのRequest全体の失敗時は7.3に従う。Request成功時の一部State利用不能・省略時の扱いは11.2の未決定事項とする。
+
+### 10.2 Published Stateの共通構造
+
+**確定事項**
+
+各Published Stateを以下の構造とする。
+
+```typescript
+type PublishedState<T> = {
+  data: T | null;
+  meta: PublishedStateMetadata;
+};
+```
+
+- `data`：Domain Data
+- `meta`：共通Metadata
+
+Domain固有の情報は`data`へ保持する。
+
+Metadataには共通の意味を持つ情報のみを保持し、Domain固有の項目を無理に共通化しない。
+
+### 10.3 Published Stateの情報単位
+
+既存Architectureで決定済みの以下の情報単位を維持する。
+
+Weather Service：
+
+- CurrentWeather
+- HourlyWeather
+- RainForecast
+- WeeklyWeather
+
+Schedule Service：
+
+- Schedule
+
+各情報単位は独立した鮮度・有効期限・取得失敗状態を管理する。
+
+Service境界とPublished State境界、Display Component境界を無理に一致させない。
+
+### 10.4 共通Metadata：確定した5項目
+
+以下の5項目を採用する。
+
+```typescript
+type PublishedStateMetadata = {
+  dataUpdatedAt: string | null;
+  expiresAt: string | null;
+  lastAttemptAt: string | null;
+  lastAttemptResult: "success" | "failure" | null;
+  publishedAt: string | null;
+};
+```
+
+API Responseとして公開済みのStateでは、`publishedAt`を日時文字列として扱う方針を暫定採用している。
+
+| 項目 | 意味 |
+|---|---|
+| `dataUpdatedAt` | Backendがデータを正常取得・検証・採用した時刻 |
+| `expiresAt` | Backendが決定するデータの利用期限 |
+| `lastAttemptAt` | 最後に完了した取得試行の開始時刻 |
+| `lastAttemptResult` | その取得試行の結果 |
+| `publishedAt` | 公開対象Snapshotを生成した時刻 |
+
+`lastAttemptAt`は、完了済みの最後の取得試行を対象とし、その試行の開始時刻を記録する。`lastAttemptResult`は同じ試行の結果を示す。両項目は試行完了後にセットで更新し、進行中の試行について先行更新しない（更新ルールの選定状況は10.5）。
+
+### 10.5 Metadataの更新ルール
+
+**暫定採用事項**
+
+- 時刻形式はRFC 3339 / UTCとする。
+- 外部データを正常取得・検証・採用した場合、`data`、`dataUpdatedAt`、`expiresAt`を更新する。
+- 同一内容のデータでも、新たに正常取得・検証・採用した場合は更新対象とする。
+- Cacheから既存データを読み出しただけの場合、`dataUpdatedAt`を新しい取得時刻として更新しない。
+- 外部API取得失敗時は、既存の`data`、`dataUpdatedAt`、`expiresAt`を維持する。
+- 取得完了後に`lastAttemptAt`と`lastAttemptResult`をセットで更新する。
+- Published Stateの公開Snapshotを生成する際に`publishedAt`を設定する。
+- Storeへの書込み失敗時は、Store上の既存Snapshotを維持する。
+- Backend停止時も、Store上の最後の公開Stateを維持する。
+- 期限切れだけを理由にStateのMetadataを書き換える必要はない。
+- React UIは`now < expiresAt`の場合のみ、期限内と判定する。
+- `now >= expiresAt`の場合、保持データを表示に利用しない。
+- 最後の取得結果が`failure`でも、データが期限内なら利用可能とする。
+
+外部APIが返す観測時刻・予報対象時刻・予定日時と、共通Metadataの更新時刻は区別する。Architectureの概念項目`dataTimestamp`と`dataUpdatedAt`を無条件に同一視しない。
+既存データの保持と表示への利用可能性は別であり、期限切れデータをFallbackとして再利用しない。Cache再利用によって元データの鮮度期限を延長しない既存原則を維持する。
+
+### 10.6 Metadataの整合条件
+
+**状態：現在の設計案。正式確定前。**
+
+- `data === null`なら`dataUpdatedAt`と`expiresAt`も`null`。
+- `data !== null`なら`dataUpdatedAt`と`expiresAt`が存在する。
+- `lastAttemptAt`と`lastAttemptResult`は両方存在、または両方`null`。
+- API Responseに含まれる公開済みStateでは`publishedAt`が存在する。
+- `publishedAt < expiresAt`など、常に成立するとは限らない時刻順序を無条件の必須条件にしない。
+- `expiresAt > dataUpdatedAt`も、すべてのケースに強制する条件にはしない。
+
+State自体が未公開であることと、公開済みStateのデータが未取得であることは区別する。`data: null`は後者の表現候補であり、未公開StateのKey省略を含むResponse構造は10.7の検討案として扱う。
+
+`status`、`isValid`、`isExpired`など、既存情報から導出できる項目は追加しない。
+
+`errorCode`、`lastSuccessAt`、`ttl`なども、明確な要件がない段階で共通Metadataへ追加しない。
+
+### 10.7 API Response JSON構造
+
+**以下は現在検討中の推奨案であり、まだ正式確定していない。**
+
+```json
+{
+  "schemaVersion": 1,
+  "states": {
+    "currentWeather": {
+      "data": {
+        "temperatureC": 24.5,
+        "condition": "cloudy"
+      },
+      "meta": {
+        "dataUpdatedAt": "2026-10-11T03:00:00Z",
+        "expiresAt": "2026-10-11T05:00:00Z",
+        "lastAttemptAt": "2026-10-11T03:15:00Z",
+        "lastAttemptResult": "failure",
+        "publishedAt": "2026-10-11T03:15:01Z"
+      }
+    }
+  }
+}
+```
+
+検討中の方針：
+
+- API Responseのトップレベルは`schemaVersion`と`states`。
+- `states`はObjectとし、State Keyで参照する。
+- 各Stateは`data`と`meta`を持つ。
+- 未公開Stateは`states`からKeyを省略する。
+- 公開済みだがデータ未取得の場合は`data: null`とする。
+- 正常取得した結果が0件の場合は、Domainに応じた空配列などで表現する。
+- `schemaVersion`はAPI Response全体で管理する。
+- 各Stateに個別のSchema Versionを重複して持たせない。
+
+上記JSONの`temperatureC`、`condition`などは構造説明用の例であり、Domain Data Schemaの正式決定ではない。
+
+具体的なEndpoint Pathや、各Stateの`data`内部項目・型も、現時点では確定しない。
+
+この推奨案は未確定事項として扱う。Responseで省略されたState Keyに対するReact側の更新方法は11.2で扱う。
+
+---
+
+## 11. 今後の検討事項
+
+Frontend・Build・Deploy、nginxによるServingとReverse Proxy、HTTP PollingおよびAPIの確定部分は未決定事項から外す。
+暫定採用・検討中の案の確定と、以下の技術選定・実装詳細を引き続き扱う。
+
+### 11.1 Build・Deployの実装詳細
 
 以下は今回固定しない。
 
@@ -356,9 +572,21 @@ Raspberry Pi実機上のRuntime・起動方式・Service間通信等の具体化
 - SSH Key等の認証方式。
 - CI/CDの具体的構成。
 
-### 10.2 その他の未決定事項
+### 11.2 その他の未決定事項
 
-バージョン、具体的な型・Schema、Type Check / Linter / Formatter / Test用ツールは未決定とする。Issue #4の他領域の技術選定も本書の対象外である。
+- 一括APIのHTTP Request成功時に、一部のPublished Stateが利用不能、またはResponseから省略されている場合の扱い。State Key省略時にReact側の既存Stateを保持するか削除するかは未決定（7.3・10.1・10.7）。
+- Shared State Storeの具体的な実装技術。
+- API提供処理のRuntime・Framework・Process構成。
+- API EndpointのPath・Port、nginxの具体設定。
+- Domain Dataの詳細Schema、Runtime Validation Library。
+- Metadata更新ルールの暫定採用（10.5）の確定、Metadata整合条件（10.6）とAPI Response JSON構造（10.7）の正式確定。
+- 外部Weather API・Schedule APIの正式選定。
+- 技術バージョン、その他の型・Schema、Type Check / Linter / Formatter / Test用ツール、Issue #4のその他未完了事項。
+
+既存Architectureとの対応では、以下も具体化が必要となる。今回、新しいMetadata項目や判定方式は追加しない。
+
+- Cache由来情報をConsumerが識別できるというArchitecture 8.6の要求と、共通Metadata 5項目との具体的な対応。`lastAttemptResult = "failure"`だけではCache由来を確定できない。識別方法は未決定とし、今回新しいMetadata項目は追加しない。
+- 外部APIの観測・予報時刻と`dataUpdatedAt`の区別を踏まえた鮮度評価・`expiresAt`の決定。取得成功だけで古い元データを延命しない。
 
 Future機能や追加ライブラリを、本選定に付随して設計・実装しない。
 Issue #4のClose前には、文書・Issue間の整合性を確認する。
