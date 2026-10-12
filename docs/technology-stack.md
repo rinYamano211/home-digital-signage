@@ -659,7 +659,7 @@ SQLite・better-sqlite3は暫定採用とする。Published State、Backend Cach
 | backend_cache | Published State単位のBackend Cache |
 | acquisition_control | Backendの取得制御用永続状態 |
 
-Published Stateは**最新と直前の2世代を保持**する。世代ごとに別Rowで保存する方式は暫定採用であり、具体DDL・Index・Generation採番・Migrationは未決定である。
+Published Stateの**最新と直前の2世代保持**と、**世代ごとに別Rowで保存する方式**は、いずれも暫定採用とする。具体DDL・Index・Generation採番・Migrationは未決定である。
 State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必須としない。取得結果単位のTransactionと部分成功の関係はArchitecture 16.4に従う。
 
 ### 12.2 SQLite設定・注意点
@@ -729,12 +729,16 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 
 | 状態 | 対象 |
 |---|---|
-| 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章）、最新・直前の2世代保持方針 |
-| 暫定採用 | Backend技術スタック全項目（11.1）、Backend Deploy方式、SQLiteの世代別Row方式、Control State不正・欠損時の保守的待機方式、Backup全項目 |
+| 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章） |
+| 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
+| 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
+| 暫定採用：Backend実行・取得制御 | 1 Backend Process内の複数非同期Task、State単位の独立Scheduler、即時Retryなし・有界指数Backoff（Architecture 16.1・16.3） |
+| 暫定採用：Transaction | 取得結果単位のSQLite Transaction、複数State生成時の部分成功（Architecture 16.4） |
+| 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
 | 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
 | 未決定 | 下記の実装詳細・外部Provider・具体値 |
 
-MVPのBackend実行・Transaction・Recoveryの実現方針と、技術の暫定採用を区別する。確定API契約は暫定技術の選択に依存して変更しない。
+Backendの技術・実行・Transaction・Recovery方針はいずれも上表の暫定採用として扱う。設計内容は既存本文・Architectureの記載を維持し、具体値・実装詳細の未決定事項と区別する。確定API契約はこれらの暫定採用に依存して変更しない。
 
 ### 15.2 Build・Deployの実装詳細
 
