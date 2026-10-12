@@ -729,7 +729,7 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 
 | 状態 | 対象 |
 |---|---|
-| 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章） |
+| 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章）、Google Calendar + Service AccountによるSchedule取得方針（第17章） |
 | 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
 | 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
 | 暫定採用：Backend実行・取得制御 | 1 Backend Process内の複数非同期Task、State単位の独立Scheduler、即時Retryなし・有界指数Backoff（Architecture 16.1・16.3） |
@@ -753,7 +753,7 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 
 - Weather API Providerの正式採用、Open-Meteoの実データ検証・利用規約最終確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
-- Schedule API Provider・認証方式。
+- Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、ページネーション、例外日・キャンセル、内部Data変換・日本時間日付境界・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
 - Domain Data詳細Schema、外部の観測・予報時刻を踏まえた鮮度評価・expiresAt決定。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
@@ -849,3 +849,76 @@ Startupは外部取得完了を待たず保存Stateを復元してAPI提供を�
 
 Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限、429待機計算は後続設計に残す。
 State単位の取得制御とProvider単位のRate Limitの区別はArchitecture 16.3に従う。
+
+---
+
+## 17. Schedule API選定
+
+### 17.1 正式採用方針
+
+| 項目 | 選定内容・状態 |
+|---|---|
+| 予定管理サービス | Google Calendar：正式採用方針 |
+| 対象カレンダー | サイネージ専用の非公開カレンダー |
+| 認証方式 | Google Cloud Service Account |
+| 共有権限 | reader |
+| API Scope | calendar.events.readonly |
+| 取得API | Google Calendar API events.list |
+| 登録・編集 | GoogleカレンダーのWeb・スマートフォンアプリ |
+| Backend取得 | Node.js / TypeScriptから取得。Backend技術スタックの暫定採用状態は11.1を維持 |
+| 取得周期・TTL | 10分・6時間：既存の暫定値 |
+| 保存 | 既存SQLite構成に従う。SQLiteの暫定採用状態は維持 |
+
+Published State `Schedule`、Frontendの30秒Polling、取得・Cache・Recovery・Metadata契約は変更しない。
+API接続検証の成功と、長期無人運用の検証完了は区別する。Issue #4全体は未完了である。
+
+### 17.2 ユーザーによる実動作検証
+
+2026年10月12日、日本時間を対象としてWindows PCで検証した。
+環境はWindows PowerShell、Node.js v24.14.0、google-auth-library、Google Cloud Service Account、Google Calendar APIである。これは検証環境の記録であり、依存Libraryの正式選定や今回の実装を意味しない。
+
+- Service Account認証、専用カレンダーへのアクセスに成功。
+- `accessRole: reader`を確認。
+- `events.list`で以下の予定をすべて`status: confirmed`として取得。
+
+| 種別 | 検証結果（日本時間） |
+|---|---|
+| 通常予定 | 2026/10/12 19:00〜20:00 |
+| 終日予定 | 2026/10/12。API終了日付は10/13で排他的 |
+| 繰り返し予定 | 2026/10/12 12:00〜12:30のインスタンス |
+| 日付またぎ予定 | 2026/10/11 23:00〜10/12 01:00 |
+
+MVPに必要な基本予定種別の取得を実証した。繰り返し例外日、キャンセル予定、ページネーション、長期無人稼働は未検証である。
+予定タイトル・参加者・カレンダーID・認証情報は記載しない。
+
+### 17.3 選定理由と代替案
+
+- 専用非公開カレンダーで、個人の他の予定と分離できる。
+- reader共有権限と読み取り専用Scopeで最小権限にできる。
+- 個人アカウントのOAuth Refresh TokenをBackendで管理せずに済む。
+- 既存のWeb・スマートフォンUIで予定を登録・編集でき、専用入力画面の自作が不要。
+- Raspberry Piの無人定期取得に適した構成で、R-02 / R-10に適合する。
+- 実際にAPI接続と主要予定種別の取得に成功した。
+
+| 比較対象 | 判断 |
+|---|---|
+| Google Calendar + Service Account | 正式採用方針 |
+| ユーザーOAuth 2.0 | 代替候補として残す |
+| 公開カレンダー | プライバシー保護の観点で非採用 |
+
+Service Account採用でも秘密鍵の安全な管理は必要であり、認証情報の保守が不要になるわけではない。
+
+### 17.4 残課題
+
+以下を実装・運用設計へ引き継ぐ。
+
+- Service Account JSON秘密鍵の安全な配置・アクセス制御・失効・ローテーション。
+- APIエラーと認証エラーの検出・復旧。
+- ページネーション、予定件数が多い場合の取得制御。
+- 繰り返し予定の例外日・キャンセル予定。
+- 終日・日付またぎ予定の内部Data変換、日本時間の日付境界。
+- 無料利用条件の最終確認、長期無人運用の確認。
+- 個別予定の非公開設定時の取得挙動。
+- Domain Data詳細Schema・詳細取得制御設計。
+
+取得周期10分・TTL6時間は暫定値のまま維持する。Weather API候補・Tomorrow.io Quota Guardは第16章の採用状態と方針を変更しない。

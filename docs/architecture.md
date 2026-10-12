@@ -1464,6 +1464,8 @@ Commit成功後に新Published Stateを公開し、Commit失敗時はRollbackし
 Domain Validationの部分成功は複数Stateの厳密な同時点整合性を要求するものではなく、Transaction Commitの部分成功とも異なる。
 HTTP Request自体の失敗と、特定StateのみのDomain Validation失敗を区別する。Provider ResponseとStateの具体対応は未決定とする。
 
+Scheduleの外部取得はGoogle Calendar + Service Accountの正式採用方針に従う。[技術スタック選定 第17章](technology-stack.md#17-schedule-api選定)に権限・Scope・検証結果・残課題を記録する。Schedule ServiceのOwnership、SQLite・Cache・Recoveryの採用状態、Published State契約は維持する。
+
 ### 16.5 Backend CacheとFallback
 
 CacheはPublished State単位に保存し、外部API ResponseのRaw Dataを一律保存する方式ではない。
