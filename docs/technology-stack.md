@@ -560,7 +560,7 @@ State自体が未公開であることと、公開済みStateのデータが未�
 }
 ```
 
-Domain Dataの具体的なJSON構造は未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+Schedule Domain Dataは18.1で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
 FrontendのResponse取得・更新ルールは7.3に従う。
 
 ### 10.8 期限切れデータの表示用APIでの扱い
@@ -575,7 +575,7 @@ Backend Cacheでは期限切れデータを保持してもよい。保存Publish
 - `lastAttemptAt`と`lastAttemptResult`を維持する。
 - `publishedAt`は元のSnapshot生成時刻を維持する。
 
-API Response生成時の期限判定・変換だけでは、新しいSnapshotを生成したものとは扱わない。
+Scheduleについては、API Response生成時にも`data.date`とAsia/Tokyo基準の今日を照合する。日付が一致しない場合はTTL内でも`data: null`、`dataSource: null`とし、旧日の予定を公開しない。この変換でも`dataUpdatedAt`、`expiresAt`、`lastAttemptAt`、`lastAttemptResult`、`publishedAt`の既存値を維持する。
 APIから期限切れデータを除外しても、Frontendでの`expiresAt`判定は引き続き必須とする。API取得後に期限を迎えたデータも表示に利用しない。
 
 ---
