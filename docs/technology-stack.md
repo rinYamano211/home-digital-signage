@@ -576,6 +576,7 @@ Backend Cacheでは期限切れデータを保持してもよい。保存Publish
 - `publishedAt`は元のSnapshot生成時刻を維持する。
 
 Scheduleについては、API Response生成時にも`data.date`とAsia/Tokyo基準の今日を照合する。日付が一致しない場合はTTL内でも`data: null`、`dataSource: null`とし、旧日の予定を公開しない。この変換でも`dataUpdatedAt`、`expiresAt`、`lastAttemptAt`、`lastAttemptResult`、`publishedAt`の既存値を維持する。
+API Response生成時の期限・Schedule日付判定による変換だけでは、新しいSnapshotを生成したものとは扱わない。
 APIから期限切れデータを除外しても、Frontendでの`expiresAt`判定は引き続き必須とする。API取得後に期限を迎えたデータも表示に利用しない。
 
 ---
@@ -1000,6 +1001,7 @@ event.status:tentative自体は未実測であり、参加者のresponseStatus:t
 
 表示対象はAsia/Tokyoの今日とする。JST 0時に前日のSchedule Snapshotを公開対象から除外し、新日の取得を開始する。
 前日開始の予定でも新日に実際の期間が重なるイベントは、新日の取得・正規化の対象である。
+API Response生成時もdata.dateとJSTの今日を照合し、不一致ならTTL内でもdata:null、dataSource:nullとする。Metadataの既存値を維持する変換は10.8に従う。
 
 取得試行は開始時に確定したtargetDateを保持する。23:59開始・00:01完了の旧日取得結果を、新日のPublished Stateとして採用しない。
 同一対象日の競合でも古い取得結果が新しい結果を上書きしないようにする。防止の具体的実装は未決定である。
