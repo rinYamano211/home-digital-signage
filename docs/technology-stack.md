@@ -4,7 +4,7 @@
 
 Raspberry Pi 5を使用する家庭用デジタルサイネージ（Home Digital Signage）の、Issue #4「[Research] 技術スタックを選定する」における技術の選定結果を記録する。
 
-本書では、Frontend開発・Build環境、Build・Deploy方式に加え、nginxによるProduction Serving・Reverse Proxy、HTTP Polling、Published State APIの契約を記録する。確定事項・暫定採用・検討中の案は各節で区別する。Issue #4全体の技術選定完了を意味しない。
+本書では、Frontend開発・Build環境、Build・Deploy方式に加え、nginxによるProduction Serving・Reverse Proxy、HTTP Polling、Published State APIの契約を記録する。Backend技術・SQLite・Backupの暫定採用と具体的な実現方針も記録する。確定事項・暫定採用・検討中の案は各節で区別する。Issue #4全体の技術選定完了を意味しない。
 
 Issue #1〜#3の確定事項・関連文書を正本として扱う。Architectureはarchitecture.mdに従う。採用技術、比較済みの選択肢、判断理由と未決定事項を分けて記録する。
 
@@ -248,7 +248,7 @@ Component State生成
 Display Component
 ```
 
-図は概念的な責務と通信経路を示すものとし、具体的なプロセス分割、API Serverの技術、Port番号は確定させない。
+図は概念的な責務と通信経路を示す。Backend技術の暫定採用は第11章、MVP実行モデルはArchitecture第16章を参照する。具体的なAPI提供Process構成・Port番号は未決定。
 
 `/api/...`はパスの例であり、具体的なEndpointは未決定。
 
@@ -288,10 +288,10 @@ Polling仕様：
 
 取得成功・失敗にかかわらずFrontendは`now < expiresAt`の場合のみ期限内と判定し、`now >= expiresAt`のデータを表示しない。最後の外部取得結果が`failure`でも、有効期限内のデータは利用可能とする。
 
-Runtime JSON Validationを必須とする。具体的なLibraryは未決定である。
+Runtime JSON Validationを必須とし、TypeBoxを暫定採用する（第11章）。
 
 Stateの保持は期限切れ情報の表示継続を意味しない。基本画面の起動はBackend/API取得完了を待たない既存方針を維持する。
-Node.jsの開発ツール実行用途は確定済みだが、Production側でのNode.js利用要否やProcess構成を確定するものではない。
+Frontend BuildとProduction Runtimeの境界は維持する。BackendのNode.js RuntimeとMVP実行モデルは第11章・Architecture第16章の採用状況に従う。
 
 ---
 
@@ -580,36 +580,181 @@ APIから期限切れデータを除外しても、Frontendでの`expiresAt`判�
 
 ---
 
-## 11. 今後の検討事項
+## 11. Backend技術スタック
 
-Frontend・Build・Deploy、nginxによるServingとReverse Proxy、HTTP PollingおよびAPIの確定部分は未決定事項から外す。
-共通Metadata 6項目、更新・整合条件、API Response JSON構造、期限切れ変換、Frontend更新ルールは第7・10章で確定済みとする。以下の技術選定・実装詳細を引き続き扱う。
+### 11.1 暫定採用一覧
 
-### 11.1 Build・Deployの実装詳細
+以下はすべて**暫定採用**であり、実装・実機検証済みを意味しない。FrontendのReact + TypeScript + Viteと、第7・10章の確定API契約は維持する。
 
-以下は今回固定しない。
+| 分野 | 技術・方式 | 役割・採用理由 |
+|---|---|---|
+| Runtime | Node.js 24 LTS | 非同期取得TaskとAPI提供を実行する共通Runtime |
+| Language | TypeScript | Domain Data・Metadata・Module間の型契約を明示 |
+| API Framework | Fastify | nginxの転送先となるHTTP API提供処理 |
+| Database | SQLite | Published State・Cache・取得制御をローカルDBで永続化し、短いTransactionで更新 |
+| SQLite Driver | better-sqlite3 | Node.jsからSQLiteへアクセス。Native Dependencyの配置条件を確認する必要がある |
+| Runtime Validation | TypeBox | FrontendのRuntime JSON Validation、BackendのSchema Validation、Config検証。DomainのSemantic Validationとは分離 |
+| Scheduler | 標準setTimeout | Stateごとの非同期取得・待機を実行する標準機構 |
+| HTTP Client | Node.js標準fetch | 外部HTTP取得。Domainの変換・Cache採用判断は担当しない |
+| Process管理 | systemd | Backendの自動起動・再起動 |
+| Package Manager | npm | Node.js依存Packageの管理 |
+| Backend Build | tscによるCompile、原則Bundlingなし | 開発PCでTypeScriptをCompileし、Runtime依存を分けて配置 |
+| Module System | ESM | BackendのModule方式 |
+| Test | Vitest | State契約・取得制御・永続化・Recoveryの検証 |
+| Logging | Pino + journald | Structured JSON LoggingとOS側のログ収集 |
+| Config | 環境変数 + TypeBox Validation | 起動時の設定供給・検証。Config / Secret詳細管理は未決定 |
 
-- Release Directoryの具体的なパス。
-- Release名の方式（日時・Git commit hash等）。
-- 旧Releaseの保持世代数。
-- Deploy Scriptの具体的実装。
-- symbolic link切替の具体的コマンド。
-- Deploy後のChromium Reload方法。
-- SSH Key等の認証方式。
-- CI/CDの具体的構成。
+### 11.2 比較上の判断と制約
 
-### 11.2 その他の未決定事項
+Backend Buildは原則Bundlingせず、開発PCでCompileする。Native Dependencyまで開発PCの成果物だけで完結させず、Pi側でProduction DependencyをInstallする方式を暫定採用する。
+Scheduler・HTTP Clientは標準機構を利用し、汎用Pipeline FrameworkやPlugin Framework、不要な独立ServiceをMVPへ追加しない。
+SQLiteはローカル保存とTransactionの実現手段として暫定採用し、物理故障への自動復旧を保証するものとは扱わない。
 
-- Shared State Storeの具体的な実装技術。
-- API提供処理のRuntime・Framework・Process構成。
-- API EndpointのPath・Port、nginxの具体設定。
-- Domain Dataの詳細Schema、Runtime Validation Library。
-- 外部Weather API・Schedule APIの正式選定。
-- 技術バージョン、その他の型・Schema、Type Check / Linter / Formatter / Test用ツール、Issue #4のその他未完了事項。
+本書では、BuildのBundling有無・Native Dependencyの配置、標準機構と汎用Frameworkの導入、Backup APIとDB本体の単純コピーの比較判断を記録する。
 
-既存Architectureとの対応では、以下も具体化が必要となる。
+### 11.3 Backend Build / Deploy
 
-- 外部APIの観測・予報時刻と`dataUpdatedAt`の区別を踏まえた鮮度評価・`expiresAt`の決定。取得成功だけで古い元データを延命しない。
+**暫定採用方式**
 
-Future機能や追加ライブラリを、本選定に付随して設計・実装しない。
-Issue #4のClose前には、文書・Issue間の整合性を確認する。
+1. 開発PCでTypeScriptを`tsc`によりCompileする。
+2. SSHでRaspberry Piへ成果物を転送する。
+3. Release Directoryとsymbolic linkによる切替を使用する。
+4. better-sqlite3等のNative DependencyはPi側でProduction DependencyをInstallする。
+5. Backendの再起動・自動起動をsystemdで管理する。
+
+永続DBはRelease Directoryの外に配置する。Deploy失敗時に旧ReleaseへRollbackできる構成を目指す。
+Directory Path、Unit定義、Port、具体コマンド、依存Install・切替の詳細手順は未決定である。
+
+### 11.4 Backendの責務分担
+
+HTTP Client、Scheduler / Retry実行機構、Cache I/O、Store I/O、Config、Logging、TimeをCommon Moduleとして扱う。
+Weather・Schedule固有のValidation、Data変換、Cache採用、Freshness、Published State生成はDomain側が担当する。
+MVPの実行モデル・State Ownership・取得制御・Recoveryは[Architecture第16章](architecture.md#16-issue-4backendの具体的な実現方式)を参照する。
+
+### 11.5 Stateごとの暫定取得周期・有効期限
+
+[要件定義 R-07](requirements.md)の暫定値を維持する。Provider条件・実機評価を踏まえて確定する。
+
+| Published State | 外部取得周期（暫定） | 有効期限（暫定） |
+|---|---|---|
+| CurrentWeather | 15分 | 2時間 |
+| HourlyWeather | 30分 | 3時間 |
+| RainForecast | 5分 | 30分 |
+| WeeklyWeather | 6時間 | 12時間 |
+| Schedule | 10分 | 6時間 |
+
+Frontendの30秒Pollingとは別の設定である。5 Stateは独立して更新・復元・公開でき、複数State間の厳密な同時点整合性は要求しない。
+
+---
+
+## 12. SQLiteの保存・WAL運用
+
+### 12.1 保存方針と採用状況
+
+SQLite・better-sqlite3は暫定採用とする。Published State、Backend Cache、Acquisition Control Stateを1つのDatabaseの別Tableとして管理し、Published StateのDataとMetadataを1つのJSON Snapshotとして保存する。
+
+| 論理Table | 保存対象 |
+|---|---|
+| published_state_snapshots | 最新・直前のPublished State Snapshot |
+| backend_cache | Published State単位のBackend Cache |
+| acquisition_control | Backendの取得制御用永続状態 |
+
+Published Stateは**最新と直前の2世代を保持**する。世代ごとに別Rowで保存する方式は暫定採用であり、具体DDL・Index・Generation採番・Migrationは未決定である。
+State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必須としない。取得結果単位のTransactionと部分成功の関係はArchitecture 16.4に従う。
+
+### 12.2 SQLite設定・注意点
+
+SQLiteの実現方式として以下を採用方針に記録する。Database技術全体は暫定採用であり、実測前である。
+
+- `journal_mode=WAL`、`synchronous=NORMAL`。
+- SQLite標準の自動Checkpointを利用し、`wal_autocheckpoint=1000`。
+- 定期的な強制TRUNCATE Checkpointは実施しない。
+- WAL肥大化時は原因調査のうえ、必要時に手動対応する。
+- 原則としてBackend内で共有DB Connectionを使用する。
+- `foreign_keys=ON`と`busy_timeout=5000ms`は初期設定候補。特にbusy_timeoutは実測に応じて見直す。
+
+WAL + NORMALは直近Commitの電源断耐久性を完全保証しない。突然の電源断で直近Commitが失われる可能性は許容するが、不完全なSnapshotは公開しない。
+CheckpointによってWALの物理ファイルサイズが必ず縮小するわけではない。Lock・Checkpoint異常時の詳細運用は未決定である。
+microSD自体の物理故障からの自動復旧は保証しない。
+
+---
+
+## 13. Backup方式
+
+以下はすべて**暫定採用**である。
+
+| 項目 | 方針 |
+|---|---|
+| 方式 | SQLite Backup API |
+| 頻度 | 1日1回 |
+| 保存先 | 同一microSD内の専用Directory |
+| 保持数 | 3世代 |
+| 復元 | 手動 |
+| 検証 | Backup作成後に整合性確認 |
+| 物理故障対策 | MVP対象外 |
+
+稼働中のSQLite DB本体だけを単純コピーする方式は採用せず、WALと整合する方法で取得する。
+同一microSDのBackupは物理故障対策ではない。Database利用不能時は正常稼働扱いにせず、停止・検証・手動復元を行う。
+実行時刻・Path・Backup用Scheduler・失敗時再試行・復元コマンドは未決定とする。
+
+---
+
+## 14. Logging・Test・運用
+
+### 14.1 Logging
+
+Pino + journaldを暫定採用する。Structured JSON LoggingでService / Taskの識別情報を記録し、Secret・Tokenは出力しない。
+API取得失敗、Fallback、Validation失敗、Recovery、Transaction失敗、Backup失敗、WAL異常を調査可能にする。
+Rotation・Retention・Rate Limitの具体値は未決定である。
+
+### 14.2 Testの観点
+
+Vitestを暫定採用する。以下は検証すべき観点であり、実装・試験完了を意味しない。
+
+- Published State / CacheのSchema ValidationとSemantic Validation。
+- Expiry境界（`now == expiresAt`）、Cache Fallbackと鮮度期限の非延長。
+- Backoff復元、正常なControl StateのnextAttemptAt尊重。
+- SQLite Transaction Rollback、複数State生成時の部分成功と全更新Rollback。
+- 最新Snapshot不正時の旧世代復元、2世代とも不正な場合の隔離。
+- Database利用不能時の異常扱い。
+- 起動時の復元と外部取得待ちなしのAPI提供、Graceful Shutdown。
+- Backup作成・整合性確認・手動復元、WAL運用。
+- Raspberry Pi実機での再起動・電源断・72時間連続稼働（Issue #13）。
+
+---
+
+## 15. 採用状況と今後の検討事項
+
+### 15.1 確定・暫定採用・候補の区別
+
+| 状態 | 対象 |
+|---|---|
+| 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章）、最新・直前の2世代保持方針 |
+| 暫定採用 | Backend技術スタック全項目（11.1）、Backend Deploy方式、SQLiteの世代別Row方式、Control State不正・欠損時の保守的待機方式、Backup全項目 |
+| 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
+| 未決定 | 下記の実装詳細・外部Provider・具体値 |
+
+MVPのBackend実行・Transaction・Recoveryの実現方針と、技術の暫定採用を区別する。確定API契約は暫定技術の選択に依存して変更しない。
+
+### 15.2 Build・Deployの実装詳細
+
+- Release Directoryの具体Path・命名方式・保持世代数。
+- Deploy Script・symbolic link切替コマンド・Chromium Reload方法。
+- SSH認証、systemd Unit・Port、CI/CDの具体構成。
+
+### 15.3 Backend・外部連携の未決定事項
+
+- Weather API Provider、Schedule API Provider・認証方式。
+- ProviderごとのRate Limit、1 HTTP Responseと複数Stateの対応、Provider単位のRequest共有・Backoff。
+- Domain Data詳細Schema、外部の観測・予報時刻を踏まえた鮮度評価・expiresAt決定。取得成功だけで古いデータを延命しない。
+- 正式SQLite DDL・Index・Migration、Generation採番。
+- Cache不正時の物理削除。
+- Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
+- Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
+- API Endpoint正式Path・nginx設定。
+- Backup実行時刻・Path・Scheduler・失敗時再試行・復元コマンド。
+- SQLite Lock・Checkpoint異常時の詳細運用。
+- Config・Secret詳細管理、Runtime変更への適用方式。
+- Log Rotation・Retention・Rate Limit、未選定の別領域の技術・バージョン・Linter / Formatter等。
+
+Future機能を先行実装しない。Issue #4のClose前には文書・Issue間の整合性を確認する。
