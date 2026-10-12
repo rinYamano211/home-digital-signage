@@ -519,7 +519,7 @@ Cacheから既存データを読み出しただけの場合は、`dataUpdatedAt`
 - `data === null`なら`dataSource === null`。
 - `data !== null`なら`dataSource`は`externalApi`または`cache`。
 - 各Timestamp間に無条件の前後関係は強制しない。`publishedAt < expiresAt`や`expiresAt > dataUpdatedAt`をすべてのケースに要求しない。
-- 正常取得したScheduleが空の場合は`data: []`とし、利用可能データのない`data: null`と区別する。
+- 正常取得したScheduleが空の場合は`data: {date, events: []}`とし、利用可能データのない`data: null`と区別する。
 
 State自体が未公開であることと、公開済みStateのデータが未取得であることは区別する。公開・省略ルールは10.7に従う。
 
@@ -730,6 +730,7 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 状態 | 対象 |
 |---|---|
 | 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章）、Google Calendar + Service AccountによるSchedule取得方針（第17章） |
+| 設計方針：Schedule Step 5 | Schedule Domain Data・全ページ取得と正規化・JST日付制御・Cache条件（第18章）。未確定詳細は18.6に区別 |
 | 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
 | 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
 | 暫定採用：Backend実行・取得制御 | 1 Backend Process内の複数非同期Task、State単位の独立Scheduler、即時Retryなし・有界指数Backoff（Architecture 16.1・16.3） |
@@ -753,9 +754,9 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 
 - Weather API Providerの正式採用、Open-Meteoの実データ検証・利用規約最終確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
-- Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、ページネーション、例外日・キャンセル、内部Data変換・日本時間日付境界・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
+- Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
-- Domain Data詳細Schema、外部の観測・予報時刻を踏まえた鮮度評価・expiresAt決定。取得成功だけで古いデータを延命しない。
+- Weather Domain Data詳細Schema、外部の観測・予報時刻を踏まえた鮮度評価・expiresAt決定。Schedule設計方針と残課題は第18章。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
 - Cache不正時の物理削除。
 - Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
@@ -888,7 +889,7 @@ API接続検証の成功と、長期無人運用の検証完了は区別する�
 | 繰り返し予定 | 2026/10/12 12:00〜12:30のインスタンス |
 | 日付またぎ予定 | 2026/10/11 23:00〜10/12 01:00 |
 
-MVPに必要な基本予定種別の取得を実証した。繰り返し例外日、キャンセル予定、ページネーション、長期無人稼働は未検証である。
+MVPに必要な基本予定種別の取得を実証した。その後のT01〜T07検証は第18章に記録する。長期無人稼働は引き続き未検証である。
 予定タイトル・参加者・カレンダーID・認証情報は記載しない。
 
 ### 17.3 選定理由と代替案
@@ -914,11 +915,130 @@ Service Account採用でも秘密鍵の安全な管理は必要であり、認�
 
 - Service Account JSON秘密鍵の安全な配置・アクセス制御・失効・ローテーション。
 - APIエラーと認証エラーの検出・復旧。
-- ページネーション、予定件数が多い場合の取得制御。
-- 繰り返し予定の例外日・キャンセル予定。
-- 終日・日付またぎ予定の内部Data変換、日本時間の日付境界。
+- ページネーションの基本動作は18.2で検証済み。取得中の変更に対する一貫性、予定件数・ページ数上限は未決定。
+- 繰り返しの時刻変更・別日移動・削除、通常予定削除は18.2で検証済み。イベント自体のstatus:tentativeは未検証。
+- 終日・日付またぎの正規化と日付制御は第18章の方針に従う。競合防止の実装詳細・時刻同期未完了時の復旧は未決定。
 - 無料利用条件の最終確認、長期無人運用の確認。
 - 個別予定の非公開設定時の取得挙動。
-- Domain Data詳細Schema・詳細取得制御設計。
+- Schedule Domain Schema・取得制御は第18章に記録。JSON Schemaバリデータ設定・実装検証、Timeout等の具体値は後続確認。
 
 取得周期10分・TTL6時間は暫定値のまま維持する。Weather API候補・Tomorrow.io Quota Guardは第16章の採用状態と方針を変更しない。
+
+---
+
+## 18. Step 5：Schedule Domain Data・詳細取得制御
+
+本章はGoogle Calendarの検証とSchedule設計レビューに基づく設計方針を記録する。アプリ実装・バリデータ実装検証の完了を意味しない。
+
+### 18.1 Schedule Domain Data Schema
+
+```typescript
+type ScheduleData = {
+  date: string; // YYYY-MM-DD、Asia/Tokyo基準の表示対象日
+  events: ScheduleEvent[];
+};
+
+type ScheduleEvent =
+  | {
+      id: string;
+      title: string;
+      allDay: false;
+      startAt: string; // UTC RFC3339
+      endAt: string;   // UTC RFC3339
+    }
+  | {
+      id: string;
+      title: string;
+      allDay: true;
+      startDate: string;        // YYYY-MM-DD
+      endDateExclusive: string; // YYYY-MM-DD
+    };
+```
+
+`date`は取得日ではなく、JST基準の表示対象日である。MVPでは今日のみを対象とする。
+正常な0件は`data: {date, events: []}`、取得不可は`data: null`とする。従来のSchedule正常空データ`data: []`をこのDomain構造へ更新する。他Stateの契約・共通Metadataは変更しない。
+時刻指定と終日はallDayで判別し、時刻指定日時をUTC RFC3339へ正規化する。終日終了日は排他的に扱う。
+
+JSON Schema Draft 2020-12を想定する。ScheduleDataのdate・events、各イベントのid・title・allDayと分岐ごとの日時をrequiredとする。
+イベント分岐はoneOfとallDayの固定値で表現し、ScheduleDataと各イベントObjectにadditionalProperties:falseを適用する。
+date・startDate・endDateExclusiveはdate形式、startAt・endAtはdate-time形式として、実在する日付・UTC RFC3339を検証する。format検証の有効化・設定・実装確認は未完了である。
+
+Schema Validationに加え、以下のSemantic Validationを行う。
+
+- 時刻指定はstartAt < endAt、終日はstartDate < endDateExclusive。
+- 時刻指定・終日とも、実際の期間がJSTの対象日と重なること。
+- data.dateが取得試行のtargetDateに一致し、採用時に今日であること。
+- events内のID一意性。同時刻でも異なるIDは保持する。
+
+### 18.2 Google Calendar取得・正規化と実測
+
+- events.listでsingleEvents=trueとして繰り返し予定を展開する。
+- showDeleted=falseを基本とし、cancelledイベントは通常イベントの日時必須検証より前に除外する。
+- nextPageTokenで全ページを取得し、完了後に一括で正規化・検証・反映する。途中ページ失敗は取得試行全体の失敗とする。
+- 識別にはevent.idを用いる。同時刻の異なるIDは両方保持し、同じIDの重複は整合性エラーとする。
+- 繰り返し変更・別日移動は実際のstart / endを使う。originalStartTimeを対象日判定に使わない。
+- 参加者のresponseStatus:tentativeは除外条件にしない。
+- summary欠落時はtitleを空文字へ正規化する。
+- 時刻指定・終日ともJST対象日に重なるイベントを含める。正常イベントの日時不正は原則として取得試行全体の失敗とする。
+- iCalUID、recurringEventId、originalStartTime、attendeesはMVP公開Domain Dataに含めない。
+
+**ユーザーによる実API検証：全7ケースPASS。**
+
+| ケース | 確認内容 |
+|---|---|
+| T01 | 同時刻の異なる予定2件 |
+| T02 | 繰り返し予定の1回だけ時刻変更 |
+| T03 | 繰り返し予定の1回だけ別日移動 |
+| T04 | 繰り返し予定の1回だけ削除 |
+| T05 | 通常予定の削除 |
+| T06 | 参加者の未定回答がattendees[].responseStatus:tentativeとなる |
+| T07 | 14件を7ページで取得し、1ページ取得時とID集合が一致 |
+
+event.status:tentative自体は未実測であり、参加者のresponseStatus:tentativeと混同しない。複数ページ取得中の予定変更に対する一貫性も未検証である。
+
+### 18.3 JST日付切替・競合制御
+
+表示対象はAsia/Tokyoの今日とする。JST 0時に前日のSchedule Snapshotを公開対象から除外し、新日の取得を開始する。
+前日開始の予定でも新日に実際の期間が重なるイベントは、新日の取得・正規化の対象である。
+
+取得試行は開始時に確定したtargetDateを保持する。23:59開始・00:01完了の旧日取得結果を、新日のPublished Stateとして採用しない。
+同一対象日の競合でも古い取得結果が新しい結果を上書きしないようにする。防止の具体的実装は未決定である。
+Frontendもdata.dateと今日のJST日付を照合する。Piのシステム時刻が信頼できない場合、Scheduleを公開不可とする。時刻信頼性の具体判定・復旧手順は既存Time原則に従って後続で具体化する。
+
+### 18.4 Cache・取得失敗・Frontend表示
+
+通常取得10分・Cache TTL6時間は暫定値を維持する。Cache採用には以下すべてを要求する。
+
+- data.dateが今日のJST日付に一致。
+- TTL内。
+- 保存DataのSchema・Semantic Validationに合格。
+- システム時刻が信頼できる。
+
+取得失敗時は同日の有効Cacheを公開し、有効Cacheがなければdata:null、dataSource:nullとする。前日のCacheを今日へ流用しない。
+失敗でdataUpdatedAt・expiresAtを延長しない。lastAttemptAt・lastAttemptResultは試行完了時に更新し、publishedAtはSnapshot生成時刻とする。
+全ページ取得・正規化・検証成功前に既存Cacheを部分上書きしない。保存・公開は既存Transaction境界に従う。
+
+| Frontendが利用できる状態 | 表示 |
+|---|---|
+| 今日の有効data、events:[] | 本日の予定はありません |
+| 今日の有効data、events:[...] | 予定一覧 |
+| data:null | 予定を取得できません |
+
+日付照合・期限判定はFrontendでも継続する。前日Dataを今日の予定や正常な0件として表示しない。
+
+### 18.5 障害監視
+
+MVPではPinoログと既存Published State Metadataで管理する。必要に応じて対象日、試行開始時刻・処理時間、件数・ページ数、HTTPエラー・Timeout・Validationエラー、Cache Fallback状況を記録する。
+外部メール・スマートフォン通知はMVPに追加せず、Published Stateのstatus・errorCodeも追加しない。
+認証情報・アクセストークン・Service Account秘密鍵をログや文書へ出力しない。
+
+### 18.6 未検証・詳細設計待ち
+
+- event.status:tentativeの実API動作。
+- 複数ページ取得中に予定が変更された場合の一貫性。
+- Retry回数・Timeout・ページ数上限の具体値。既存Backendの即時Retryなし・有界Backoff方針は維持する。
+- 日付変更・同日取得結果の競合防止の実装詳細。
+- 時刻同期未完了時の具体的復旧処理。
+- JSON Schemaバリデータ設定・実装検証。
+
+Step 5のSchedule設計記録までを対象とし、別Domainの詳細設計やコード実装には進まない。
