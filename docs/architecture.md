@@ -1450,7 +1450,7 @@ type AcquisitionControlState = {
 ```
 
 State単位の取得制御とProvider / Request単位のRate Limitを区別する。
-Jitter、指数係数、上限、Retry-After、Provider単位のRequest共有・Rate Limit・Backoffは詳細未決定である。
+Jitter、指数係数、上限、Provider単位のRequest共有・Backoff等は詳細未決定である。Tomorrow.ioのQuota Guard・送信前永続記録・429待機は[技術スタック選定 第16章](technology-stack.md#16-weather-api選定とtomorrowioの取得制御)の暫定採用方針に従い、正式制限・具体SQL・待機計算は後続設計とする。
 
 ### 16.4 Validation・Transaction・公開
 

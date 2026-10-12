@@ -736,7 +736,10 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 暫定採用：Transaction | 取得結果単位のSQLite Transaction、複数State生成時の部分成功（Architecture 16.4） |
 | 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
 | 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
-| 未決定 | 下記の実装詳細・外部Provider・具体値 |
+| 暫定採用候補：Weather API | CurrentWeather / HourlyWeather / WeeklyWeatherはOpen-Meteo、RainForecastはTomorrow.io（第16章） |
+| 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
+| 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
+| 未決定 | 下記の実装詳細・Provider正式採用・具体値 |
 
 Backendの技術・実行・Transaction・Recovery方針はいずれも上表の暫定採用として扱う。設計内容は既存本文・Architectureの記載を維持し、具体値・実装詳細の未決定事項と区別する。確定API契約はこれらの暫定採用に依存して変更しない。
 
@@ -748,8 +751,10 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 
 ### 15.3 Backend・外部連携の未決定事項
 
-- Weather API Provider、Schedule API Provider・認証方式。
-- ProviderごとのRate Limit、1 HTTP Responseと複数Stateの対応、Provider単位のRequest共有・Backoff。
+- Weather API Providerの正式採用、Open-Meteoの実データ検証・利用規約最終確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
+- Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
+- Schedule API Provider・認証方式。
+- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
 - Domain Data詳細Schema、外部の観測・予報時刻を踏まえた鮮度評価・expiresAt決定。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
 - Cache不正時の物理削除。
@@ -762,3 +767,85 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 - Log Rotation・Retention・Rate Limit、未選定の別領域の技術・バージョン・Linter / Formatter等。
 
 Future機能を先行実装しない。Issue #4のClose前には文書・Issue間の整合性を確認する。
+
+---
+
+## 16. Weather API選定とTomorrow.ioの取得制御
+
+### 16.1 暫定採用候補
+
+家庭用MVPでは月額0円で継続運用できるAPIを優先し、一般的な天気予報と短時間降雨予測を別Providerから取得することを許容する。
+以下は**暫定採用候補**であり、正式採用済みではない。取得周期・TTLも既存の暫定値を維持する。
+
+| Published State | Provider候補 | 取得周期（暫定） | TTL（暫定） |
+|---|---|---|---|
+| CurrentWeather | Open-Meteo | 15分 | 2時間 |
+| HourlyWeather | Open-Meteo | 30分 | 3時間 |
+| RainForecast | Tomorrow.io | 5分 | 30分 |
+| WeeklyWeather | Open-Meteo | 6時間 | 12時間 |
+
+Open-Meteoを基本的な天気予報の取得候補、Tomorrow.ioを分単位降雨予報の取得候補とする。
+Open-Meteoの実データ検証・利用規約の最終確認は未完了である。
+既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-Meteoの複数State取得Request共有方式は後続設計とする。
+
+R-03の分単位短時間降雨予測、雨の降り始め・降り終わりの見込みというMVP要件は維持する。1時間単位の予報を単に分換算したものは要件を満たす短時間降雨予測と扱わない。
+Frontendの30秒Pollingは変更しない。
+
+### 16.2 Tomorrow.ioの検証実績と未検証事項
+
+**ユーザーによる検証実績**：Windows PowerShellの検証スクリプトからTimeline APIを呼び出し、日本国内の指定地点について以下を確認した。
+
+- 5分間隔・1分間隔の将来予報レコード取得に成功。
+- `precipitationIntensity`に対応する数値を取得し、検証時は0mm/h。
+- API Keyによる認証に成功。
+
+API Response取得と時間間隔指定は実証済みだが、降雨時の予測品質、分単位データの独立した予測精度、降り始め・降り終わりの推定精度は未検証である。
+これはユーザーの検証結果の記録であり、今回の文書更新でAPIへアクセスしたものではない。API Key・認証情報・正確な地点は記載しない。
+
+### 16.3 利用枠の確認内容
+
+ユーザーのダッシュボード画面で、以下を確認した。Providerの正式仕様・将来の継続条件を最終確認したものではない。
+
+| 項目 | ユーザー確認値 |
+|---|---|
+| API Server Calls / day | 500回 |
+| API Server Calls / hour | 25回 |
+| API Server Calls / second | 3回 |
+| 利用可能Data Layers | Core、Severe Weather Hazards |
+
+RainForecastを5分周期・1 Request / 取得で運用すると、通常取得分は288回/日・12回/時となる。
+無料利用を優先するが、無料枠超過時の課金条件、制限のリセット境界、継続的な無料利用条件は未確認である。枠内であれば無条件に継続無料と保証しない。
+
+### 16.4 Quota Guardの暫定採用方針
+
+以下を**暫定採用**とし、既存SQLite Acquisition Control・Scheduler・Backoffへ組み合わせる。Quota GuardはProvider単位の送信許可であり、State単位の取得制御や取得失敗後のRetry / Backoffとは別の責務である。
+
+- Tomorrow.ioの通常取得周期は5分、Providerへの同時取得は最大1件とする。
+- 即時Retryは行わず、Request送信前にQuota Guardを通す。
+- 送信予定をSQLiteに永続記録してからHTTP Requestを開始する。
+- 通信失敗・Timeoutでも、消費枠を安易に取り消さない。
+- Backend再起動後も送信履歴・Backoff・取得制御状態を復元する。
+- 日次・時間・秒間の制限をそれぞれ判定する。
+- Providerリセット境界が未確定の間は、ローリングウィンドウで保守的に管理する。
+- Quota不足による送信抑止と、実際に送信したHTTP Requestの失敗を区別する。
+- HTTP 429時は即時再試行せず、`Retry-After`等を考慮して待機する。詳細待機計算は後続設計とする。
+
+送信前の永続記録は、外部HTTPをDB Transactionの外で行う既存境界を変更しない。Quota記録の具体SQL・DDL・Transaction実装は今回確定しない。
+
+| 対象 | Provider公称上限（ユーザー画面確認） | Backend安全上限（暫定） |
+|---|---|---|
+| 24時間 | 500回 | 400回 |
+| 60分 | 25回 | 20回 |
+| 1秒 | 3回 | 1回 |
+
+安全上限は実装前の暫定値であり、Providerの正式な制限仕様を確認して再評価する。ローリング24時間・60分・1秒の管理をProvider側の正式なリセット仕様と同一視しない。
+
+Backend外で同一API Keyを利用するRequest数は、このBackendのSQLiteだけでは把握できない。手動検証、複数インスタンス、他のAPI経路による消費は運用上の制約として扱う。
+
+### 16.5 既存契約と後続設計
+
+API停止中もCacheのTTL・有効CacheのFallback・Metadata・期限切れMaskを維持する。Quota不足やBackoffを理由に古いデータの期限を延長しない。
+Startupは外部取得完了を待たず保存Stateを復元してAPI提供を開始し、利用可能データは期限内に限って提供する。
+
+Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限、429待機計算は後続設計に残す。
+State単位の取得制御とProvider単位のRate Limitの区別はArchitecture 16.3に従う。
