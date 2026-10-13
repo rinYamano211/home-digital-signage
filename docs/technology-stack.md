@@ -560,7 +560,7 @@ State自体が未公開であることと、公開済みStateのデータが未�
 }
 ```
 
-Schedule Domain Dataは18.1で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+Schedule Domain Dataは18.1、CurrentWeather Domain Dataは第19章で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
 FrontendのResponse取得・更新ルールは7.3に従う。
 
 ### 10.8 期限切れデータの表示用APIでの扱い
@@ -731,6 +731,7 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 状態 | 対象 |
 |---|---|
 | 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章）、Google Calendar + Service AccountによるSchedule取得方針（第17章） |
+| 設計方針：CurrentWeather | 4項目Domain Data・State全体の採用／不採用・取得時鮮度と公開TTLの分離（第19章）。Provider・取得周期・未来許容は暫定 |
 | 設計方針：Schedule Step 5 | Schedule Domain Data・全ページ取得と正規化・JST日付制御・Cache条件（第18章）。未確定詳細は18.6に区別 |
 | 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
 | 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
@@ -738,7 +739,8 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 暫定採用：Transaction | 取得結果単位のSQLite Transaction、複数State生成時の部分成功（Architecture 16.4） |
 | 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
 | 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
-| 暫定採用候補：Weather API | CurrentWeather / HourlyWeather / WeeklyWeatherはOpen-Meteo、RainForecastはTomorrow.io（第16章） |
+| 暫定採用：CurrentWeather Provider | Open-Meteo（第19章）。最終Provider選定は未完了 |
+| 暫定採用候補：その他Weather API | HourlyWeather / WeeklyWeatherはOpen-Meteo、RainForecastはTomorrow.io（第16章） |
 | 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
 | 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
 | 未決定 | 下記の実装詳細・Provider正式採用・具体値 |
@@ -753,11 +755,11 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 
 ### 15.3 Backend・外部連携の未決定事項
 
-- Weather API Providerの正式採用、Open-Meteoの実データ検証・利用規約最終確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
+- Weather API Providerの正式採用、Open-Meteoの追加検証・利用規約最終確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
-- Weather Domain Data詳細Schema、外部の観測・予報時刻を踏まえた鮮度評価・expiresAt決定。Schedule設計方針と残課題は第18章。取得成功だけで古いデータを延命しない。
+- HourlyWeather・RainForecast・WeeklyWeatherの詳細Schemaと鮮度評価。CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
 - Cache不正時の物理削除。
 - Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
@@ -777,7 +779,7 @@ Future機能を先行実装しない。Issue #4のClose前には文書・Issue�
 ### 16.1 暫定採用候補
 
 家庭用MVPでは月額0円で継続運用できるAPIを優先し、一般的な天気予報と短時間降雨予測を別Providerから取得することを許容する。
-以下は**暫定採用候補**であり、正式採用済みではない。取得周期・TTLも既存の暫定値を維持する。
+以下は**暫定採用候補**としての選定記録であり、正式採用済みではない。CurrentWeatherは第19章でProviderの暫定採用とMVP運用値を具体化した。その他Stateの取得周期・TTLは既存暫定値を維持する。
 
 | Published State | Provider候補 | 取得周期（暫定） | TTL（暫定） |
 |---|---|---|---|
@@ -787,7 +789,7 @@ Future機能を先行実装しない。Issue #4のClose前には文書・Issue�
 | WeeklyWeather | Open-Meteo | 6時間 | 12時間 |
 
 Open-Meteoを基本的な天気予報の取得候補、Tomorrow.ioを分単位降雨予報の取得候補とする。
-Open-Meteoの実データ検証・利用規約の最終確認は未完了である。
+Open-Meteo currentの限定的な手動検証は19.7に記録する。他のData・長期安定性等の追加検証と利用規約の最終確認は未完了である。
 既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-Meteoの複数State取得Request共有方式は後続設計とする。
 
 R-03の分単位短時間降雨予測、雨の降り始め・降り終わりの見込みというMVP要件は維持する。1時間単位の予報を単に分換算したものは要件を満たす短時間降雨予測と扱わない。
@@ -849,7 +851,7 @@ Backend外で同一API Keyを利用するRequest数は、このBackendのSQLite�
 API停止中もCacheのTTL・有効CacheのFallback・Metadata・期限切れMaskを維持する。Quota不足やBackoffを理由に古いデータの期限を延長しない。
 Startupは外部取得完了を待たず保存Stateを復元してAPI提供を開始し、利用可能データは期限内に限って提供する。
 
-Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限、429待機計算は後続設計に残す。
+Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限、429待機計算は後続設計に残す。CurrentWeather Domain Dataの設計方針は第19章を参照する。
 State単位の取得制御とProvider単位のRate Limitの区別はArchitecture 16.3に従う。
 
 ---
@@ -1044,3 +1046,99 @@ MVPではPinoログと既存Published State Metadataで管理する。必要に�
 - JSON Schemaバリデータ設定・実装検証。
 
 Step 5のSchedule設計記録までを対象とし、別Domainの詳細設計やコード実装には進まない。
+
+---
+
+## 19. CurrentWeather Domain Data設計
+
+### 19.1 目的・Providerと採用状態
+
+MVPでは、単一の自宅周辺エリアの屋外現在気温と天気アイコンを表示する。
+Provider候補のOpen-Meteoは**暫定採用**であり、最終Provider選定完了とは扱わない。Forecast APIのcurrentを使用し、temperature_2m、weather_code、is_day、current.time、current.intervalを取得対象とする。
+本章は合意済み設計の記録であり、アプリ実装・異常ケース検証完了を意味しない。
+
+### 19.2 Domain Data Schema
+
+```typescript
+type CurrentWeatherData = {
+  temperatureC: number;
+  weatherCode: number;
+  isDay: boolean;
+  validAt: string;
+};
+```
+
+4項目すべて必須で、MVPではnullを許容しない。追加のProviderフィールドは無視し、必要項目のみを変換する。
+
+| 項目 | 意味・変換 |
+|---|---|
+| temperatureC | 摂氏の現在気温 |
+| weatherCode | Open-MeteoのWMOベース天気コード。未知の整数コードも保持可能 |
+| isDay | 昼夜区分。APIの数値0 / 1をbooleanへ変換 |
+| validAt | 気象Dataの対象時刻。Providerタイムゾーンを考慮しUTC RFC3339へ正規化 |
+
+current.intervalはProvider Response Validationに使い、Domain Dataには含めない。
+validAtと、Backendが外部Dataを正常取得・検証・採用した時刻dataUpdatedAtは別の意味である。
+
+### 19.3 ValidationとState単位の採用
+
+| API項目・観点 | 条件 |
+|---|---|
+| temperature_2m | 有限の数値 |
+| weather_code | 整数。未知の整数コードも許容 |
+| is_day | 数値の0または1 |
+| current.time | 実在する正しい日時で、タイムゾーンを考慮してUTC RFC3339へ変換可能 |
+| current.interval | 正の整数。900秒には固定しない |
+| 取得時鮮度 | validAtが取得時点の過去30分〜未来5分以内 |
+
+null、型不正、必須項目欠損、実在しない日時はValidation失敗とする。未来5分の許容は時刻ずれ等への対処としての暫定値である。
+
+必須項目の1つでも不正ならCurrentWeather全体を不採用とし、正常な気温だけの部分採用は行わない。
+これはCurrentWeather内部の採用方針であり、他のPublished Stateの正常取得・更新を停止させない。複数Stateを生成する取得結果の保存は既存Transaction・部分成功方針に従う。
+
+### 19.4 取得周期・Cache・鮮度判定
+
+| 項目 | MVP運用値・状態 |
+|---|---|
+| 取得周期 | 15分（暫定） |
+| Cache TTL | 2時間 |
+| 取得時の過去方向許容 | 30分 |
+| 取得時の未来方向許容 | 5分（暫定） |
+
+第11.5・16.1の共通表は従来の暫定値の記録であり、CurrentWeatherについては本章の運用値・採用状態を参照する。他Stateの暫定値は変更しない。
+取得時はvalidAtで採用可否を判断し、公開時は既存Published StateのexpiresAtとCache TTLに従う。公開時に取得時の30分制限を再適用しない。
+失敗時は期限内Cacheを利用し、TTLを延長しない。期限切れは既存API契約に従いdata:null、dataSource:nullへMaskし、既存Metadataを保持する。
+
+### 19.5 取得失敗とFrontend表示
+
+通信失敗、Response異常、Validation失敗、鮮度失敗はいずれもCurrentWeatherの取得失敗として扱い、新Dataを採用しない。
+期限内Cacheがあれば維持し、なければdata:nullとする。lastAttemptAt・lastAttemptResult等は既存契約に従って更新し、既存CacheのdataUpdatedAt・expiresAtを延長しない。
+
+| 状態 | 表示方針 |
+|---|---|
+| 正常取得 | 気温と天気アイコン |
+| 直近取得失敗・TTL内Cacheあり | 気温・天気アイコンを維持し、小さく「更新待ち」 |
+| TTL切れ・有効Cacheなし | 「取得できません」 |
+| 未知の整数天気コード | 「天気不明」。取得失敗とは扱わない |
+| 更新時刻 | MVPメイン画面では常時表示しない |
+
+isDayは昼夜アイコン選択に利用する。「更新待ち」は最後の取得が失敗して有効Cacheを表示する場合の案内である。
+約3mから気温・天気を読めることを意識し、アイコンデザイン・Component実装は今回対象外とする。
+
+**既存要件との確認事項**：R-07とArchitecture 5.6は取得異常時の有効Cache表示に更新状態・必要な最終更新日時を求めている。本章の「常時表示しない」は、異常時の日時表示要件を削除する決定ではない。「更新待ち」と最終更新日時の組合せ・表示場所は未解決の表示詳細として確認が必要であり、今回はrequirements.mdを変更しない。
+
+### 19.6 Future
+
+項目単位の部分採用、欠損表示・Fallback、体感温度・湿度・風速等の追加、詳細画面の更新時刻表示、運用実績による周期・TTL・鮮度閾値調整はFutureの検討事項とする。MVP必須機能へ追加しない。
+
+### 19.7 実API検証範囲と残課題
+
+既に実施された限定的な手動検証として、次を記録する。今回API検証は再実行していない。
+
+- Open-Meteo currentから必要な基本項目を取得し、型・存在を確認。
+- Asia/Tokyoの日時をUTCへ変換できた。
+- 15分の時刻境界をまたぐ複数回の取得を確認。
+- 観測サンプルでは未来時刻の返却は発生しなかった。
+
+長期安定性、全気象条件、すべての異常ケースは未検証である。利用規約・Provider最終選定、Validation実装・時刻設定の詳細、異常時日時表示の整合確認は後続へ残す。
+Issue #4全体は未完了であり、CurrentWeather設計の完了扱いはGitHub差分のChatGPTレビュー合格後とする。
