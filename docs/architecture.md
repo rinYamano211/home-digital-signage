@@ -76,13 +76,13 @@ Common Moduleは共有先のServiceではなく、各Service内で利用する�
 DisplayはConfig / Logging、各BackendはCache / Config / Loggingを利用する。
 各ServiceはCommon Time Moduleを自身の内部で利用する。図の共通Moduleは独立した実行単位や共通の時刻Serviceを表さない。
 OS / HardwareはProcess Management、時刻同期・RTC等の基盤責務を担う。
-Process CrashはOS / Service Supervisor、OS HangはWatchdogで復旧する（第11章）。具体方式はIssue #4で決定する。
+Process CrashはOS / Service Supervisor、OS HangはWatchdogで復旧する（第11章）。Backend Supervisorにはsystemdを暫定採用し、Watchdogの具体方式は未決定とする。
 時刻維持・同期とApplicationからの時刻利用の分担は第10章に示す。
 Cacheの意味・有効性は各Backendが所有し、Cache Moduleは保存・読出し等の共通処理を担う。
 
 WeatherのPublished StateはCurrentWeather / HourlyWeather / RainForecast / WeeklyWeatherに分かれる（5.5）。
 Display内部の各責務が持つDisplay Runtime Stateについては7.1、永続化・再構築については第7章を参照する。
-Shared State Store等の実現技術はIssue #4で決定する。
+Shared State StoreはSQLiteを暫定採用する。具体的な保存・取得契約は第16章とtechnology-stack.mdを参照する。
 Display ComponentはShared State Storeを直接参照せず、Published State取得・Component State生成の責務を介する（6.4）。
 
 ---
@@ -95,8 +95,8 @@ Display ComponentはShared State Storeを直接参照せず、Published State取
 責務・変更理由・外部依存・障害境界・ライフサイクルを基準に
 サービス境界を決定する。
 
-独立ServiceはRaspberry Pi上でそれぞれ独立した実行単位とし、
-個別に起動・停止・再起動できる構成を目指す。
+Issue #3では各Serviceを独立した実行単位とし、個別に起動・停止・再起動できる構成を目指していた。
+Issue #4のMVP実現方式では、Weather・Scheduleの論理Service境界を維持し、原則1つのBackend Process内の非同期Taskとして実行する（第16章）。Process単位の独立停止・Crash分離とは区別する。
 
 ただし、機能が異なることだけを理由にService化せず、
 独立した実行単位にするメリットがあるかを判断する。
@@ -119,7 +119,7 @@ Display ComponentはShared State Storeを直接参照せず、Published State取
 
 Display / Schedule / Weather は、
 責務・変更理由・外部依存・障害原因などが異なるため、
-独立Serviceとして扱う。
+論理上の独立Serviceとして扱う。MVPでのProcess配置は第16章に従う。
 
 ### 4.3 Common Module
 
@@ -174,7 +174,7 @@ External API
 Shared State StoreはService間で現在状態を共有するための保存先として扱う。
 State管理専用Serviceは追加しない。
 下流側から上流側のStateを書き換えず、Display ComponentもPublished Stateを直接変更しない。
-具体的な実現技術はIssue #4で選定する。HTTP、DB、ファイル、MQTT等は本書では確定しない。
+具体的な実現方式はIssue #4で具体化する。Shared State StoreにはSQLiteを暫定採用し（第16章）、表示用HTTP API契約はtechnology-stack.md第7・10章に従う。
 
 ### 5.3 採用理由と設計上の注意点
 
@@ -234,7 +234,8 @@ Published Stateには表示データに加え、
 
 データ本体と、利用可能性・鮮度・取得結果等の判断材料を提供する。
 異なる意味の時刻を単一のupdatedAtへまとめず、必要なmetadataを区別する（7.8）。
-具体Schemaやstatusの値はIssue #4・詳細設計で決定する。
+Published Stateの共通Metadata・表示用API契約はIssue #4で具体化済みである。Domain Data・Component Stateの詳細Schemaや表示状態の具体化は後続設計で扱う。
+Issue #4で確定したPublished Stateの共通Metadata、Cache由来の識別、および表示用API Responseの具体的な契約は、[技術スタック選定 第10章](technology-stack.md#10-published-state-apiのdata-contract)を参照する。
 
 データの有効期限そのものは、
 そのデータの意味を理解しているBackend Serviceが決定する。
@@ -272,7 +273,7 @@ Backend ServiceがCacheを利用してPublished Stateを生成した場合も、
 Display ServiceはBackend内部のCacheを直接認識・参照せず、Published Stateを利用する。
 取得異常であること、および必要な最終更新日時等を、
 DisplayがPublished State経由で識別・表示できる構成とする。
-具体的なPublished State Schemaやstatusの値・粒度はIssue #4・詳細設計で決定する。
+共通Metadata・表示用APIの契約はtechnology-stack.md第10章に従う。Domain Dataや表示用状態の詳細は後続設計で扱う。
 期限切れ・利用可能なデータがない場合は、その情報を表示に利用しない。
 外部データの取得失敗はこれとは別の事実として扱い、
 必要に応じてPublished Stateを通じてConsumerへ伝達する。
@@ -459,13 +460,13 @@ Display Runtime Stateはcurrent component / current switch index / next switch t
 | State | 再起動を跨ぐ保持方針 |
 |---|---|
 | Cache State | 再起動後の早期復旧・外部取得失敗に備えて保持する。有効なCacheからBackendがPublished Stateを再生成できる |
-| Published State | 実行中はShared State Storeに保持する。システム再起動を跨ぐ永続化はMVPでは必須としない。起動時は8.2の方針に従い、有効なRecovery Sourceによる再生成と速やかな外部取得による最新化を行う |
+| Published State | 実行中はShared State Storeに保持する。Issue #3ではシステム再起動を跨ぐ永続化は必須としていなかったが、Issue #4の実現方式ではSQLiteに保存し、最新・直前の2世代を保持する（第16章）。起動時は8.2の方針に従い、有効なRecovery Sourceによる再生成と速やかな外部取得による最新化を行う |
 | Component State | 永続化しない。必要に応じてPublished State等から再生成可能な派生Stateとして扱う |
 | Display Runtime State | 原則として永続化しない。MVPではContentSwitcher等を初期状態から開始してよく、再起動直前の表示位置の復元は要求しない |
 
 Backend Service単体が停止した場合は、Shared State Storeに最後にPublishされたStateを残せる構造とする。
 Displayは有効期限内のStateを利用できる。
-これはシステム再起動を跨ぐPublished Stateの永続化を必須としない方針とは区別する。
+Service停止時の保持とシステム再起動後の復元を区別し、Issue #4のSQLite保存・検証・復元方針は第16章に従う。
 
 switch order、display duration、将来の利用者指定Layoutなど、
 「現在どう動いているか」ではなく「どう動くべきか」を表す情報はRuntime StateではなくConfigとして扱う。
@@ -526,7 +527,7 @@ flowchart TB
 
 [要件定義](requirements.md)のR-01/R-06に従い、基本画面は外部情報取得を待たずに起動し、
 時刻が利用不能な場合はR-01の未同期状態を表示する。ネットワーク未接続と時刻利用可否の区別は10.2に従い、外部情報が利用できない場合の表示はR-07に従う。
-具体的な起動・再構築のタイミングや同期方式は後続設計で決定する。
+Backend起動時の復元・取得判定は第16章に従う。その他の詳細な同期方式は後続設計で決定する。
 
 ### 7.4 Component Stateの再評価
 
@@ -578,7 +579,7 @@ Shared State Store上に存在することと、現在利用可能であるこ�
 Displayが利用時点で利用可能性を評価する。
 
 更新状態・最終更新日時の表示は5.6およびR-07に従う。
-具体的なデータ契約・SchemaはIssue #4・詳細設計、UI表現はIssue #5で決定する。
+共通Published State契約はtechnology-stack.md第10章に従い、Domain Data・Component Stateの詳細Schemaは後続設計、UI表現はIssue #5で決定する。
 
 ### 7.7 部分障害時のComponent State
 
@@ -676,7 +677,7 @@ CacheはFallback / Recovery Sourceであり、Normal OperationのSource of Truth
 Startup / Recoveryでは、Valid Cache等によるState ReconstructionをExternal Acquisitionの完了まで不要に待たせない。
 利用可能なRecovery Sourceから早期復旧するとともに、External Acquisitionも速やかに開始し、成功後に最新Stateへ自動収束する。
 Cache-first / API-firstという厳密な実装順序や具体的な並列処理方式は固定しない。
-具体的なConcurrency・非同期処理・Task管理はIssue #4 / 詳細設計で決定する。復旧後の収束は11.6に示す。
+MVPのConcurrency・非同期Task・取得制御は第16章に具体化する。詳細な実装構造は未決定とする。復旧後の収束は11.6に示す。
 Displayの基本画面起動はBackendや外部APIを待たない既存方針を維持する。
 timeout、retry回数・間隔は後続設計で決定する。
 
@@ -734,8 +735,8 @@ BackendはCache由来という事実を提供するだけとし、
 警告・アイコン等のDisplay固有の表現方法は決定しない。
 Displayは内部Cacheの実装や直接参照に依存せず、Published State経由で事実を受け取る。
 
-source = cache等のSchema、status・エラー分類、具体的なUIは後続設計で決定する。
-Cache保存技術・形式・破損検出・atomic write等もIssue #4で選定する。
+Cache由来の識別はtechnology-stack.md第10章のdataSourceに従う。表示状態・エラー分類・具体UIは後続設計で決定する。
+Cache保存はSQLiteを暫定採用し、Cache Entry・Validation・Transactionは第16章に従う。DDL等の詳細は未決定とする。
 
 ### 8.7 Cache / Fallbackの基本フロー
 
@@ -974,7 +975,7 @@ Secret Historyは原則保持せず、必要に応じActive / Pendingの最大2�
 
 Issue #3の論理設計として、時刻の基準・利用可否、Timezone、時間変化の責務を整理する。
 時刻同期はOS / Hardwareへ委譲し、ApplicationはCommon Time Moduleを介して時間情報を利用する。
-具体的なOS設定・日時API・Timer等の技術選定はIssue #4で行う。
+具体的なOS設定・日時API等はIssue #4で扱う。Backend Schedulerの標準setTimeoutは暫定採用済みであり、時刻利用の原則と実機確認は維持する。
 
 ### 10.1 Time BasisとCommon Time Module
 
@@ -1077,7 +1078,7 @@ Stateの永続化・再構築は第7章、起動・復旧の制御は本章に�
 
 ### 11.1 Startup Modelと最小限のInitialization
 
-各Application Serviceは原則独立して起動可能とし、
+各Application Serviceは論理上独立して起動可能とし、MVP Backendの物理的な起動単位は第16章に従う。
 他Application Service、Network、External API、外部データ取得完了を起動前提としない。
 OS / Runtimeや必要な内部Resourceまで不要とする意味ではない。
 起動順序を性能上の最適化として利用しても、正しい動作を特定のApplication Service起動順序へ依存させない。
@@ -1330,22 +1331,22 @@ Architecture-levelの重大な矛盾、責務重複、循環依存、未解決Bl
 
 Issue #3では論理上の責務・契約・動作原則を確定する。
 採用技術・API制約、具体UI、実装構造、実機測定に依存する以下は、この段階では固定しない。
-未決定事項はArchitecture-levelのBlockerと区別し、下記の後続Issueで具体化する。
+未決定事項はArchitecture-levelのBlockerと区別し、下記の後続Issueで具体化する。Issue #4で具体化済みのAPI契約はtechnology-stack.md第10章、Backend・永続化・Recoveryは本書第16章を参照し、以下の表は未確定の詳細も含む申し送りとして扱う。
 
 ### 15.1 Issue #4：Technology Stack / Technical Mechanism
 
 | 分野 | 選定・確認する事項 |
 |---|---|
-| Shared State / Data Contract | Storeの具体技術、取得方式（Polling / Notification等）、Schema / 型 / Serialization、Schema Versioning、Concurrent Access、個々のStateのAtomicity |
+| Shared State / Data Contract | SQLite暫定採用、HTTP Polling・共通API契約とState単位Atomicityは具体化済み。正式DDL・Index・Migration・Concurrent Access詳細は未決定（第16章） |
 | 更新制御 | 複数Stateの厳密な時点整合性・Atomic取得更新をMVPで要求しない前提での実現方式。Concurrent Request / 更新競合への対策、Freshness比較・退行防止の実現責務とMechanismをStore技術と合わせて決定する |
-| Cache | 保存技術・ファイル形式・DB Schema、破損検出、Atomic Write。API・取得周期・制約を踏まえた有効期間、Timeout・Retry回数・間隔 |
-| Config / Secrets | Config保存形式、.envの利用可否、Secrets保存・暗号化・OS Permission / Access Control、Atomic Write、Last Known ValidとMigration Sourceの保存方式 |
+| Cache | SQLite暫定採用、Cache Entry・Validation・Transactionは第16章。正式DDL・Provider依存の期限評価・Timeout・Backoff詳細は未決定 |
+| Config / Secrets | 環境変数 + TypeBox Validationを暫定採用。Secrets・.env・Permission・Last Known Validの具体的な保存管理は未決定 |
 | Config変更 | 通知方式（Event / Watch / Callback / Polling等）、Runtime Apply / Retry、Migration Library / 実装方式、Secret切替・Connection Test。Config Revision / Optimistic Lock等はMVPでの必要性を確認し、単一変更元では具体的な競合制御実装を必須としない。不要であればFutureの複数変更元導入時に具体化する |
-| Process / Recovery | Supervisor選定・設定、Failure別Retry / Backoff、Restart Rate Limit・Crash Loop判定・抑制後再試行、Hardware / Software Watchdog方式・timeout、監視との連携 |
+| Process / Recovery | 原則1 Backend Process、systemd暫定採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdog・Backoff具体値は未決定 |
 | Startup / State更新 | 早期復旧と速やかな外部取得を両立するConcurrency・非同期処理・Task管理、State更新・通知のタイミング・同期方式、Recovery Event / Trigger |
 | Time / Date | OSの時刻同期機構・外部同期方式、Raspberry Pi 5 RTC・Backup Batteryの設定と確認、RTC内部のUTC / Local Time、OS Timezone、Timestamp表現、OS情報によるTime Usability判定 |
 | Runtime / Framework | 日時API、Monotonic Clock API、Timer / Scheduler、Polling / Event / Timer等による時間変化検知・再評価起動。標準TimerのMonotonic Time利用を確認し、利用可能なら標準機能を優先する |
-| Logs / Metrics | Log保存・Format・Level体系、Rotation / Retentionと値、最大容量・圧縮・Rate Limit、Metrics収集・各System Resourceの取得方法、Monitoring周期・Threshold |
+| Logs / Metrics | Pino + journald、Structured JSON Loggingを暫定採用。Level・Rotation / Retention・Rate Limit・Metrics・Monitoring具体値は未決定 |
 
 ### 15.2 Issue #5：UI Design
 
@@ -1359,7 +1360,7 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 以下は採用技術・UI設計を踏まえて具体化し、15.1で選定する方式と整合させる。
 
 - Component State / Display Runtime Stateの正式名称・具体構造、各責務のクラス・Interface。
-- Published State / Component Stateの内部Schema・型、Metadataの意味・粒度・必須／Optional、status・エラー分類、Cache由来・取得失敗を伝達する具体契約。
+- 共通Published State Metadata・Cache由来の識別・表示API契約はtechnology-stack.md第10章、Cache Entryは本書第16章で具体化済み。Domain Data・Component Stateの詳細Schema・型、表示状態・エラー分類は未決定。
 - displayable等の表示可否InterfaceとComponentごとの具体的な成立条件。Component Stateに共通状態enumを保持しない原則は維持する。
 - 共通変化検出とComponent State生成の連携、State Notification、再評価起動。
 - Store障害・Service停止時の判定、再アクセス・再公開・復旧手順、CacheからのPublished State反映とComponent State再生成。
@@ -1386,4 +1387,132 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 - 自動Secret Rotation、Secret History・複数世代管理、高度なAudit Trail、Config Approval Workflow、Enterprise Secret Management。
 - Configの多世代History / Undo。
 
-HTTP / DB / MQTT / Framework等の採用は本書では確定しない。
+API契約の確定、Backend技術の暫定採用、残る詳細の未決定はtechnology-stack.mdと本書第16章で区別する。
+
+---
+
+## 16. Issue #4：Backendの具体的な実現方式
+
+本章は既存Logical Architectureの責務・Ownership・依存方向を維持し、Issue #4で合意した実現方式を追加する。
+技術スタック・Deploy・SQLite設定・Backupの採用状況は[技術スタック選定 第11〜15章](technology-stack.md#11-backend技術スタック)を正本とする。技術の暫定採用を実装・検証済みと扱わない。
+
+### 16.1 論理ServiceとBackend Process
+
+MVPでは原則1つのBackend Process内で複数の非同期Taskを動作させ、5種類のStateを独立した取得スケジュールで管理する。
+Weather Service・Schedule ServiceのDomain責務とState Ownershipは維持する。API提供処理の具体的な構成・Module配置は未決定である。
+
+Issue #3の独立実行単位という物理構成の目標を、このMVP実行方式として具体化する。Task例外・外部API障害の分離とProcess Crashの分離を混同しない。
+
+- Taskの重複実行を防止する。
+- 外部取得中もAPI提供を継続する。
+- 1外部API障害・Task例外で他Taskを停止させない。
+- Process CrashはBackend内のTaskへ共通に影響し、systemdによるProcess再起動を利用する（systemdは暫定採用）。
+- Display基本画面の起動をBackend・API・Networkの利用可能性へ依存させない。
+
+HTTP Client、Scheduler / Retry実行機構、Cache I/O、Store I/O、Config、Logging、TimeはCommon Moduleとする。
+Domain固有Validation、Data変換、Cache採用、Freshness、Published State生成は各Domainが担当する。汎用Pipeline Framework、Plugin Framework、不要な独立Serviceを追加しない。
+
+### 16.2 State OwnershipとSQLite保存
+
+既存のCache State・Published State・Component State・Display Runtime Stateの4分類は維持する。
+別に、Backendの取得制御用永続状態として**Acquisition Control State**を扱い、表示用State分類に混ぜない。
+
+| 対象 | 責務・Ownership |
+|---|---|
+| Backend Cache State | 各Backend Domainがデータ・採用・期限を所有。共通Cache I/Oは保存・読出し機構 |
+| Published State | 各Backend Domainが自身の情報単位を生成・更新・公開。DisplayはRead Only |
+| Acquisition Control State | 各StateのBackend取得制御。連続失敗数・次回試行時刻を永続化 |
+| Frontend Component State | Display内で生成する派生State。BackendやStoreへ戻さない |
+| Display Runtime State | Displayの切替位置等。MVPではCrash前の表示位置復元を要求しない |
+
+SQLiteを暫定採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。
+Published StateのDataとMetadataは1 JSON Snapshotとして保存し、不完全なSnapshotを公開しない。最新・直前の2世代を保持する。
+SQLiteの共有Connectionは保存機構の方針であり、他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
+複数State間の厳密な同時点整合性は要求しない。State単位のAtomicityと、取得結果単位のTransaction（16.4）を区別する。
+
+### 16.3 取得・Scheduler・Backoff
+
+標準setTimeoutとNode.js標準fetchは暫定採用とする。取得周期・有効期限はtechnology-stack.md 11.5の暫定値に従い、Frontendの30秒Pollingと分離する。
+
+Startup時は保存Published Stateを復元し、外部取得完了を待たずAPI提供を開始する。
+未取得State・期限切れState、または`now >= dataUpdatedAt + acquisitionPeriod`のStateを更新対象とする。更新対象でも保存済みBackoff・Rate Limitを無視しない。
+有効なPublished Stateは更新待ち中も期限内なら提供できる。
+
+- 1取得TaskのHTTP Requestは原則1回。即時Retryしない。
+- 失敗時は有界の指数Backoffを使用する方針とし、成功時は連続失敗数をResetする。
+- Backoff状態はSQLiteへ永続化する。Backoff中も期限切れDataをAPIでMaskする。
+
+```typescript
+type AcquisitionControlState = {
+  consecutiveFailures: number;
+  nextAttemptAt: string;
+};
+```
+
+State単位の取得制御とProvider / Request単位のRate Limitを区別する。
+Jitter、指数係数、上限、Provider単位のRequest共有・Backoff等は詳細未決定である。Tomorrow.ioのQuota Guard・送信前永続記録・429待機は[技術スタック選定 第16章](technology-stack.md#16-weather-api選定とtomorrowioの取得制御)の暫定採用方針に従い、正式制限・具体SQL・待機計算は後続設計とする。
+
+### 16.4 Validation・Transaction・公開
+
+外部HTTP Request、Response Validation、Domain変換、Snapshot生成はSQLite Transactionの外で行う。
+取得結果に関係するCache、Published State、Acquisition Control Stateの更新は、短い1 TransactionでCommitする。
+Commit成功後に新Published Stateを公開し、Commit失敗時はRollbackして旧Snapshotを維持する。
+
+1外部API Responseから複数Stateを生成する場合、State単位の部分成功を許可する。
+正常Stateは更新し、不正Stateは失敗・Fallback処理を行い、その取得結果を同じ取得結果単位のTransactionで保存する。
+**Transaction自体が失敗した場合は、同一Transaction内の全State更新がRollbackされる。**
+Domain Validationの部分成功は複数Stateの厳密な同時点整合性を要求するものではなく、Transaction Commitの部分成功とも異なる。
+HTTP Request自体の失敗と、特定StateのみのDomain Validation失敗を区別する。Provider ResponseとStateの具体対応は未決定とする。
+
+Scheduleの外部取得はGoogle Calendar + Service Accountの正式採用方針に従う。[技術スタック選定 第17章](technology-stack.md#17-schedule-api選定)に権限・Scope・検証結果・残課題を記録する。Schedule ServiceのOwnership、SQLite・Cache・Recoveryの採用状態、共通Metadata契約は維持する。Schedule Domain Dataと空予定の表現、全ページ取得・JST日付照合・同日Cache条件は[技術スタック選定 第18章](technology-stack.md#18-step-5schedule-domain-data詳細取得制御)に従う。
+
+### 16.5 Backend CacheとFallback
+
+CacheはPublished State単位に保存し、外部API ResponseのRaw Dataを一律保存する方式ではない。
+
+```typescript
+type CacheEntry<T> = {
+  schemaVersion: 1;
+  data: T;
+  dataUpdatedAt: string;
+  expiresAt: string;
+};
+```
+
+Cache EntryのschemaVersionとAPI全体のschemaVersionは別のVersion管理対象である。
+Cache復元ではJSON Parse → TypeBox Schema Validation → Semantic Validation → 有効期限判定を行う（TypeBoxは暫定採用）。
+不正Cacheと期限切れCacheは区別し、期限切れCacheを公開用Fallbackとして採用しない。即時物理削除は要求せず、不正Cacheの物理削除は未決定とする。
+
+外部取得失敗時に有効CacheがあればPublished Stateを再生成する。
+dataUpdatedAt・expiresAtは元の値を維持し、lastAttemptAtは完了した失敗試行の開始日時、lastAttemptResultはfailure、dataSourceはcache、publishedAtは新Snapshot生成日時とする。
+復元で鮮度期限を延長せず、既存Published StateがCacheより新しく有効なら古いCacheで無条件に上書きしない。
+API Read・単なるDB復元ではpublishedAtを更新しない。表示用APIの期限MaskとMetadata保持はtechnology-stack.md第10章に従う。
+
+### 16.6 Snapshot世代管理とRecovery
+
+最新・直前の2世代を保持し、世代別Row方式を暫定採用する。新Snapshot追加と古い世代削除は同一Transactionで行う。
+Generation採番・DDL・Migrationは未決定である。
+
+1. SQLiteからState単位にJSON Parse・Schema・Semantic Validationを行う。
+2. 最新Snapshotが不正なら、直前世代をValidationして復元候補にする。
+3. 最新Snapshotが正常だが期限切れの場合は、期限切れだけを理由に直前世代へ戻さない。
+4. 直前世代も不正なら、そのStateを不採用・隔離しログへ記録する。他の正常Stateは独立して復元できるようにする。
+
+復元したSnapshotのFreshness・publishedAtを勝手に更新しない。2世代保持はDatabase全体破損・microSD故障への対策ではない。
+正常なAcquisition Control Stateでは保存nextAttemptAtを尊重する。不正・欠損時は即時連続取得を避け、保守的待機時間を設定して再開する方式を暫定採用する。具体待機時間は未決定。
+
+Lifecycleでは復元後に外部取得待ちなしでAPI提供を開始し、期限切れDataをMaskする。再起動だけではMetadataを更新しない。
+Graceful ShutdownではTask停止・DB終了を安全に行い、Process Crash後はsystemdで再起動する。
+
+### 16.7 Database障害・WAL・Backupの境界
+
+保存データの一部破損とDatabase全体の利用不能を区別する。
+Database自体が利用不能な場合、Backendを正常稼働扱いにしない。停止・検証・手動復元を行う方針とし、根拠なく不正データを修復可能と仮定しない。
+共有Process・DBの障害は複数Backend Domainへ波及し得る。Task単位のFailure IsolationだけでProcess Crash・Database障害を隔離できるとはしない。
+既存5.6の可能な機能継続と、Databaseを使うBackendの正常稼働判定を区別し、Display側の保持情報も期限内に限って利用する。
+
+WAL・Checkpoint・Connection設定、Backup API・頻度・世代数等の採用状況はtechnology-stack.md第12・13章に従う。
+WAL肥大化は原因調査後に必要時手動対応し、定期強制TRUNCATEは行わない。突然の電源断では直近Commit喪失の可能性を許容するが、不完全Snapshotは公開しない。
+BackupはWALと整合する方法で取得し、作成後に整合性確認する。稼働中DB本体だけの単純コピーは採用しない。
+同一microSD内のBackupや2世代Snapshotは物理故障対策ではなく、MVPでmicroSD物理故障からの自動Recoveryを保証しない。
+Backup実行時刻・Path・Scheduler・再試行・復元コマンド、Lock / Checkpoint異常の詳細運用は未決定である。

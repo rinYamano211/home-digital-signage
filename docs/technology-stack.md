@@ -4,7 +4,7 @@
 
 Raspberry Pi 5を使用する家庭用デジタルサイネージ（Home Digital Signage）の、Issue #4「[Research] 技術スタックを選定する」における技術の選定結果を記録する。
 
-本書では、確定済みの **Frontend開発・Build環境：React + TypeScript + Vite**、**Development PCでのProduction Build**、**scp + Release Directory + symbolic linkによるDeploy**を記録する。Issue #4全体の技術選定完了を意味しない。
+本書では、Frontend開発・Build環境、Build・Deploy方式に加え、nginxによるProduction Serving・Reverse Proxy、HTTP Polling、Published State APIの契約を記録する。Backend技術・SQLite・Backupの暫定採用と具体的な実現方針も記録する。確定事項・暫定採用・検討中の案は各節で区別する。Issue #4全体の技術選定完了を意味しない。
 
 Issue #1〜#3の確定事項・関連文書を正本として扱う。Architectureはarchitecture.mdに従う。採用技術、比較済みの選択肢、判断理由と未決定事項を分けて記録する。
 
@@ -88,7 +88,7 @@ TypeScriptはType SafetyとData Contractの明確化を担う。
 Published State、Component State、Metadata、Config、Data Contractを型として明示し、Architecture上の契約を実装で扱いやすくする。
 
 今回の用途ではJavaScriptを単独採用する明確なメリットがないと判断し、TypeScriptを採用する。
-具体的なSchema、Interface、型定義は本選定では固定しない。
+Published Stateの共通構造・Metadataは第10章に選定状況を記録する。その他の具体Schema・Interface・型定義は未決定とする。
 
 TypeScriptのソースはBuildによってJavaScriptへ変換される。Production環境のRaspberry Pi上でTypeScript Compilerを常時実行する構成を意味しない。
 
@@ -160,7 +160,7 @@ Frontendと開発・Build用ツールについて、以下の選択肢を比較�
 | Create React App | 過去の代表的なReact環境として比較。今回の新規プロジェクトで積極的に採用する理由がないため非採用 |
 
 Next.jsの機能数ではなく、今回の要件に対する必要十分性で判断する。
-Public Web Serverが不要という判断は、Production ServingにLocal HTTP Serverを採用しないという決定ではない。Serving方式は未決定である。
+Public Web Serverが不要という判断とローカルのHTTP配信は別である。Production Servingにはnginxを採用する（7.1）。
 
 ---
 
@@ -190,46 +190,108 @@ Lint → Type Check → Test → Build
 
 ---
 
-## 7. Production Runtimeとの境界
+## 7. Production ServingとPublished State取得
 
-Frontend開発・Build用ツールの選定に加え、MVPでは**Development PCでProduction Buildを実行し、scp + Release Directory + symbolic linkでRaspberry PiへDeployする**ことを確定した。
-Production Serving方式とReact UIの接続方法は後続の技術選定で検討する。
+### 7.1 Production Serving
+
+**確定事項**
+
+- Production Servingに`nginx`を採用する。
+- Development PCでViteによるProduction Buildを実行する。
+- Build成果物の`dist/`をRaspberry PiへDeployする。
+- Raspberry Pi上のnginxが静的ファイルをHTTP配信する。
+- Chromium KioskがnginxからReact UIを取得・表示する。
+- Production環境でVite Development Serverを常時稼働させない。
+
+既存のBuild・Deploy方式（第8・9章）は維持する。
 
 ```text
 Development PC
-  React + TypeScriptのソース
-    ↓ Vite Build
+  React + TypeScript + Vite
+    ↓ Production Build
   dist/
-    ↓ Deploy（scp / SSH）
+    ↓ scp
 Raspberry Pi
-  新しいRelease Directoryへ転送
-    ↓ 転送完了後にcurrent symbolic linkを切替
-  Production Serving（方式は未決定）
-    ↓
+  Release Directory
+    ↓ current symbolic link
+  nginx
+    ↓ HTTP
   Chromium Kiosk
 ```
 
-BuildはProduction Piの必須作業とせず、Build環境とProduction Runtimeを分離する。
-選定理由と比較結果は第8・9章に示す。
+nginxの具体的な設定、Listen Port、Directory Path等は未決定とする。
 
-Chromium Kioskは確定済みのDisplay Runtimeである。
-ReactのUI実行とViteの開発・Build処理を区別する。ProductionではBuild済みJavaScriptがBrowser上で動作する。Vite Development ServerをProduction Serving方式として決定しない。
+### 7.2 React UIとPublished State APIの接続
 
-Node.jsの開発ツール実行用途は確定しているが、これによってProduction側のNode.js利用要否やDisplay Serviceの実行構造は確定しない。
+**確定事項**
 
-また、次の論理上の責務を維持する。
+- nginxのReverse Proxyを利用する。
+- React UIは同一OriginのHTTP APIからPublished Stateを取得する。
+- nginxはAPI RequestをRaspberry Pi上のローカルなAPI提供処理へ転送する。
+- React UIからShared State Storeの内部実装を直接参照しない。
+- API提供処理はShared State StoreからPublished Stateを読み取り、API Responseへ変換する。
+- Shared State Storeの内部構造とAPI ResponseのData Contractを分離する。
+- Display ComponentはPublished State取得処理を直接担当せず、Component State生成の責務を介して表示する。
+
+概念図：
 
 ```text
-Shared State Store
-  ↓ Display側Published State取得
+React UI（Chromium Kiosk） → nginx → API提供処理：HTTP Request
+React UI（Chromium Kiosk） ← nginx ← API提供処理：HTTP Response
+API提供処理 → Shared State Store：Published StateのRead
+Weather Service / Schedule Service → Shared State Store：Published State公開
+
+React UIのPublished State取得処理
+    ↓ 取得したPublished State
 Component State生成
-  ↓
-ReactによるDisplay ComponentのRendering
+    ↓
+Display Component
 ```
 
-Browser / ReactからShared State Storeへ直接アクセスする構成は、本書では定めない。
-Browser上のReact UIとDisplay ServiceのPublished State取得部分をどのように接続するかは、後続の技術選定で検討する。
-上記の図は論理上の責務境界を示し、プロセス分割・API・通信方式を指定しない。
+図は概念的な責務と通信経路を示す。Backend技術の暫定採用は第11章、MVP実行モデルはArchitecture第16章を参照する。具体的なAPI提供Process構成・Port番号は未決定。
+
+`/api/...`はパスの例であり、具体的なEndpointは未決定。
+
+API提供処理のためだけに新しい独立Serviceを追加することは、現時点では決定していない。
+
+### 7.3 Published Stateの取得方式
+
+**確定事項**
+
+React UIによるPublished Stateの取得には、HTTP Pollingを採用する。
+
+SSEやWebSocketはMVPでは採用しない。
+
+Polling仕様：
+
+| 項目 | 決定内容 |
+|---|---|
+| 初回取得 | React UI起動直後に実行 |
+| Polling間隔 | 前回Requestの完了から30秒後 |
+| Request Timeout | 5秒 |
+| 同時Request数 | 最大1件 |
+| HTTP取得成功 | 保持しているstates Object全体を置き換え、正常Responseで省略されたStateも削除 |
+| HTTP Request全体の失敗 | 最後に正常取得したResponseを保持し、各Stateの有効期限を評価 |
+| Retry | 即時Retryなし |
+| Backoff | MVPでは導入しない |
+| 次回取得 | 成功・失敗にかかわらず、Request完了から30秒後 |
+| Cleanup | ComponentのUnmount時にRequest・TimerをCancelし、重複Pollingを防止 |
+
+補足：
+
+- 30秒はRequest開始間隔ではなく、Request完了後の待機時間。
+- Requestの処理時間に応じて、実際の開始間隔は30秒より長くなる。
+- HTTP Polling間隔とBackendの外部API取得周期は別物。
+- HTTP取得失敗時も、保持済みデータの`expiresAt`による有効期限判定を継続する。
+- HTTP取得失敗をBackendの`lastAttemptResult`へ反映しない。
+- Backendの外部API取得Retry方針は、React UIのPolling Retry方針とは独立して扱う。
+
+取得成功・失敗にかかわらずFrontendは`now < expiresAt`の場合のみ期限内と判定し、`now >= expiresAt`のデータを表示しない。最後の外部取得結果が`failure`でも、有効期限内のデータは利用可能とする。
+
+Runtime JSON Validationを必須とし、TypeBoxを暫定採用する（第11章）。
+
+Stateの保持は期限切れ情報の表示継続を意味しない。基本画面の起動はBackend/API取得完了を待たない既存方針を維持する。
+Frontend BuildとProduction Runtimeの境界は維持する。BackendのNode.js RuntimeとMVP実行モデルは第11章・Architecture第16章の採用状況に従う。
 
 ---
 
@@ -333,32 +395,863 @@ atomicな切替やRollbackの具体的な実装は、後続の実装設計で扱
 
 ---
 
-## 10. 今後の検討事項
+## 10. Published State APIのData Contract
 
-次の技術選定は、以下の順序で進める。
+### 10.1 一括取得方式
 
-1. **Production Serving方式**：`file://` / Local HTTP Server / その他。
-2. **接続方法**：React UIとDisplay ServiceのPublished State取得部分の接続。Published State取得 → Component State生成 → Display Componentの責務境界を維持する。
+**確定事項**
 
-Build実行場所とDeploy方式は第8・9章で確定済みとし、未決定事項から外す。
-Raspberry Pi実機上のRuntime・起動方式・Service間通信等の具体化は、既存Architectureに従って後続の検討で扱う。
+- MVPでは複数のPublished Stateを1回のHTTP GETでまとめて取得する方式を採用する。
+- 各Published StateはShared State Store内で独立して管理する。
+- 一括取得APIを採用しても、複数State間の厳密なTransactional Snapshot Consistencyは要求しない。
+- 一部のStateが未公開・利用不能でも、他のStateを取得できる構成とする。
+- 将来、必要に応じて個別State取得APIを追加できるようにする。
 
-### 10.1 Build・Deployの実装詳細
+一括APIの取得成功・失敗時のFrontend更新ルールは7.3、公開・省略ルールは10.7に従う。
 
-以下は今回固定しない。
+### 10.2 Published Stateの共通構造
 
-- Release Directoryの具体的なパス。
-- Release名の方式（日時・Git commit hash等）。
-- 旧Releaseの保持世代数。
-- Deploy Scriptの具体的実装。
-- symbolic link切替の具体的コマンド。
-- Deploy後のChromium Reload方法。
-- SSH Key等の認証方式。
-- CI/CDの具体的構成。
+**確定事項**
 
-### 10.2 その他の未決定事項
+各Published Stateを以下の構造とする。
 
-バージョン、具体的な型・Schema、Type Check / Linter / Formatter / Test用ツールは未決定とする。Issue #4の他領域の技術選定も本書の対象外である。
+```typescript
+type PublishedState<T> = {
+  data: T | null;
+  meta: PublishedStateMetadata;
+};
+```
 
-Future機能や追加ライブラリを、本選定に付随して設計・実装しない。
-Issue #4のClose前には、文書・Issue間の整合性を確認する。
+- `data`：Domain Data
+- `meta`：共通Metadata
+
+Domain固有の情報は`data`へ保持する。
+
+Metadataには共通の意味を持つ情報のみを保持し、Domain固有の項目を無理に共通化しない。
+
+### 10.3 Published Stateの情報単位
+
+既存Architectureで決定済みの以下の情報単位を維持する。
+
+Weather Service：
+
+- CurrentWeather
+- HourlyWeather
+- RainForecast
+- WeeklyWeather
+
+Schedule Service：
+
+- Schedule
+
+各情報単位は独立した鮮度・有効期限・取得失敗状態を管理する。
+
+Service境界とPublished State境界、Display Component境界を無理に一致させない。
+
+### 10.4 共通Metadata：確定した6項目
+
+**確定事項**
+
+```typescript
+type PublishedStateMetadata = {
+  dataUpdatedAt: string | null;
+  expiresAt: string | null;
+  lastAttemptAt: string | null;
+  lastAttemptResult: "success" | "failure" | null;
+  publishedAt: string;
+  dataSource: "externalApi" | "cache" | null;
+};
+```
+
+| 項目 | 型 | 意味 |
+|---|---|---|
+| `dataUpdatedAt` | `string \| null` | 外部データを正常取得・検証・採用した時刻 |
+| `expiresAt` | `string \| null` | 採用したデータの有効期限 |
+| `lastAttemptAt` | `string \| null` | 最後に完了した外部取得試行の開始時刻 |
+| `lastAttemptResult` | `"success" \| "failure" \| null` | 上記取得試行の結果 |
+| `publishedAt` | `string` | Published StateのSnapshot生成時刻 |
+| `dataSource` | `"externalApi" \| "cache" \| null` | 保存Snapshotでは生成時に採用した供給経路、表示用API Responseでは現在提供するデータの供給経路 |
+
+日時はRFC 3339形式のUTCとする。`publishedAt`はStoreへの書込み完了時刻ではなく、Snapshot生成時刻を表す。
+
+`lastAttemptAt`は完了済みの最後の外部取得試行を対象とし、その試行の開始時刻を記録する。`lastAttemptResult`は同じ試行の結果を示す。両項目は試行完了後にセットで更新し、進行中の試行について先行更新しない。
+
+#### dataSourceと保存Snapshot・表示用APIの区別
+
+保存Published StateのSnapshotでは、`dataSource`はSnapshot生成時に採用したデータの供給経路を表す。期限切れデータが内部に残っている場合も、元の供給経路を保持できる。
+
+- `externalApi`：外部APIから取得したデータを使用。
+- `cache`：Backend Cacheから読み出したデータを使用。
+- `null`：表示用APIで提供するデータが存在しない。
+
+表示用API Responseでは、`dataSource`は現在APIで提供するデータの供給経路を表す。期限切れで`data: null`へ変換するときは、`dataSource`も`null`へ変換する（10.8）。
+`dataSource`と`lastAttemptResult`は独立した情報である。最後の外部取得が失敗していても、有効Cacheからデータを提供できる。取得結果だけでCache由来を判定しない。
+
+### 10.5 外部データ取得時の更新ルール
+
+**確定事項**
+
+| 状況 | データ・取得履歴・供給経路の更新 |
+|---|---|
+| 正常取得・検証・採用 | データ、`dataUpdatedAt`、`expiresAt`を更新。試行完了後に`lastAttemptAt`と`lastAttemptResult: "success"`を更新し、`dataSource: "externalApi"`とする。Snapshot生成時に`publishedAt`を更新 |
+| 取得失敗・有効Cacheあり | 有効Cacheのデータを使用。`dataUpdatedAt`と`expiresAt`は元の値を維持。試行完了後に`lastAttemptAt`と`lastAttemptResult: "failure"`を更新し、`dataSource: "cache"`とする。Snapshot生成時に`publishedAt`を更新 |
+| 取得失敗・有効Cacheなし | 表示用APIでは利用可能データを提供しない。内部に期限切れデータが残っていても、APIでは`data: null`、`dataSource: null`とする。最終正常取得履歴を維持し、完了した最後の試行の開始時刻と結果（`failure`）を反映 |
+| Backend停止 | 停止だけを理由に既存Metadataを変更しない |
+| Store書込み失敗 | Store上では以前のSnapshotを維持する。表示用APIの期限判定は保存されたSnapshotに対して実施 |
+
+取得内容が前回と同じでも、新たに正常取得・検証・採用した場合は`dataUpdatedAt`を更新する。
+Cacheから既存データを読み出しただけの場合は、`dataUpdatedAt`を新しい取得時刻にせず、元の`expiresAt`も延長しない。
+
+外部APIが返す観測時刻・予報対象時刻・予定日時と、共通Metadataの更新時刻は区別する。Architectureの概念項目`dataTimestamp`と`dataUpdatedAt`を無条件に同一視しない。
+取得成功だけで古い元データを延命しない既存原則を維持する。
+
+### 10.6 表示用API ResponseのMetadata整合条件
+
+**確定事項**
+
+- `data === null`でも、`dataUpdatedAt`と`expiresAt`が非`null`の場合がある。期限切れデータをResponseから除外しても取得履歴は維持する。
+- 一度も正常取得していない場合、`dataUpdatedAt`と`expiresAt`は両方`null`。
+- 正常取得履歴がある場合、`dataUpdatedAt`と`expiresAt`は両方非`null`。
+- `data !== null`の場合、`dataUpdatedAt`と`expiresAt`は両方非`null`。
+- 表示用API Response生成時点で`data !== null`の場合、`now < expiresAt`が成立する。
+- `lastAttemptAt`と`lastAttemptResult`は両方`null`、または両方非`null`。
+- API Responseに含まれるPublished Stateの`publishedAt`は非`null`。
+- `data === null`なら`dataSource === null`。
+- `data !== null`なら`dataSource`は`externalApi`または`cache`。
+- 各Timestamp間に無条件の前後関係は強制しない。`publishedAt < expiresAt`や`expiresAt > dataUpdatedAt`をすべてのケースに要求しない。
+- 正常取得したScheduleが空の場合は`data: {date, events: []}`とし、利用可能データのない`data: null`と区別する。
+
+State自体が未公開であることと、公開済みStateのデータが未取得であることは区別する。公開・省略ルールは10.7に従う。
+
+`status`、`isValid`、`isExpired`など、既存情報から導出できる項目は追加しない。
+`errorCode`、`lastSuccessAt`、`ttl`なども、明確な要件がない段階で共通Metadataへ追加しない。
+
+### 10.7 API Response JSON構造と公開・省略ルール
+
+**確定事項**
+
+- トップレベルに`schemaVersion`を配置し、初期値は数値の`1`とする。
+- `states`はPublished Stateを格納するObjectとする。
+- 対象State Keyは`currentWeather`、`hourlyWeather`、`rainForecast`、`weeklyWeather`、`schedule`の5種類。
+- 各Stateは`data`と`meta`で構成する。
+- State単位の`schemaVersion`は設けない。
+- 未公開Stateは`states`からKey自体を省略する。
+- 公開済みだが一度も正常取得していないStateは`data: null`で返す。この場合、`dataUpdatedAt`、`expiresAt`、`dataSource`は`null`で、`publishedAt`はSnapshot生成時刻を持つ。
+- 各Published Stateの更新は独立しており、全Stateが同一時刻のSnapshotであることは要求しない。
+
+公開済み・未取得StateのResponse例：
+
+```json
+{
+  "schemaVersion": 1,
+  "states": {
+    "currentWeather": {
+      "data": null,
+      "meta": {
+        "dataUpdatedAt": null,
+        "expiresAt": null,
+        "lastAttemptAt": null,
+        "lastAttemptResult": null,
+        "publishedAt": "2026-10-11T03:00:00Z",
+        "dataSource": null
+      }
+    }
+  }
+}
+```
+
+Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+FrontendのResponse取得・更新ルールは7.3に従う。
+
+### 10.8 期限切れデータの表示用APIでの扱い
+
+**確定事項：B案（期限切れデータを表示用APIでは公開しない方式）を採用する。**
+
+Backend Cacheでは期限切れデータを保持してもよい。保存Published Stateも、期限切れを理由に直ちに削除・変更する必要はない。
+表示用API Response生成時に保存Snapshotの期限を評価し、`now >= expiresAt`の場合は以下の変換を行う。
+
+- Responseの`data`と`dataSource`を`null`にする。
+- `dataUpdatedAt`と`expiresAt`は最終正常取得履歴として維持する。
+- `lastAttemptAt`と`lastAttemptResult`を維持する。
+- `publishedAt`は元のSnapshot生成時刻を維持する。
+
+Scheduleについては、API Response生成時にも`data.date`とAsia/Tokyo基準の今日を照合する。日付が一致しない場合はTTL内でも`data: null`、`dataSource: null`とし、旧日の予定を公開しない。この変換でも`dataUpdatedAt`、`expiresAt`、`lastAttemptAt`、`lastAttemptResult`、`publishedAt`の既存値を維持する。
+API Response生成時の期限・Schedule日付判定による変換だけでは、新しいSnapshotを生成したものとは扱わない。
+APIから期限切れデータを除外しても、Frontendでの`expiresAt`判定は引き続き必須とする。API取得後に期限を迎えたデータも表示に利用しない。
+
+---
+
+## 11. Backend技術スタック
+
+### 11.1 暫定採用一覧
+
+以下はすべて**暫定採用**であり、実装・実機検証済みを意味しない。FrontendのReact + TypeScript + Viteと、第7・10章の確定API契約は維持する。
+
+| 分野 | 技術・方式 | 役割・採用理由 |
+|---|---|---|
+| Runtime | Node.js 24 LTS | 非同期取得TaskとAPI提供を実行する共通Runtime |
+| Language | TypeScript | Domain Data・Metadata・Module間の型契約を明示 |
+| API Framework | Fastify | nginxの転送先となるHTTP API提供処理 |
+| Database | SQLite | Published State・Cache・取得制御をローカルDBで永続化し、短いTransactionで更新 |
+| SQLite Driver | better-sqlite3 | Node.jsからSQLiteへアクセス。Native Dependencyの配置条件を確認する必要がある |
+| Runtime Validation | TypeBox | FrontendのRuntime JSON Validation、BackendのSchema Validation、Config検証。DomainのSemantic Validationとは分離 |
+| Scheduler | 標準setTimeout | Stateごとの非同期取得・待機を実行する標準機構 |
+| HTTP Client | Node.js標準fetch | 外部HTTP取得。Domainの変換・Cache採用判断は担当しない |
+| Process管理 | systemd | Backendの自動起動・再起動 |
+| Package Manager | npm | Node.js依存Packageの管理 |
+| Backend Build | tscによるCompile、原則Bundlingなし | 開発PCでTypeScriptをCompileし、Runtime依存を分けて配置 |
+| Module System | ESM | BackendのModule方式 |
+| Test | Vitest | State契約・取得制御・永続化・Recoveryの検証 |
+| Logging | Pino + journald | Structured JSON LoggingとOS側のログ収集 |
+| Config | 環境変数 + TypeBox Validation | 起動時の設定供給・検証。Config / Secret詳細管理は未決定 |
+
+### 11.2 比較上の判断と制約
+
+Backend Buildは原則Bundlingせず、開発PCでCompileする。Native Dependencyまで開発PCの成果物だけで完結させず、Pi側でProduction DependencyをInstallする方式を暫定採用する。
+Scheduler・HTTP Clientは標準機構を利用し、汎用Pipeline FrameworkやPlugin Framework、不要な独立ServiceをMVPへ追加しない。
+SQLiteはローカル保存とTransactionの実現手段として暫定採用し、物理故障への自動復旧を保証するものとは扱わない。
+
+本書では、BuildのBundling有無・Native Dependencyの配置、標準機構と汎用Frameworkの導入、Backup APIとDB本体の単純コピーの比較判断を記録する。
+
+### 11.3 Backend Build / Deploy
+
+**暫定採用方式**
+
+1. 開発PCでTypeScriptを`tsc`によりCompileする。
+2. SSHでRaspberry Piへ成果物を転送する。
+3. Release Directoryとsymbolic linkによる切替を使用する。
+4. better-sqlite3等のNative DependencyはPi側でProduction DependencyをInstallする。
+5. Backendの再起動・自動起動をsystemdで管理する。
+
+永続DBはRelease Directoryの外に配置する。Deploy失敗時に旧ReleaseへRollbackできる構成を目指す。
+Directory Path、Unit定義、Port、具体コマンド、依存Install・切替の詳細手順は未決定である。
+
+### 11.4 Backendの責務分担
+
+HTTP Client、Scheduler / Retry実行機構、Cache I/O、Store I/O、Config、Logging、TimeをCommon Moduleとして扱う。
+Weather・Schedule固有のValidation、Data変換、Cache採用、Freshness、Published State生成はDomain側が担当する。
+MVPの実行モデル・State Ownership・取得制御・Recoveryは[Architecture第16章](architecture.md#16-issue-4backendの具体的な実現方式)を参照する。
+
+### 11.5 Stateごとの暫定取得周期・有効期限
+
+[要件定義 R-07](requirements.md)の暫定値を維持する。Provider条件・実機評価を踏まえて確定する。
+
+| Published State | 外部取得周期（暫定） | 有効期限（暫定） |
+|---|---|---|
+| CurrentWeather | 15分 | 2時間 |
+| HourlyWeather | 30分 | 2時間（第20章で暫定値を更新） |
+| RainForecast | 5分 | 30分 |
+| WeeklyWeather | 6時間 | 12時間 |
+| Schedule | 10分 | 6時間 |
+
+Frontendの30秒Pollingとは別の設定である。5 Stateは独立して更新・復元・公開でき、複数State間の厳密な同時点整合性は要求しない。
+
+---
+
+## 12. SQLiteの保存・WAL運用
+
+### 12.1 保存方針と採用状況
+
+SQLite・better-sqlite3は暫定採用とする。Published State、Backend Cache、Acquisition Control Stateを1つのDatabaseの別Tableとして管理し、Published StateのDataとMetadataを1つのJSON Snapshotとして保存する。
+
+| 論理Table | 保存対象 |
+|---|---|
+| published_state_snapshots | 最新・直前のPublished State Snapshot |
+| backend_cache | Published State単位のBackend Cache |
+| acquisition_control | Backendの取得制御用永続状態 |
+
+Published Stateの**最新と直前の2世代保持**と、**世代ごとに別Rowで保存する方式**は、いずれも暫定採用とする。具体DDL・Index・Generation採番・Migrationは未決定である。
+State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必須としない。取得結果単位のTransactionと部分成功の関係はArchitecture 16.4に従う。
+
+### 12.2 SQLite設定・注意点
+
+SQLiteの実現方式として以下を採用方針に記録する。Database技術全体は暫定採用であり、実測前である。
+
+- `journal_mode=WAL`、`synchronous=NORMAL`。
+- SQLite標準の自動Checkpointを利用し、`wal_autocheckpoint=1000`。
+- 定期的な強制TRUNCATE Checkpointは実施しない。
+- WAL肥大化時は原因調査のうえ、必要時に手動対応する。
+- 原則としてBackend内で共有DB Connectionを使用する。
+- `foreign_keys=ON`と`busy_timeout=5000ms`は初期設定候補。特にbusy_timeoutは実測に応じて見直す。
+
+WAL + NORMALは直近Commitの電源断耐久性を完全保証しない。突然の電源断で直近Commitが失われる可能性は許容するが、不完全なSnapshotは公開しない。
+CheckpointによってWALの物理ファイルサイズが必ず縮小するわけではない。Lock・Checkpoint異常時の詳細運用は未決定である。
+microSD自体の物理故障からの自動復旧は保証しない。
+
+---
+
+## 13. Backup方式
+
+以下はすべて**暫定採用**である。
+
+| 項目 | 方針 |
+|---|---|
+| 方式 | SQLite Backup API |
+| 頻度 | 1日1回 |
+| 保存先 | 同一microSD内の専用Directory |
+| 保持数 | 3世代 |
+| 復元 | 手動 |
+| 検証 | Backup作成後に整合性確認 |
+| 物理故障対策 | MVP対象外 |
+
+稼働中のSQLite DB本体だけを単純コピーする方式は採用せず、WALと整合する方法で取得する。
+同一microSDのBackupは物理故障対策ではない。Database利用不能時は正常稼働扱いにせず、停止・検証・手動復元を行う。
+実行時刻・Path・Backup用Scheduler・失敗時再試行・復元コマンドは未決定とする。
+
+---
+
+## 14. Logging・Test・運用
+
+### 14.1 Logging
+
+Pino + journaldを暫定採用する。Structured JSON LoggingでService / Taskの識別情報を記録し、Secret・Tokenは出力しない。
+API取得失敗、Fallback、Validation失敗、Recovery、Transaction失敗、Backup失敗、WAL異常を調査可能にする。
+Rotation・Retention・Rate Limitの具体値は未決定である。
+
+### 14.2 Testの観点
+
+Vitestを暫定採用する。以下は検証すべき観点であり、実装・試験完了を意味しない。
+
+- Published State / CacheのSchema ValidationとSemantic Validation。
+- Expiry境界（`now == expiresAt`）、Cache Fallbackと鮮度期限の非延長。
+- Backoff復元、正常なControl StateのnextAttemptAt尊重。
+- SQLite Transaction Rollback、複数State生成時の部分成功と全更新Rollback。
+- 最新Snapshot不正時の旧世代復元、2世代とも不正な場合の隔離。
+- Database利用不能時の異常扱い。
+- 起動時の復元と外部取得待ちなしのAPI提供、Graceful Shutdown。
+- Backup作成・整合性確認・手動復元、WAL運用。
+- Raspberry Pi実機での再起動・電源断・72時間連続稼働（Issue #13）。
+
+---
+
+## 15. 採用状況と今後の検討事項
+
+### 15.1 確定・暫定採用・候補の区別
+
+| 状態 | 対象 |
+|---|---|
+| 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章）、Google Calendar + Service AccountによるSchedule取得方針（第17章） |
+| 設計方針：HourlyWeather | Domain Data・24〜36枠の連続採用・採用直前の再確認・Frontend再選択（第20章）。Provider・周期・TTLは暫定 |
+| 設計方針：CurrentWeather | 4項目Domain Data・State全体の採用／不採用・取得時鮮度と公開TTLの分離（第19章）。Provider・取得周期・未来許容は暫定 |
+| 設計方針：Schedule Step 5 | Schedule Domain Data・全ページ取得と正規化・JST日付制御・Cache条件（第18章）。未確定詳細は18.6に区別 |
+| 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
+| 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
+| 暫定採用：Backend実行・取得制御 | 1 Backend Process内の複数非同期Task、State単位の独立Scheduler、即時Retryなし・有界指数Backoff（Architecture 16.1・16.3） |
+| 暫定採用：Transaction | 取得結果単位のSQLite Transaction、複数State生成時の部分成功（Architecture 16.4） |
+| 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
+| 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
+| 暫定採用：CurrentWeather Provider | Open-Meteo（第19章）。最終Provider選定は未完了 |
+| 暫定採用候補：その他Weather API | HourlyWeather / WeeklyWeatherはOpen-Meteo、RainForecastはTomorrow.io（第16章） |
+| 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
+| 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
+| 未決定 | 下記の実装詳細・Provider正式採用・具体値 |
+
+Backendの技術・実行・Transaction・Recovery方針はいずれも上表の暫定採用として扱う。設計内容は既存本文・Architectureの記載を維持し、具体値・実装詳細の未決定事項と区別する。確定API契約はこれらの暫定採用に依存して変更しない。
+
+### 15.2 Build・Deployの実装詳細
+
+- Release Directoryの具体Path・命名方式・保持世代数。
+- Deploy Script・symbolic link切替コマンド・Chromium Reload方法。
+- SSH認証、systemd Unit・Port、CI/CDの具体構成。
+
+### 15.3 Backend・外部連携の未決定事項
+
+- Weather API Providerの正式採用、Open-Meteoの追加検証・利用規約最終確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
+- Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
+- Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
+- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
+- RainForecast・WeeklyWeatherの詳細Schemaと鮮度評価。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
+- 正式SQLite DDL・Index・Migration、Generation採番。
+- Cache不正時の物理削除。
+- Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
+- Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
+- API Endpoint正式Path・nginx設定。
+- Backup実行時刻・Path・Scheduler・失敗時再試行・復元コマンド。
+- SQLite Lock・Checkpoint異常時の詳細運用。
+- Config・Secret詳細管理、Runtime変更への適用方式。
+- Log Rotation・Retention・Rate Limit、未選定の別領域の技術・バージョン・Linter / Formatter等。
+
+Future機能を先行実装しない。Issue #4のClose前には文書・Issue間の整合性を確認する。
+
+---
+
+## 16. Weather API選定とTomorrow.ioの取得制御
+
+### 16.1 暫定採用候補
+
+家庭用MVPでは月額0円で継続運用できるAPIを優先し、一般的な天気予報と短時間降雨予測を別Providerから取得することを許容する。
+以下は**暫定採用候補**としての選定記録であり、正式採用済みではない。CurrentWeatherは第19章でProviderの暫定採用とMVP運用値を具体化した。その他Stateの取得周期・TTLは既存暫定値を維持する。
+
+| Published State | Provider候補 | 取得周期（暫定） | TTL（暫定） |
+|---|---|---|---|
+| CurrentWeather | Open-Meteo | 15分 | 2時間 |
+| HourlyWeather | Open-Meteo | 30分 | 2時間（第20章） |
+| RainForecast | Tomorrow.io | 5分 | 30分 |
+| WeeklyWeather | Open-Meteo | 6時間 | 12時間 |
+
+Open-Meteoを基本的な天気予報の取得候補、Tomorrow.ioを分単位降雨予報の取得候補とする。
+Open-Meteo currentの限定的な手動検証は19.7に記録する。他のData・長期安定性等の追加検証と利用規約の最終確認は未完了である。
+既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-Meteoの複数State取得Request共有方式は後続設計とする。
+
+R-03の分単位短時間降雨予測、雨の降り始め・降り終わりの見込みというMVP要件は維持する。1時間単位の予報を単に分換算したものは要件を満たす短時間降雨予測と扱わない。
+Frontendの30秒Pollingは変更しない。
+
+### 16.2 Tomorrow.ioの検証実績と未検証事項
+
+**ユーザーによる検証実績**：Windows PowerShellの検証スクリプトからTimeline APIを呼び出し、日本国内の指定地点について以下を確認した。
+
+- 5分間隔・1分間隔の将来予報レコード取得に成功。
+- `precipitationIntensity`に対応する数値を取得し、検証時は0mm/h。
+- API Keyによる認証に成功。
+
+API Response取得と時間間隔指定は実証済みだが、降雨時の予測品質、分単位データの独立した予測精度、降り始め・降り終わりの推定精度は未検証である。
+これはユーザーの検証結果の記録であり、今回の文書更新でAPIへアクセスしたものではない。API Key・認証情報・正確な地点は記載しない。
+
+### 16.3 利用枠の確認内容
+
+ユーザーのダッシュボード画面で、以下を確認した。Providerの正式仕様・将来の継続条件を最終確認したものではない。
+
+| 項目 | ユーザー確認値 |
+|---|---|
+| API Server Calls / day | 500回 |
+| API Server Calls / hour | 25回 |
+| API Server Calls / second | 3回 |
+| 利用可能Data Layers | Core、Severe Weather Hazards |
+
+RainForecastを5分周期・1 Request / 取得で運用すると、通常取得分は288回/日・12回/時となる。
+無料利用を優先するが、無料枠超過時の課金条件、制限のリセット境界、継続的な無料利用条件は未確認である。枠内であれば無条件に継続無料と保証しない。
+
+### 16.4 Quota Guardの暫定採用方針
+
+以下を**暫定採用**とし、既存SQLite Acquisition Control・Scheduler・Backoffへ組み合わせる。Quota GuardはProvider単位の送信許可であり、State単位の取得制御や取得失敗後のRetry / Backoffとは別の責務である。
+
+- Tomorrow.ioの通常取得周期は5分、Providerへの同時取得は最大1件とする。
+- 即時Retryは行わず、Request送信前にQuota Guardを通す。
+- 送信予定をSQLiteに永続記録してからHTTP Requestを開始する。
+- 通信失敗・Timeoutでも、消費枠を安易に取り消さない。
+- Backend再起動後も送信履歴・Backoff・取得制御状態を復元する。
+- 日次・時間・秒間の制限をそれぞれ判定する。
+- Providerリセット境界が未確定の間は、ローリングウィンドウで保守的に管理する。
+- Quota不足による送信抑止と、実際に送信したHTTP Requestの失敗を区別する。
+- HTTP 429時は即時再試行せず、`Retry-After`等を考慮して待機する。詳細待機計算は後続設計とする。
+
+送信前の永続記録は、外部HTTPをDB Transactionの外で行う既存境界を変更しない。Quota記録の具体SQL・DDL・Transaction実装は今回確定しない。
+
+| 対象 | Provider公称上限（ユーザー画面確認） | Backend安全上限（暫定） |
+|---|---|---|
+| 24時間 | 500回 | 400回 |
+| 60分 | 25回 | 20回 |
+| 1秒 | 3回 | 1回 |
+
+安全上限は実装前の暫定値であり、Providerの正式な制限仕様を確認して再評価する。ローリング24時間・60分・1秒の管理をProvider側の正式なリセット仕様と同一視しない。
+
+Backend外で同一API Keyを利用するRequest数は、このBackendのSQLiteだけでは把握できない。手動検証、複数インスタンス、他のAPI経路による消費は運用上の制約として扱う。
+
+### 16.5 既存契約と後続設計
+
+API停止中もCacheのTTL・有効CacheのFallback・Metadata・期限切れMaskを維持する。Quota不足やBackoffを理由に古いデータの期限を延長しない。
+Startupは外部取得完了を待たず保存Stateを復元してAPI提供を開始し、利用可能データは期限内に限って提供する。
+
+Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限、429待機計算は後続設計に残す。CurrentWeather Domain Dataの設計方針は第19章を参照する。
+State単位の取得制御とProvider単位のRate Limitの区別はArchitecture 16.3に従う。
+
+---
+
+## 17. Schedule API選定
+
+### 17.1 正式採用方針
+
+| 項目 | 選定内容・状態 |
+|---|---|
+| 予定管理サービス | Google Calendar：正式採用方針 |
+| 対象カレンダー | サイネージ専用の非公開カレンダー |
+| 認証方式 | Google Cloud Service Account |
+| 共有権限 | reader |
+| API Scope | calendar.events.readonly |
+| 取得API | Google Calendar API events.list |
+| 登録・編集 | GoogleカレンダーのWeb・スマートフォンアプリ |
+| Backend取得 | Node.js / TypeScriptから取得。Backend技術スタックの暫定採用状態は11.1を維持 |
+| 取得周期・TTL | 10分・6時間：既存の暫定値 |
+| 保存 | 既存SQLite構成に従う。SQLiteの暫定採用状態は維持 |
+
+Published State `Schedule`、Frontendの30秒Polling、取得・Cache・Recovery・Metadata契約は変更しない。
+API接続検証の成功と、長期無人運用の検証完了は区別する。Issue #4全体は未完了である。
+
+### 17.2 ユーザーによる実動作検証
+
+2026年10月12日、日本時間を対象としてWindows PCで検証した。
+環境はWindows PowerShell、Node.js v24.14.0、google-auth-library、Google Cloud Service Account、Google Calendar APIである。これは検証環境の記録であり、依存Libraryの正式選定や今回の実装を意味しない。
+
+- Service Account認証、専用カレンダーへのアクセスに成功。
+- `accessRole: reader`を確認。
+- `events.list`で以下の予定をすべて`status: confirmed`として取得。
+
+| 種別 | 検証結果（日本時間） |
+|---|---|
+| 通常予定 | 2026/10/12 19:00〜20:00 |
+| 終日予定 | 2026/10/12。API終了日付は10/13で排他的 |
+| 繰り返し予定 | 2026/10/12 12:00〜12:30のインスタンス |
+| 日付またぎ予定 | 2026/10/11 23:00〜10/12 01:00 |
+
+MVPに必要な基本予定種別の取得を実証した。その後のT01〜T07検証は第18章に記録する。長期無人稼働は引き続き未検証である。
+予定タイトル・参加者・カレンダーID・認証情報は記載しない。
+
+### 17.3 選定理由と代替案
+
+- 専用非公開カレンダーで、個人の他の予定と分離できる。
+- reader共有権限と読み取り専用Scopeで最小権限にできる。
+- 個人アカウントのOAuth Refresh TokenをBackendで管理せずに済む。
+- 既存のWeb・スマートフォンUIで予定を登録・編集でき、専用入力画面の自作が不要。
+- Raspberry Piの無人定期取得に適した構成で、R-02 / R-10に適合する。
+- 実際にAPI接続と主要予定種別の取得に成功した。
+
+| 比較対象 | 判断 |
+|---|---|
+| Google Calendar + Service Account | 正式採用方針 |
+| ユーザーOAuth 2.0 | 代替候補として残す |
+| 公開カレンダー | プライバシー保護の観点で非採用 |
+
+Service Account採用でも秘密鍵の安全な管理は必要であり、認証情報の保守が不要になるわけではない。
+
+### 17.4 残課題
+
+以下を実装・運用設計へ引き継ぐ。
+
+- Service Account JSON秘密鍵の安全な配置・アクセス制御・失効・ローテーション。
+- APIエラーと認証エラーの検出・復旧。
+- ページネーションの基本動作は18.2で検証済み。取得中の変更に対する一貫性、予定件数・ページ数上限は未決定。
+- 繰り返しの時刻変更・別日移動・削除、通常予定削除は18.2で検証済み。イベント自体のstatus:tentativeは未検証。
+- 終日・日付またぎの正規化と日付制御は第18章の方針に従う。競合防止の実装詳細・時刻同期未完了時の復旧は未決定。
+- 無料利用条件の最終確認、長期無人運用の確認。
+- 個別予定の非公開設定時の取得挙動。
+- Schedule Domain Schema・取得制御は第18章に記録。JSON Schemaバリデータ設定・実装検証、Timeout等の具体値は後続確認。
+
+取得周期10分・TTL6時間は暫定値のまま維持する。Weather API候補・Tomorrow.io Quota Guardは第16章の採用状態と方針を変更しない。
+
+---
+
+## 18. Step 5：Schedule Domain Data・詳細取得制御
+
+本章はGoogle Calendarの検証とSchedule設計レビューに基づく設計方針を記録する。アプリ実装・バリデータ実装検証の完了を意味しない。
+
+### 18.1 Schedule Domain Data Schema
+
+```typescript
+type ScheduleData = {
+  date: string; // YYYY-MM-DD、Asia/Tokyo基準の表示対象日
+  events: ScheduleEvent[];
+};
+
+type ScheduleEvent =
+  | {
+      id: string;
+      title: string;
+      allDay: false;
+      startAt: string; // UTC RFC3339
+      endAt: string;   // UTC RFC3339
+    }
+  | {
+      id: string;
+      title: string;
+      allDay: true;
+      startDate: string;        // YYYY-MM-DD
+      endDateExclusive: string; // YYYY-MM-DD
+    };
+```
+
+`date`は取得日ではなく、JST基準の表示対象日である。MVPでは今日のみを対象とする。
+正常な0件は`data: {date, events: []}`、取得不可は`data: null`とする。従来のSchedule正常空データ`data: []`をこのDomain構造へ更新する。他Stateの契約・共通Metadataは変更しない。
+時刻指定と終日はallDayで判別し、時刻指定日時をUTC RFC3339へ正規化する。終日終了日は排他的に扱う。
+
+JSON Schema Draft 2020-12を想定する。ScheduleDataのdate・events、各イベントのid・title・allDayと分岐ごとの日時をrequiredとする。
+イベント分岐はoneOfとallDayの固定値で表現し、ScheduleDataと各イベントObjectにadditionalProperties:falseを適用する。
+date・startDate・endDateExclusiveはdate形式、startAt・endAtはdate-time形式として、実在する日付・UTC RFC3339を検証する。format検証の有効化・設定・実装確認は未完了である。
+
+Schema Validationに加え、以下のSemantic Validationを行う。
+
+- 時刻指定はstartAt < endAt、終日はstartDate < endDateExclusive。
+- 時刻指定・終日とも、実際の期間がJSTの対象日と重なること。
+- data.dateが取得試行のtargetDateに一致し、採用時に今日であること。
+- events内のID一意性。同時刻でも異なるIDは保持する。
+
+### 18.2 Google Calendar取得・正規化と実測
+
+- events.listでsingleEvents=trueとして繰り返し予定を展開する。
+- showDeleted=falseを基本とし、cancelledイベントは通常イベントの日時必須検証より前に除外する。
+- nextPageTokenで全ページを取得し、完了後に一括で正規化・検証・反映する。途中ページ失敗は取得試行全体の失敗とする。
+- 識別にはevent.idを用いる。同時刻の異なるIDは両方保持し、同じIDの重複は整合性エラーとする。
+- 繰り返し変更・別日移動は実際のstart / endを使う。originalStartTimeを対象日判定に使わない。
+- 参加者のresponseStatus:tentativeは除外条件にしない。
+- summary欠落時はtitleを空文字へ正規化する。
+- 時刻指定・終日ともJST対象日に重なるイベントを含める。正常イベントの日時不正は原則として取得試行全体の失敗とする。
+- iCalUID、recurringEventId、originalStartTime、attendeesはMVP公開Domain Dataに含めない。
+
+**ユーザーによる実API検証：全7ケースPASS。**
+
+| ケース | 確認内容 |
+|---|---|
+| T01 | 同時刻の異なる予定2件 |
+| T02 | 繰り返し予定の1回だけ時刻変更 |
+| T03 | 繰り返し予定の1回だけ別日移動 |
+| T04 | 繰り返し予定の1回だけ削除 |
+| T05 | 通常予定の削除 |
+| T06 | 参加者の未定回答がattendees[].responseStatus:tentativeとなる |
+| T07 | 14件を7ページで取得し、1ページ取得時とID集合が一致 |
+
+event.status:tentative自体は未実測であり、参加者のresponseStatus:tentativeと混同しない。複数ページ取得中の予定変更に対する一貫性も未検証である。
+
+### 18.3 JST日付切替・競合制御
+
+表示対象はAsia/Tokyoの今日とする。JST 0時に前日のSchedule Snapshotを公開対象から除外し、新日の取得を開始する。
+前日開始の予定でも新日に実際の期間が重なるイベントは、新日の取得・正規化の対象である。
+API Response生成時もdata.dateとJSTの今日を照合し、不一致ならTTL内でもdata:null、dataSource:nullとする。Metadataの既存値を維持する変換は10.8に従う。
+
+取得試行は開始時に確定したtargetDateを保持する。23:59開始・00:01完了の旧日取得結果を、新日のPublished Stateとして採用しない。
+同一対象日の競合でも古い取得結果が新しい結果を上書きしないようにする。防止の具体的実装は未決定である。
+Frontendもdata.dateと今日のJST日付を照合する。Piのシステム時刻が信頼できない場合、Scheduleを公開不可とする。時刻信頼性の具体判定・復旧手順は既存Time原則に従って後続で具体化する。
+
+### 18.4 Cache・取得失敗・Frontend表示
+
+通常取得10分・Cache TTL6時間は暫定値を維持する。Cache採用には以下すべてを要求する。
+
+- data.dateが今日のJST日付に一致。
+- TTL内。
+- 保存DataのSchema・Semantic Validationに合格。
+- システム時刻が信頼できる。
+
+取得失敗時は同日の有効Cacheを公開し、有効Cacheがなければdata:null、dataSource:nullとする。前日のCacheを今日へ流用しない。
+失敗でdataUpdatedAt・expiresAtを延長しない。lastAttemptAt・lastAttemptResultは試行完了時に更新し、publishedAtはSnapshot生成時刻とする。
+全ページ取得・正規化・検証成功前に既存Cacheを部分上書きしない。保存・公開は既存Transaction境界に従う。
+
+| Frontendが利用できる状態 | 表示 |
+|---|---|
+| 今日の有効data、events:[] | 本日の予定はありません |
+| 今日の有効data、events:[...] | 予定一覧 |
+| data:null | 予定を取得できません |
+
+日付照合・期限判定はFrontendでも継続する。前日Dataを今日の予定や正常な0件として表示しない。
+
+### 18.5 障害監視
+
+MVPではPinoログと既存Published State Metadataで管理する。必要に応じて対象日、試行開始時刻・処理時間、件数・ページ数、HTTPエラー・Timeout・Validationエラー、Cache Fallback状況を記録する。
+外部メール・スマートフォン通知はMVPに追加せず、Published Stateのstatus・errorCodeも追加しない。
+認証情報・アクセストークン・Service Account秘密鍵をログや文書へ出力しない。
+
+### 18.6 未検証・詳細設計待ち
+
+- event.status:tentativeの実API動作。
+- 複数ページ取得中に予定が変更された場合の一貫性。
+- Retry回数・Timeout・ページ数上限の具体値。既存Backendの即時Retryなし・有界Backoff方針は維持する。
+- 日付変更・同日取得結果の競合防止の実装詳細。
+- 時刻同期未完了時の具体的復旧処理。
+- JSON Schemaバリデータ設定・実装検証。
+
+Step 5のSchedule設計記録までを対象とし、別Domainの詳細設計やコード実装には進まない。
+
+---
+
+## 19. CurrentWeather Domain Data設計
+
+### 19.1 目的・Providerと採用状態
+
+MVPでは、単一の自宅周辺エリアの屋外現在気温と天気アイコンを表示する。
+Provider候補のOpen-Meteoは**暫定採用**であり、最終Provider選定完了とは扱わない。Forecast APIのcurrentを使用し、temperature_2m、weather_code、is_day、current.time、current.intervalを取得対象とする。
+本章は合意済み設計の記録であり、アプリ実装・異常ケース検証完了を意味しない。
+
+### 19.2 Domain Data Schema
+
+```typescript
+type CurrentWeatherData = {
+  temperatureC: number;
+  weatherCode: number;
+  isDay: boolean;
+  validAt: string;
+};
+```
+
+4項目すべて必須で、MVPではnullを許容しない。追加のProviderフィールドは無視し、必要項目のみを変換する。
+
+| 項目 | 意味・変換 |
+|---|---|
+| temperatureC | 摂氏の現在気温 |
+| weatherCode | Open-MeteoのWMOベース天気コード。未知の整数コードも保持可能 |
+| isDay | 昼夜区分。APIの数値0 / 1をbooleanへ変換 |
+| validAt | 気象Dataの対象時刻。Providerタイムゾーンを考慮しUTC RFC3339へ正規化 |
+
+current.intervalはProvider Response Validationに使い、Domain Dataには含めない。
+validAtと、Backendが外部Dataを正常取得・検証・採用した時刻dataUpdatedAtは別の意味である。
+
+### 19.3 ValidationとState単位の採用
+
+| API項目・観点 | 条件 |
+|---|---|
+| temperature_2m | 有限の数値 |
+| weather_code | 整数。未知の整数コードも許容 |
+| is_day | 数値の0または1 |
+| current.time | 実在する正しい日時で、タイムゾーンを考慮してUTC RFC3339へ変換可能 |
+| current.interval | 正の整数。900秒には固定しない |
+| 取得時鮮度 | validAtが取得時点の過去30分〜未来5分以内 |
+
+null、型不正、必須項目欠損、実在しない日時はValidation失敗とする。未来5分の許容は時刻ずれ等への対処としての暫定値である。
+
+必須項目の1つでも不正ならCurrentWeather全体を不採用とし、正常な気温だけの部分採用は行わない。
+これはCurrentWeather内部の採用方針であり、他のPublished Stateの正常取得・更新を停止させない。複数Stateを生成する取得結果の保存は既存Transaction・部分成功方針に従う。
+
+### 19.4 取得周期・Cache・鮮度判定
+
+| 項目 | MVP運用値・状態 |
+|---|---|
+| 取得周期 | 15分（暫定） |
+| Cache TTL | 2時間 |
+| 取得時の過去方向許容 | 30分 |
+| 取得時の未来方向許容 | 5分（暫定） |
+
+第11.5・16.1の共通表は従来の暫定値の記録であり、CurrentWeatherについては本章の運用値・採用状態を参照する。他Stateの暫定値は変更しない。
+取得時はvalidAtで採用可否を判断し、公開時は既存Published StateのexpiresAtとCache TTLに従う。公開時に取得時の30分制限を再適用しない。
+失敗時は期限内Cacheを利用し、TTLを延長しない。期限切れは既存API契約に従いdata:null、dataSource:nullへMaskし、既存Metadataを保持する。
+
+### 19.5 取得失敗とFrontend表示
+
+通信失敗、Response異常、Validation失敗、鮮度失敗はいずれもCurrentWeatherの取得失敗として扱い、新Dataを採用しない。
+期限内Cacheがあれば維持し、なければdata:nullとする。lastAttemptAt・lastAttemptResult等は既存契約に従って更新し、既存CacheのdataUpdatedAt・expiresAtを延長しない。
+
+| 状態 | 表示方針 |
+|---|---|
+| 正常取得 | 気温と天気アイコン。更新日時は表示しない |
+| 直近取得失敗・TTL内Cacheあり | 気温・天気アイコンを維持し、「更新待ち」と最終更新日時を両方表示 |
+| TTL切れ・有効Cacheなし | 「取得できません」 |
+| 未知の整数天気コード | 「天気不明」。取得失敗とは扱わない |
+| 更新時刻 | 正常時には表示せず、取得異常時に有効Cacheを表示する場合は最終更新日時を表示 |
+
+isDayは昼夜アイコン選択に利用する。「更新待ち」は最後の取得が失敗して有効Cacheを表示する場合の案内である。
+約3mから気温・天気を読めることを意識し、アイコンデザイン・Component実装は今回対象外とする。
+
+最終更新日時にはPublished State Metadataの`dataUpdatedAt`（Backendが外部Dataを正常取得・検証・採用した時刻）を使用する。気象Dataの対象時刻`validAt`とは区別する。具体的な表記・位置・文字サイズはIssue #5で決定する。
+
+**既存要件との整合確認：解消済み。** 取得異常時の有効Cache表示で「更新待ち」と最終更新日時を両方表示する合意により、R-07およびArchitecture 5.6との整合を確認した。「更新時刻を常時表示しない」は正常時の方針であり、異常時の日時表示は維持する。
+
+### 19.6 Future
+
+項目単位の部分採用、欠損表示・Fallback、体感温度・湿度・風速等の追加、詳細画面の更新時刻表示、運用実績による周期・TTL・鮮度閾値調整はFutureの検討事項とする。MVP必須機能へ追加しない。
+
+### 19.7 実API検証範囲と残課題
+
+既に実施された限定的な手動検証として、次を記録する。今回API検証は再実行していない。
+
+- Open-Meteo currentから必要な基本項目を取得し、型・存在を確認。
+- Asia/Tokyoの日時をUTCへ変換できた。
+- 15分の時刻境界をまたぐ複数回の取得を確認。
+- 観測サンプルでは未来時刻の返却は発生しなかった。
+
+長期安定性、全気象条件、すべての異常ケースは未検証である。利用規約・Provider最終選定、Validation実装・時刻設定の詳細は後続へ残す。異常時日時表示の具体的な表記・配置・文字サイズはIssue #5で決定する。
+Issue #4全体は未完了であり、CurrentWeather設計の完了扱いはGitHub差分のChatGPTレビュー合格後とする。
+
+---
+
+## 20. HourlyWeather Domain Data設計
+
+### 20.1 SchemaとProvider
+
+```typescript
+type HourlyWeatherData = {
+  hours: HourlyWeatherItem[];
+};
+
+type HourlyWeatherItem = {
+  validAt: string;
+  temperatureC: number;
+  weatherCode: number;
+  precipitationProbability: number;
+};
+```
+
+全フィールド必須でMVPではnullを許容しない。hoursは時刻昇順、採用時は24〜36枠とする。
+単一のdateは設けず、各枠のvalidAtで日付を管理する。
+
+| 項目 | 条件・意味 |
+|---|---|
+| validAt | 予報対象時刻。実在する日時をUTC RFC3339へ正規化 |
+| temperatureC | 摂氏気温。有限数値 |
+| weatherCode | WMOベース整数コード。未知の整数も許容 |
+| precipitationProbability | 0〜100の有限数値。降水確率 |
+
+Open-Meteoは**暫定採用**であり最終Provider選定完了ではない。
+取得対象はhourly.time、hourly.temperature_2m、hourly.weather_code、hourly.precipitation_probabilityとする。
+
+| 項目 | 方針・採用状態 |
+|---|---|
+| API取得周期 | 30分（暫定） |
+| Cache TTL | 2時間（暫定） |
+| Backend保持範囲 | 取得基準時刻から最大36枠 |
+| Frontend選択範囲 | 現在時刻の次の正時から最大24枠 |
+| 同時表示枠数・レイアウト | Issue #5で決定 |
+
+36枠は経過時間への余裕を含む保持範囲であり、すべてを同時表示する意味ではない。
+R-07のHourlyWeather暫定TTLを3時間から2時間へ更新し、本章との不一致は解消済みとする。取得周期30分・TTL2時間の最終運用検証は未完了である。
+
+### 20.2 取得基準時刻と切り出し
+
+1. API取得処理の開始時刻を取得基準時刻として固定する。
+2. timezone=Asia/Tokyoを指定し、hourly.timeをJSTとして解釈してUTC RFC3339へ変換する。
+3. 取得開始時点の次の正時から最大36枠を切り出す。正時ちょうどならその時刻を含める。
+4. 取得中に正時・日付をまたいでも取得基準時刻を変更しない。
+5. 採用直前に、その時点の現在時刻を基準とする必要24枠が連続して存在し、正常であることを再確認する。
+
+例：10:25開始なら11:00〜翌22:00の36枠を抽出する。
+10:59:58開始・11:00:03採用判定では、取得基準を固定したまま、採用時に12:00以降の24枠を再確認する。
+UTC / JSTの混同や日付またぎを避け、時刻比較は正規化済み時刻で行う。
+
+### 20.3 Provider Response Validation
+
+**第1段階：配列構造**
+
+hourly.time、hourly.temperature_2m、hourly.weather_code、hourly.precipitation_probabilityの4配列について存在・配列型・要素数一致を確認する。
+構造不正はHourlyWeather全体を不採用とする。配列長が一致して36枠未満でも、それだけを理由に不採用としない。
+
+**第2段階：時間枠**
+
+- 必要な先頭24枠は1時間間隔で連続し、すべての必須値が正常であること。
+- 24枠内の欠損・不正値・時刻不連続はState全体の不採用とする。
+- 25〜36枠は正常な連続範囲だけ採用し、余裕枠で最初の異常が見つかった時点で打ち切る。
+- 欠損時刻を詰めず、前回Cacheから個別枠を補完しない。
+- 気温は有限数値、天気コードは整数（未知も許容）、降水確率は0〜100の有限数値。
+- null・欠損・型不正・実在しない日時は認めない。
+
+取得開始時の必要24枠と採用直前の必要24枠の両方が正常であることを採用条件とする。
+配列構造のValidationと各枠の値・時間的連続性を分けて確認する。
+
+### 20.4 State更新とCache
+
+HourlyWeather単位で検証・採用する。不採用時は新Dataへ置換せず、TTL内の正常Cacheを維持する。
+失敗でdataUpdatedAt・expiresAtを延長せず、lastAttemptAt・lastAttemptResult等は既存API契約に従う。
+他Stateの正常更新を妨げず、TTL切れはdata:null、dataSource:nullとして扱う。
+採用時の24枠確保と、経過後のFrontendで利用できる枠数は区別する。
+
+### 20.5 Frontend表示
+
+現在時刻を基準として次の正時から最大24枠を再選択する。正時ちょうどではその時刻を含める。
+
+| 状態 | 表示方針 |
+|---|---|
+| 正常取得・将来24枠以上 | 最大24枠を選択。更新日時は表示しない |
+| 取得失敗・TTL内Cacheあり | 有効予報を維持し、「更新待ち」と最終更新日時を両方表示 |
+| TTL内・将来1〜23枠 | 存在する将来予報のみ表示。取得失敗中なら更新待ち・最終更新日時も表示 |
+| TTL内・将来0枠 | 「取得できません」 |
+| TTL切れ・初回未取得 | 「取得できません」 |
+
+最終更新日時はMetadataのdataUpdatedAtを用い、各予報対象時刻validAtを最終更新日時として使わない。
+予報枠不足とAPI取得失敗は内部状態として区別し、枠不足だけを取得失敗と扱わない。
+表示情報は天気アイコン・気温・降水確率。アイコン、同時表示枠数、日時表記・配置・文字サイズはIssue #5で決定する。
+R-07・Architecture 5.6の正常時注記なし、取得異常時の更新状態・最終更新日時、有効期限評価を維持する。
+
+**要件との整合確認：解消済み。** R-03を翌日を含む将来24時間の時間別予報へ更新し、本章の選択範囲と整合した。R-04の「今日の天気」はコンテンツ名として維持し、予報期間を当日内に限定しない。巡回構成は変更しない。
+
+### 20.6 未検証・後続確認
+
+- Open-Meteo最終採用・利用条件。
+- API周期30分・TTL2時間の運用値最終検証（R-07との値の整合は解消済み）。
+- 実APIのResponse形式・配列・時刻境界の検証。
+- 異常系を含む実装・テスト。
+- Issue #5のFrontend同時表示枠数・レイアウト・日時等の表示詳細。
+
+今回、実API検証・実装・テストは実施していない。HourlyWeather設計の完了扱いはGitHub実差分のChatGPTレビュー合格後とし、Issue #4全体も未完了である。
