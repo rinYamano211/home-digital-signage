@@ -560,7 +560,7 @@ State自体が未公開であることと、公開済みStateのデータが未�
 }
 ```
 
-Schedule Domain Dataは18.1、CurrentWeather Domain Dataは第19章で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
 FrontendのResponse取得・更新ルールは7.3に従う。
 
 ### 10.8 期限切れデータの表示用APIでの扱い
@@ -639,7 +639,7 @@ MVPの実行モデル・State Ownership・取得制御・Recoveryは[Architectur
 | Published State | 外部取得周期（暫定） | 有効期限（暫定） |
 |---|---|---|
 | CurrentWeather | 15分 | 2時間 |
-| HourlyWeather | 30分 | 3時間 |
+| HourlyWeather | 30分 | 2時間（第20章で暫定値を更新） |
 | RainForecast | 5分 | 30分 |
 | WeeklyWeather | 6時間 | 12時間 |
 | Schedule | 10分 | 6時間 |
@@ -731,6 +731,7 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 状態 | 対象 |
 |---|---|
 | 確定 | Frontend / Build / Deploy、nginx / Reverse Proxy / Polling、Published State API契約（第3〜10章）、Google Calendar + Service AccountによるSchedule取得方針（第17章） |
+| 設計方針：HourlyWeather | Domain Data・24〜36枠の連続採用・採用直前の再確認・Frontend再選択（第20章）。Provider・周期・TTLは暫定 |
 | 設計方針：CurrentWeather | 4項目Domain Data・State全体の採用／不採用・取得時鮮度と公開TTLの分離（第19章）。Provider・取得周期・未来許容は暫定 |
 | 設計方針：Schedule Step 5 | Schedule Domain Data・全ページ取得と正規化・JST日付制御・Cache条件（第18章）。未確定詳細は18.6に区別 |
 | 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
@@ -759,7 +760,7 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
-- HourlyWeather・RainForecast・WeeklyWeatherの詳細Schemaと鮮度評価。CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
+- RainForecast・WeeklyWeatherの詳細Schemaと鮮度評価。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
 - Cache不正時の物理削除。
 - Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
@@ -784,7 +785,7 @@ Future機能を先行実装しない。Issue #4のClose前には文書・Issue�
 | Published State | Provider候補 | 取得周期（暫定） | TTL（暫定） |
 |---|---|---|---|
 | CurrentWeather | Open-Meteo | 15分 | 2時間 |
-| HourlyWeather | Open-Meteo | 30分 | 3時間 |
+| HourlyWeather | Open-Meteo | 30分 | 2時間（第20章） |
 | RainForecast | Tomorrow.io | 5分 | 30分 |
 | WeeklyWeather | Open-Meteo | 6時間 | 12時間 |
 
@@ -1144,3 +1145,113 @@ isDayは昼夜アイコン選択に利用する。「更新待ち」は最後の
 
 長期安定性、全気象条件、すべての異常ケースは未検証である。利用規約・Provider最終選定、Validation実装・時刻設定の詳細は後続へ残す。異常時日時表示の具体的な表記・配置・文字サイズはIssue #5で決定する。
 Issue #4全体は未完了であり、CurrentWeather設計の完了扱いはGitHub差分のChatGPTレビュー合格後とする。
+
+---
+
+## 20. HourlyWeather Domain Data設計
+
+### 20.1 SchemaとProvider
+
+```typescript
+type HourlyWeatherData = {
+  hours: HourlyWeatherItem[];
+};
+
+type HourlyWeatherItem = {
+  validAt: string;
+  temperatureC: number;
+  weatherCode: number;
+  precipitationProbability: number;
+};
+```
+
+全フィールド必須でMVPではnullを許容しない。hoursは時刻昇順、採用時は24〜36枠とする。
+単一のdateは設けず、各枠のvalidAtで日付を管理する。
+
+| 項目 | 条件・意味 |
+|---|---|
+| validAt | 予報対象時刻。実在する日時をUTC RFC3339へ正規化 |
+| temperatureC | 摂氏気温。有限数値 |
+| weatherCode | WMOベース整数コード。未知の整数も許容 |
+| precipitationProbability | 0〜100の有限数値。降水確率 |
+
+Open-Meteoは**暫定採用**であり最終Provider選定完了ではない。
+取得対象はhourly.time、hourly.temperature_2m、hourly.weather_code、hourly.precipitation_probabilityとする。
+
+| 項目 | 方針・採用状態 |
+|---|---|
+| API取得周期 | 30分（暫定） |
+| Cache TTL | 2時間（暫定） |
+| Backend保持範囲 | 取得基準時刻から最大36枠 |
+| Frontend選択範囲 | 現在時刻の次の正時から最大24枠 |
+| 同時表示枠数・レイアウト | Issue #5で決定 |
+
+36枠は経過時間への余裕を含む保持範囲であり、すべてを同時表示する意味ではない。
+R-07の旧暫定TTL3時間を今回のHourlyWeather合意で2時間へ更新する。requirements.mdの暫定値表は今回変更せず、運用値最終検証・文書整合の確認事項として残す。
+
+### 20.2 取得基準時刻と切り出し
+
+1. API取得処理の開始時刻を取得基準時刻として固定する。
+2. timezone=Asia/Tokyoを指定し、hourly.timeをJSTとして解釈してUTC RFC3339へ変換する。
+3. 取得開始時点の次の正時から最大36枠を切り出す。正時ちょうどならその時刻を含める。
+4. 取得中に正時・日付をまたいでも取得基準時刻を変更しない。
+5. 採用直前に、その時点の現在時刻を基準とする必要24枠が連続して存在し、正常であることを再確認する。
+
+例：10:25開始なら11:00〜翌22:00の36枠を抽出する。
+10:59:58開始・11:00:03採用判定では、取得基準を固定したまま、採用時に12:00以降の24枠を再確認する。
+UTC / JSTの混同や日付またぎを避け、時刻比較は正規化済み時刻で行う。
+
+### 20.3 Provider Response Validation
+
+**第1段階：配列構造**
+
+hourly.time、hourly.temperature_2m、hourly.weather_code、hourly.precipitation_probabilityの4配列について存在・配列型・要素数一致を確認する。
+構造不正はHourlyWeather全体を不採用とする。配列長が一致して36枠未満でも、それだけを理由に不採用としない。
+
+**第2段階：時間枠**
+
+- 必要な先頭24枠は1時間間隔で連続し、すべての必須値が正常であること。
+- 24枠内の欠損・不正値・時刻不連続はState全体の不採用とする。
+- 25〜36枠は正常な連続範囲だけ採用し、余裕枠で最初の異常が見つかった時点で打ち切る。
+- 欠損時刻を詰めず、前回Cacheから個別枠を補完しない。
+- 気温は有限数値、天気コードは整数（未知も許容）、降水確率は0〜100の有限数値。
+- null・欠損・型不正・実在しない日時は認めない。
+
+取得開始時の必要24枠と採用直前の必要24枠の両方が正常であることを採用条件とする。
+配列構造のValidationと各枠の値・時間的連続性を分けて確認する。
+
+### 20.4 State更新とCache
+
+HourlyWeather単位で検証・採用する。不採用時は新Dataへ置換せず、TTL内の正常Cacheを維持する。
+失敗でdataUpdatedAt・expiresAtを延長せず、lastAttemptAt・lastAttemptResult等は既存API契約に従う。
+他Stateの正常更新を妨げず、TTL切れはdata:null、dataSource:nullとして扱う。
+採用時の24枠確保と、経過後のFrontendで利用できる枠数は区別する。
+
+### 20.5 Frontend表示
+
+現在時刻を基準として次の正時から最大24枠を再選択する。正時ちょうどではその時刻を含める。
+
+| 状態 | 表示方針 |
+|---|---|
+| 正常取得・将来24枠以上 | 最大24枠を選択。更新日時は表示しない |
+| 取得失敗・TTL内Cacheあり | 有効予報を維持し、「更新待ち」と最終更新日時を両方表示 |
+| TTL内・将来1〜23枠 | 存在する将来予報のみ表示。取得失敗中なら更新待ち・最終更新日時も表示 |
+| TTL内・将来0枠 | 「取得できません」 |
+| TTL切れ・初回未取得 | 「取得できません」 |
+
+最終更新日時はMetadataのdataUpdatedAtを用い、各予報対象時刻validAtを最終更新日時として使わない。
+予報枠不足とAPI取得失敗は内部状態として区別し、枠不足だけを取得失敗と扱わない。
+表示情報は天気アイコン・気温・降水確率。アイコン、同時表示枠数、日時表記・配置・文字サイズはIssue #5で決定する。
+R-07・Architecture 5.6の正常時注記なし、取得異常時の更新状態・最終更新日時、有効期限評価を維持する。
+
+**要件との確認事項**：R-03は「当日の天気」を要求する一方、本章の将来24枠は翌日に及ぶ。保持・選択範囲と当日コンテンツの画面表示範囲の対応はIssue #5等で確認が必要であり、当日要件を独断で変更しない。
+
+### 20.6 未検証・後続確認
+
+- Open-Meteo最終採用・利用条件。
+- API周期30分・TTL2時間の運用値最終検証とR-07暫定値表との整合。
+- 実APIのResponse形式・配列・時刻境界の検証。
+- 異常系を含む実装・テスト。
+- Issue #5のFrontend表示詳細・当日要件との対応。
+
+今回、実API検証・実装・テストは実施していない。HourlyWeather設計の完了扱いはGitHub実差分のChatGPTレビュー合格後とし、Issue #4全体も未完了である。
