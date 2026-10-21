@@ -560,7 +560,7 @@ State自体が未公開であることと、公開済みStateのデータが未�
 }
 ```
 
-Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章、RainForecastは第21章で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章、RainForecastは第21章、WeeklyWeatherは第22章で設計方針を定義済みである。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
 FrontendのResponse取得・更新ルールは7.3に従う。
 
 ### 10.8 期限切れデータの表示用APIでの扱い
@@ -741,7 +741,8 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
 | 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
 | 暫定採用：CurrentWeather Provider | Open-Meteo（第19章）。最終Provider選定は未完了 |
-| 暫定採用候補：その他Weather API | HourlyWeather / WeeklyWeatherはOpen-Meteo（第16・20章） |
+| 暫定採用：WeeklyWeather | Open-Meteo Daily Forecast。周期6時間・TTL12時間はMVP暫定値（第22章） |
+| 暫定採用候補：その他Weather API | HourlyWeatherはOpen-Meteo（第16・20章） |
 | MVP暫定採用：RainForecast | Tomorrow.io Timelines API、rainIntensity、1m。周期5分・TTL30分・表示鮮度10分は暫定（第21章） |
 | 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
 | 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
@@ -761,7 +762,7 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
-- WeeklyWeatherの詳細Schemaと鮮度評価。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
+- WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
 - Cache不正時の物理削除。
 - Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
@@ -1371,3 +1372,136 @@ Request開始順を判定する単調増加連番を推奨する（具体実装�
 
 21.2の未検証事項、Providerの期間・スロット境界・単位の解釈、余剰Data処理、Issue #5の表示詳細、競合制御実装を後続へ残す。
 今回の対象はRainForecast設計Markdownのみであり、WeeklyWeatherやBackend残詳細には進まない。Issue #4全体およびRainForecastの最終レビュー完了を意味しない。
+
+---
+
+## 22. WeeklyWeather設計・API検証
+
+### 22.1 Provider・取得仕様
+
+Open-Meteo Forecast APIのDaily Forecastを**MVP暫定採用**する。
+GET https://api.open-meteo.com/v1/forecast にtimezone=Asia/Tokyo、forecast_days=9を指定し、緯度・経度は既存の設定地点を使用する。今回のユーザー検証ではAPI Keyは不要だった。
+Provider固有の配列はBackend Adapterで検証・変換し、FrontendへDomain Dataを公開する。
+
+| Providerフィールド | Domain Data |
+|---|---|
+| daily.time | date |
+| daily.weather_code | weatherCode |
+| daily.temperature_2m_max | temperatureMaxC |
+| daily.temperature_2m_min | temperatureMinC |
+| daily.precipitation_probability_max | precipitationProbability |
+
+precipitation_probability_maxは日内最大降水確率であり、「その日に一度でも雨が降る確率」と同義に扱わない。
+取得周期6時間・Cache TTL12時間はMVP暫定値とする。Backendは最大9日、Frontendは今日（JST）から最大7日を対象とする。共通API・Metadata契約は維持する。
+
+### 22.2 Domain Data Schema
+
+```typescript
+type WeeklyWeatherData = {
+  days: WeeklyWeatherItem[];
+};
+
+type WeeklyWeatherItem = {
+  date: string;
+  weatherCode: number;
+  temperatureMaxC: number;
+  temperatureMinC: number;
+  precipitationProbability: number;
+};
+```
+
+全項目必須でnullは許容しない。dateは予報対象のJST暦日（YYYY-MM-DD）で、UTC日時へ変換しない。
+weatherCodeはWMOベース整数（未知整数も許容）、気温は℃、precipitationProbabilityはその日の最大降水確率（%）を示す。未知コードの表示FallbackはIssue #5で扱う。
+
+### 22.3 Provider Response Validation
+
+第1段階では22.1の5配列について存在・配列型・要素数一致を確認する。配列構造不正はWeeklyWeather全体を不採用とする。
+
+第2段階は取得開始日のJST暦日から連続7日を必須範囲、8〜9日目を余裕範囲とする。
+
+- 必須7日は全項目正常、日付昇順・1日間隔とする。欠損・重複・逆順・不正値はState全体の不採用。
+- 欠損日を詰めず、前回Cacheから個別日を補完しない。
+- 余裕日は正常な連続範囲だけ採用し、最初の不正日で打ち切る。
+- 8日目正常・9日目不正なら8日を採用。8日目不正なら9日目が正常でも7日までとする。
+- 余裕日個別の不正だけで正常な必須7日を破棄しない。配列全体の構造不正とは区別する。
+
+| 項目 | 正常条件 |
+|---|---|
+| date | 実在するJST暦日、YYYY-MM-DD |
+| weatherCode | 整数。未知コードも許容 |
+| temperatureMaxC | 有限数値 |
+| temperatureMinC | 有限数値、temperatureMinC <= temperatureMaxC |
+| precipitationProbability | 0〜100の有限数値 |
+
+null・欠損・型不正・非有限数値は不正。正常系実API検証では最高／最低の大小関係に問題はなかったが、あらゆる条件で保証されたとは扱わない。
+
+### 22.4 取得開始時・採用直前の2段階Validation
+
+1. API取得開始時刻を記録し、その時点のJST暦日を取得基準日として固定する。
+2. 基準日から9日分を要求し、必須7日を検証する。余裕2日は正常な連続範囲のみ採用候補にする。
+3. 採用直前に現在のJST暦日を再評価し、その日から連続7日が採用候補内で正常に存在することを確認する。
+4. 取得開始時・採用直前の両条件に合格した場合だけ採用し、不足は取得失敗とする。
+
+例：2026-10-21 23:59:58 JST開始なら必須範囲は10/21〜27。10/22 00:00:03 JSTの採用判定では10/22〜28を再確認する。取得中の日付変更で開始時の基準日を書き換えない。
+
+### 22.5 Frontend表示
+
+現在のJST暦日から連続する最大7日をdaysから選択する。日付変更時はAPI再取得を待たず再選択する。
+
+- 今日から7日あれば7日表示し、1〜6日なら存在する連続日数だけ表示する。
+- 今日から連続する予報が0日なら「取得できません」とする。
+- 過去の日を今日として表示せず、欠損日を飛ばして詰めたり推測・補完したりしない。
+- 予報日数不足だけでAPI取得失敗とは判定しない。
+- 取得失敗・TTL内有効Cacheありでは、R-07に従い有効予報＋「更新待ち」＋最終更新日時を表示する。
+- 最終更新日時はdataUpdatedAtを使い、予報対象日dateとは混同しない。
+- TTL切れ・初回未取得は「取得できません」。正常時は異常注記・最終更新日時なし。
+
+表示は天気アイコン・最高／最低気温・降水確率。アイコン対応表・レイアウト・文字サイズ・最終文言はIssue #5で決定する。
+RainForecast固有の10分表示鮮度制限は適用しない。
+
+### 22.6 State更新・Cache・競合制御
+
+WeeklyWeather単位で独立取得・検証・採用する。不正時は新Dataを採用せずTTL内正常Cacheを維持する。
+失敗でdataUpdatedAt・expiresAtを延長しない。TTL切れはdata:null、dataSource:nullとし、lastAttemptAt・lastAttemptResult等は共通Metadata契約に従う。他Stateの正常更新を妨げない。
+
+開始順を管理して古い成功結果によるdata上書き、古い失敗による試行Metadata巻き戻りを防ぐ。成功・失敗に同じ制御を適用し、State単位の整合した原子的更新を行う。単調増加連番等の具体実装は実装段階で決定する。
+
+### 22.7 2026-10-21ユーザー実API検証
+
+ユーザーがWindows PowerShellからOpen-Meteo Forecast APIを呼び出した正常系検証の記録である。今回API再呼出しは行っていない。
+
+| 項目 | 実測 |
+|---|---|
+| HTTP Status | 200 |
+| Timezone / UTC Offset | Asia/Tokyo / 32400秒 |
+| Day Count | 9 |
+| First / Last Date | 2026-10-21 / 2026-10-29 |
+
+Daily Response：
+
+```json
+{
+  "time": ["2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29"],
+  "weather_code": [53, 2, 3, 63, 53, 80, 81, 3, 3],
+  "temperature_2m_max": [28.7, 22.5, 22.1, 20.8, 23.3, 22.4, 27.2, 20.3, 18.0],
+  "temperature_2m_min": [19.6, 14.8, 13.2, 16.3, 19.7, 19.7, 15.7, 9.0, 9.0],
+  "precipitation_probability_max": [100, 35, 31, 100, 70, 76, 73, 8, 7]
+}
+```
+
+5配列存在・各9件一致、JST日付昇順・連続、天気コード整数、気温有限値、最高>=最低、降水確率0〜100、必須7日・余裕2日の正常性はすべてPASS。
+**正常系の実API疎通・Response検証はPASS**である。Backend Validation・Cache・競合制御の実装検証完了とは区別する。
+
+### 22.8 未検証・後続テスト
+
+以下は実装時のVitest単体テスト、および結合・運用テストへ引き継ぐ。
+
+- 取得中のJST日付変更と2段階Validation。
+- 必須7日の欠損・重複・逆順・不正値。
+- 余裕8〜9日の不正時打ち切り。
+- 最高気温が最低気温を下回る異常Data。
+- 取得失敗時のCache維持・TTL非延長。
+- 競合時の古い成功・失敗結果破棄。
+- 6時間Polling・TTL12時間の長期運用。
+
+今回コード実装・テストは行っていない。Provider利用条件の最終確認とIssue #5の表示詳細も後続に残し、Issue #4全体やWeeklyWeatherのレビュー完了と扱わない。
