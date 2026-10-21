@@ -560,7 +560,7 @@ State自体が未公開であることと、公開済みStateのデータが未�
 }
 ```
 
-Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章、RainForecastは第21章で設計方針を定義済みである。その他のDomain Dataの具体的なJSON構造は引き続き未決定である。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
 FrontendのResponse取得・更新ルールは7.3に従う。
 
 ### 10.8 期限切れデータの表示用APIでの扱い
@@ -741,7 +741,8 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
 | 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
 | 暫定採用：CurrentWeather Provider | Open-Meteo（第19章）。最終Provider選定は未完了 |
-| 暫定採用候補：その他Weather API | HourlyWeather / WeeklyWeatherはOpen-Meteo、RainForecastはTomorrow.io（第16章） |
+| 暫定採用候補：その他Weather API | HourlyWeather / WeeklyWeatherはOpen-Meteo（第16・20章） |
+| MVP暫定採用：RainForecast | Tomorrow.io Timelines API、rainIntensity、1m。周期5分・TTL30分・表示鮮度10分は暫定（第21章） |
 | 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
 | 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
 | 未決定 | 下記の実装詳細・Provider正式採用・具体値 |
@@ -760,7 +761,7 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
-- RainForecast・WeeklyWeatherの詳細Schemaと鮮度評価。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
+- WeeklyWeatherの詳細Schemaと鮮度評価。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
 - Cache不正時の物理削除。
 - Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
@@ -1255,3 +1256,114 @@ R-07・Architecture 5.6の正常時注記なし、取得異常時の更新状態
 - Issue #5のFrontend同時表示枠数・レイアウト・日時等の表示詳細。
 
 今回、実API検証・実装・テストは実施していない。HourlyWeather設計の完了扱いはGitHub実差分のChatGPTレビュー合格後とし、Issue #4全体も未完了である。
+
+---
+
+## 21. RainForecast設計
+
+### 21.1 Provider・API・採用状態
+
+Tomorrow.ioを**MVP暫定採用**とする。Timelines APIのPOST /v4/timelinesを利用し、timestepは1m、unitsはmetric、startTimeはnow、endTimeはnowPlus65mを要求する。
+雨に対象を絞るためrainIntensityを使用する。precipitationIntensityも取得可能だが、MVP判定には使わない。
+採用時点から将来60分間を必要とし、取得周期5分、Cache TTL30分、表示鮮度制限10分はいずれも暫定値である。Quota Guardは第16章を維持する。
+
+### 21.2 ユーザーによる疎通検証
+
+2026年10月21日、Windows PowerShellから取得済みAPI Keyを用いて検証した結果を記録する。今回API呼出しは実施していない。
+
+| 確認項目 | 結果 |
+|---|---|
+| HTTP | 200 |
+| スロット数 | 66件 |
+| 間隔・連続性 | 連続1分間隔、時刻連続性True、Basic interval check PASS |
+| 先頭時刻 | 2026-10-21T13:20:00Z |
+| 先頭5件の強度 | rainIntensity・precipitationIntensityとも数値0 |
+| 時刻形式 | UTC RFC3339 |
+
+使用したAPI Keyで1分間隔予報を取得できたことは確認済みである。API Key・位置・認証情報は記載しない。
+全66件の強度正常性、採用時点から厳密に将来60分を確保できること、実降雨時の正値、5分Polling長期運用の制限・エラー、プラン／仕様変更の制約は未検証とする。疎通PASSをこれらの検証完了と扱わない。
+
+### 21.3 Domain Data Schema
+
+```typescript
+type RainForecast = {
+  status: "dry" | "raining";
+  intensity: "light" | "moderate" | "heavy" | null;
+  rainStartAt: string | null;
+  rainEndAt: string | null;
+  forecastUntil: string;
+};
+```
+
+| 項目 | 意味 |
+|---|---|
+| status | 採用時点の起点予報スロットによる現在降雨状態の近似。実測値ではない |
+| intensity | 対象となる直近降雨イベントの予測範囲内最大強度の分類。イベントなしはnull |
+| rainStartAt | 次の降り始め、または短い途切れ後の再開見込み。現在降雨中はnull |
+| rainEndAt | 対象イベントの終了見込み。予測範囲内で確定できなければnull |
+| forecastUntil | 検証・採用した予報期間の排他的終端 |
+
+時刻はBackendでUTC RFC3339へ正規化し、FrontendでJST表示する。Domain内のstatusは降雨状態であり、共通Metadataへのstatus追加ではない。
+rainResumeAt追加や強度推移の時系列表示はFuture候補とし、今回は追加しない。
+
+### 21.4 降雨イベント判定
+
+0.1 mm/h以上を雨、未満を雨なしとする。閾値はMVP暫定値である。
+連続降雨を1イベントとし、5分未満の雨なしの途切れは同一イベントに統合、5分以上は別イベントとする。
+扱うのは直近1件のみで、現在降雨中は現在イベント、雨なしなら次イベントを対象とする。
+短い途切れ中はstatusをdryとし、rainStartAtには次の再開見込みを設定する。イベント統合と現在statusは分離し、雨なしスロットをrainingへ変えない。
+
+rainEndAtは、止まり始めから5分以上連続して閾値未満であることを確認できた場合に、止まり始めの時刻を設定する。
+5分未満で再開した場合はイベント継続、終端で確認不足または終端まで降雨が続く場合はnullとする。nullは「止まらない」ではなく「終了時刻を確定できない」を意味する。
+
+| intensity | 対象イベントの予測範囲内最大降水強度 | 表示 |
+|---|---|---|
+| light | 0.1以上、1.0 mm/h未満 | 弱い雨 |
+| moderate | 1.0以上、10.0 mm/h未満 | 普通の雨 |
+| heavy | 10.0 mm/h以上 | 強い雨 |
+
+MVP独自の表示区分であり、気象庁公式区分ではない。最大がheavyでも降り始めから強いとは限らず、UIで誤認を避ける。
+
+### 21.5 時刻処理・Validation
+
+API Request開始時刻を記録する。現在時刻が分境界ならその分、それ以外は次の分境界を起点とし、連続60個の1分スロットを必要とする。
+forecastUntilは最後の採用スロットの終了時刻とする。
+採用直前に採用時点の時刻で将来60分間を再検証し、必要期間不足は取得失敗とする。statusは採用時点の起点スロットの強度で近似する。
+
+必須60スロットを以下の条件で検証する。
+
+- 強度は0以上の有限数値。null・欠損・文字列・NaN・Infinity・負数は不正。
+- 時刻は1分間隔で連続し、欠損・重複・逆順がない。
+- 必要な将来60分間をカバーする。
+
+必須Dataに1件でも異常があればRainForecast全体を取得失敗とし、補間・推測・0置換は行わない。
+60分超の返却Dataは採用に必要な範囲を検証し、余剰処理はAdapterで整理する。Providerの時刻が表す期間・スロット境界・単位もAdapterで扱い、設計上の1分スロットとして正しく解釈できるか実装時に確認する。
+
+### 21.6 Cache・Frontend鮮度
+
+State単位の独立更新、取得失敗時のTTL内Cache維持、失敗によるTTL非延長、期限切れMaskを維持する。
+期限切れはdata:null、dataSource:nullとし、既存6項目Metadata契約に従う。
+表示鮮度はdataUpdatedAtを基準とし、Frontendは表示中も時間経過を評価する。
+
+| 状態 | RainForecast表示方針 |
+|---|---|
+| 取得から10分未満・直近更新成功 | 通常表示 |
+| 取得から10分未満・直近更新失敗 | 予報と「更新待ち」 |
+| 取得から10分以上・TTL内 | 予報を隠し「更新待ち」のみ |
+| TTL30分以上 | 「取得できません」 |
+
+10分経過だけではBackend Cacheを削除しない。表示鮮度とTTLは別の概念である。
+statusは採用時の予報に基づき、Frontendは時間経過で再計算せず、定期取得で更新する。
+
+**既存要件との未解決事項**：R-07は取得失敗時の有効Cache表示に最終更新日時を求め、Architecture 5.6もこれを維持する。今回の表示表にはその日時がなく、10分以上ではTTL内でも予報を隠すため、既存の有効Cache継続表示との対応確認が必要である。本章は合意内容を記録し、既存要件を変更・解消済みと扱わない。
+
+### 21.7 更新競合・原子性
+
+Request開始順を判定する単調増加連番を推奨する（具体実装の確定ではない）。
+新結果採用後に到着する古い結果は破棄し、古い成功でdataを、古い失敗でlastAttemptAt・lastAttemptResultを上書きしない。
+成功・失敗に同じ競合制御を適用し、RainForecast更新をState単位で原子的に行う。他Stateには影響させない。
+
+### 21.8 後続確認
+
+21.2の未検証事項、Providerの期間・スロット境界・単位の解釈、余剰Data処理、表示表とR-07の整合、競合制御実装を後続へ残す。
+今回の対象はRainForecast設計Markdownのみであり、WeeklyWeatherやBackend残詳細には進まない。Issue #4全体およびRainForecastの最終レビュー完了を意味しない。
