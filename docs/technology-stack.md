@@ -764,9 +764,9 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
-- 正式SQLite DDL・Index・Migration、Generation採番。
+- 正式SQLite DDL・Index・Migration、Generation採番。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
 - Cache不正時の物理削除。
-- Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH各IDの未提供期待結果、Recovery・競合制御の実装詳細は未確認／未実装。
+- Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH-01〜33は23.8に個別定義済み。Recovery・競合制御は未実装・未検証。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
 - API Endpoint正式Path・nginx設定。
 - Backup実行時刻・Path・Scheduler・失敗時再試行・復元コマンド。
@@ -1596,6 +1596,11 @@ Tx-A成功・Tx-P失敗時、Stateごと最大1件をメモリ保持する。永
 | P-06 | State固有の採用条件を再確認可能 |
 
 すべてを満たす場合のみ再公開し、Schedule・WeeklyWeather等は復旧時JST日付で再Validationする。
+
+P-04・P-05は既存条件を維持する。publishedAtは既存契約どおりSnapshot生成時刻であり、取得順序の比較に単独使用しない。
+dataUpdatedAtは取得Dataの鮮度比較に利用できるが、再起動・同時刻取得を含む厳密な順序比較は未決定である。Process内取得順序識別子だけでは再起動をまたぐ比較を保証できない。
+永続取得識別子、Generation採番、比較同値時の扱い、Commit結果不明時の照合方法はSQLite DDL・実装詳細設計で確定する。安全に比較条件を検証できない場合、自動再公開を行わず古いPendingによる上書きを防ぐ。
+
 SQLite復旧 → Published / Control State復元検証 → Pending検証 → Tx-P保存 → Commit後公開 → Tx-C Cache更新 → 通常Scheduler再開の順とする。同一StateのPending処理と新規HTTPは直列化する。
 
 再公開では元dataUpdatedAt・expiresAtを維持し、lastAttemptAtは元試行開始、lastAttemptResultはsuccess、dataSourceはexternalApi、publishedAtは新Snapshot生成時刻とする。
@@ -1604,7 +1609,15 @@ SQLite復旧 → Published / Control State復元検証 → Pending検証 → Tx-
 ### 23.6 Pending障害・破棄
 
 TTL切れ、Validation失敗、新しいSnapshot存在、固有採用条件不成立なら破棄する。
-Tx-P一時失敗はPendingを維持しRecoveryへ戻る。BLOCKEDでは自動再公開しない。
+| Tx-P失敗原因 | 対応 |
+|---|---|
+| DB全体の一時的利用不能（L2） | Pending保持、通常Scheduler保留、SQLite Recoveryへ移行 |
+| 一時SQL操作失敗（L1） | 原因分類後、適切な再確認・再試行経路へ移行。外部API即時再取得なし |
+| State固有の制約違反・Validation不備 | DB全体を無条件に障害扱いせず、対象Stateを隔離・ログ記録 |
+| Commit結果不明 | DBの最新Snapshot・世代を照合し、Commit済みか確認してから再試行を判断 |
+| DB全体破損・Schema非互換（L3） | BLOCKED。自動修復・初期化・再公開を行わない |
+
+Tx-P失敗だけでProvider取得失敗回数を加算せず、Tx-AでCommit済みの取得成功記録をRollbackしない。新State公開はTx-P Commit成功後だけとし、旧SnapshotのTTL判定を継続する。PendingはStateごと最大1件とし、DB全体RecoveryとState隔離を分ける。L4の致命障害に安全な自動復旧を仮定しない。
 Commit結果不明ならDB Snapshotを照合してから再試行する。Process CrashでメモリPendingが消失したら通常Schedulerで再開する。
 
 ### 23.7 Control State復元
@@ -1616,15 +1629,85 @@ Commit結果不明ならDB Snapshotを照合してから再試行する。Proces
 
 SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個の独立テスト関数を要求するものではない。今回試験は実施していない。
 
-| ID範囲 | 分類 |
-|---|---|
-| SCH-01〜06 | HTTP取得・Timeout |
-| SCH-07〜13 | SQLite・Transaction |
-| SCH-14〜19 | Quota Guard |
-| SCH-20〜27 | Scheduler・再起動 |
-| SCH-28〜33 | 複合障害 |
+### A. HTTP取得・Timeout
 
-SCH-07 / 27 / 30 / 31の追加詳細確認にはPending Publication、Commit結果不明時の照合、復旧時競合制御、再起動時Pending消失を含める。
-**未提供情報**：各IDの既存期待結果一覧は今回の依頼・既存文書・Issue #4本文には記載されていない。IDと期待結果の対応を推測で作らず、原一覧の確認待ちとする。上表と指定4 IDの補足のみを反映しており、33件の個別期待結果反映は未完了である。
+| ID | テスト条件 | 期待結果 |
+|---|---|---|
+| SCH-01 | HTTP応答が10秒を超える | Timeoutとして失敗を記録し、Backoffを適用 |
+| SCH-02 | HTTP 500が返る | 即時Retryせず、失敗回数を加算 |
+| SCH-03 | HTTP 429、Retry-Afterあり | BackoffとRetry-Afterの遅い方まで待機 |
+| SCH-04 | HTTP成功、Validation失敗 | 不正データを公開しない |
+| SCH-05 | 取得Taskが通常周期を超える | 同一StateのTaskを重複起動しない |
+| SCH-06 | HTTP成功後、Tx-Aが失敗 | Tx-Pに進まず、新Stateを公開しない |
+
+### B. SQLite・Transaction
+
+| ID | テスト条件 | 期待結果 |
+|---|---|---|
+| SCH-07 | Tx-PのCommit失敗 | 旧Published Stateを維持 |
+| SCH-08 | Tx-CのCommit失敗 | Commit済みの新Published Stateを維持 |
+| SCH-09 | SQLiteが一時的に利用不能 | 通常Schedulerを保留し、5秒間隔の復旧処理へ移行 |
+| SCH-10 | SQLiteが復旧 | Snapshot・取得制御情報を検証し、通常Schedulerを再開 |
+| SCH-11 | 最新Snapshotが不正、前世代が正常 | 前世代を復元し、期限は延長しない |
+| SCH-12 | 一部StateのSnapshotのみ不正 | 他の正常Stateを継続して提供 |
+| SCH-13 | DB全体の整合性異常 | 自動初期化・削除せず、BLOCKEDとして隔離 |
+
+### C. Quota Guard
+
+| ID | テスト条件 | 期待結果 |
+|---|---|---|
+| SCH-14 | 60分Quotaが上限到達 | HTTP送信せず、解除見込み時刻に再判定 |
+| SCH-15 | 24時間・60分・1秒の複数制限に到達 | 最も遅い解除見込み時刻を採用 |
+| SCH-16 | Quota履歴が不正・確認不能 | Fail Closed。HTTP送信しない |
+| SCH-17 | Tx-QのCommit失敗 | HTTP送信しない |
+| SCH-18 | HTTP Timeout後に再起動 | 送信前に記録したQuota消費を維持 |
+| SCH-19 | Quota不足による取得抑止 | 失敗回数・nextAttemptAtを変更しない |
+
+### D. Scheduler・再起動
+
+| ID | テスト条件 | 期待結果 |
+|---|---|---|
+| SCH-20 | Timerが予定より遅れて発火 | 現在時刻で条件を再評価 |
+| SCH-21 | Task中に再判定要求が発生 | inFlightにより重複実行を防止 |
+| SCH-22 | Taskが例外終了 | inFlightを解除し、適切な次回判定または復旧処理へ移行 |
+| SCH-23 | 保存済みnextAttemptAtが未来 | Startup直後も取得しない |
+| SCH-24 | 既存Acquisition Control Stateが欠損・不正 | 5分の保守的待機を適用 |
+| SCH-25 | 新規DBで取得制御記録が存在しない | 正常な初回起動として扱い、通常Schedulerで判定 |
+| SCH-26 | 再起動時にPublished Stateが期限切れ | DataをMaskし、取得条件を再評価 |
+| SCH-27 | Tx-A成功後、Tx-P失敗 | Provider取得成功と公開失敗を区別し、不要な即時再取得を防止 |
+
+### E. 複合障害
+
+| ID | テスト条件 | 期待結果 |
+|---|---|---|
+| SCH-28 | HTTP TimeoutとSQLite保存失敗が連続 | 保存できていないBackoffを信用せず、安全側に取得を保留 |
+| SCH-29 | Quota不足中にBackend再起動 | SQLite履歴からQuota解除見込み時刻を再計算 |
+| SCH-30 | SQLite復旧直後に複数Stateが取得対象 | State単位の重複を防ぎ、各取得制限を尊重 |
+| SCH-31 | Tx-P失敗後にBackend再起動 | メモリ上の未公開データは失われても、通常Schedulerで再開 |
+| SCH-32 | TTL切れと外部API障害が同時発生 | 期限切れDataを公開せず、Metadataを保持 |
+| SCH-33 | 1つのStateの取得・Validation失敗 | 他のStateの正常な取得・公開を妨げない |
+
+### Pending Publication関連の追加検証
+
+次の内容を既存テストIDの詳細条件として追加してください。
+
+**SCH-07**
+- Tx-P Commit失敗時に旧Snapshotを維持する。
+- Commit結果不明時はDB内Snapshotを照合し、二重公開や世代不整合を防ぐ。
+
+**SCH-27**
+- Tx-A成功・Tx-P失敗時にPendingを最大1件保持する。
+- 外部APIを即時再取得しない。
+- SQLite復旧後、有効なPendingをTx-Pで公開できる。
+- TTL切れ、Validation不正、JST日付変更、より新しいSnapshot存在時はPendingを破棄する。
+
+**SCH-30**
+- SQLite復旧後のPending再公開処理と通常Schedulerが競合しない。
+- 同一Stateの新規取得とPending再公開を直列化する。
+
+**SCH-31**
+- Process再起動でPendingが消失する。
+- 再起動後は保存済みnextAttemptAt・Backoff・Quotaを尊重し、通常Schedulerで再開する。
+
 
 Vitest Fake Timer、HTTP Mock（Timeout / 429 / 500 / Validation）、SQLite統合Commit / Rollback、固定Quota履歴の境界値、Startup / Recovery再起動相当テスト、Pi実機Process Crash・systemd復旧・72時間試験を予定する。

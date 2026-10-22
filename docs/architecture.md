@@ -1513,7 +1513,7 @@ PendingはstateKey、Validation済みData、dataUpdatedAt、expiresAt、attemptS
 再公開はSQLite HEALTHY、Schema / Semantic Validation、期限内、既存Snapshotより古くない、新しい同State結果なし、State固有採用条件の再確認というP-01〜06をすべて要求する。
 復旧・Published / Control State復元検証後にPendingを検証し、Tx-P保存 → Commit後公開 → Tx-C更新を行ってから通常Schedulerを再開する。Pending処理と同一State新規HTTPは直列化する。
 元dataUpdatedAt・expiresAt・試行開始時刻を維持し、lastAttemptResult:success、dataSource:externalApi、publishedAtは新Snapshot生成時刻とする。再公開・破棄だけでは失敗回数・nextAttemptAt・Quotaを変えない。
-期限切れ・Validation不正・新Snapshot存在・固有条件不成立は破棄。一時Tx-P失敗は保持してRecoveryへ戻り、BLOCKEDでは再公開しない。Commit結果不明はDB照合後に再試行する。CrashでPendingが消えた場合は通常Schedulerで再開する。
+期限切れ・Validation不正・新Snapshot存在・固有条件不成立は破棄。L2のTx-P失敗はPending保持・通常Scheduler保留・DB Recoveryへ移行する。L1は原因分類して再確認・再試行へ、State固有制約／Validation不備は対象State隔離へ分ける。DB全体を無条件に障害扱いせず、BLOCKEDでは再公開しない（詳細はtechnology-stack.md 23.6）。Commit結果不明はDB照合後に再試行する。CrashでPendingが消えた場合は通常Schedulerで再開する。
 Schedule・WeeklyWeather等は復旧時のJST日付で再Validationする。詳細はtechnology-stack.md 23.5〜23.7に従う。
 
 ### 16.7 Database障害・WAL・Backupの境界
