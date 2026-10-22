@@ -661,7 +661,7 @@ SQLite・better-sqlite3は暫定採用とする。Published State、Backend Cach
 | acquisition_control | Backendの取得制御用永続状態 |
 
 Published Stateの**最新と直前の2世代保持**と、**世代ごとに別Rowで保存する方式**は、いずれも暫定採用とする。具体DDL・Index・Generation採番・Migrationは未決定である。
-State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必須としない。取得結果単位のTransactionと部分成功の関係はArchitecture 16.4に従う。
+State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必須としない。Tx-Q / Tx-A / Tx-P / Tx-C分離とState単位の部分成功はArchitecture 16.4に従う。
 
 ### 12.2 SQLite設定・注意点
 
@@ -695,7 +695,7 @@ microSD自体の物理故障からの自動復旧は保証しない。
 | 物理故障対策 | MVP対象外 |
 
 稼働中のSQLite DB本体だけを単純コピーする方式は採用せず、WALと整合する方法で取得する。
-同一microSDのBackupは物理故障対策ではない。Database利用不能時は正常稼働扱いにせず、停止・検証・手動復元を行う。
+同一microSDのBackupは物理故障対策ではない。Database HealthとBackend Service Healthを分け、一時障害は第23章のRecoveryで可能機能を継続する。DB破損・Schema非互換等はBLOCKEDとし、安全性確認・手動復元を行う。
 実行時刻・Path・Backup用Scheduler・失敗時再試行・復元コマンドは未決定とする。
 
 ---
@@ -715,7 +715,7 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 - Published State / CacheのSchema ValidationとSemantic Validation。
 - Expiry境界（`now == expiresAt`）、Cache Fallbackと鮮度期限の非延長。
 - Backoff復元、正常なControl StateのnextAttemptAt尊重。
-- SQLite Transaction Rollback、複数State生成時の部分成功と全更新Rollback。
+- 分離TransactionごとのCommit / Rollback、複数State生成時の部分成功、Tx-C失敗時の公開継続。Scheduler異常系観点は23.8を参照。
 - 最新Snapshot不正時の旧世代復元、2世代とも不正な場合の隔離。
 - Database利用不能時の異常扱い。
 - 起動時の復元と外部取得待ちなしのAPI提供、Graceful Shutdown。
@@ -737,7 +737,7 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
 | 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
 | 暫定採用：Backend実行・取得制御 | 1 Backend Process内の複数非同期Task、State単位の独立Scheduler、即時Retryなし・有界指数Backoff（Architecture 16.1・16.3） |
-| 暫定採用：Transaction | 取得結果単位のSQLite Transaction、複数State生成時の部分成功（Architecture 16.4） |
+| 暫定採用：Transaction | Tx-Q / Tx-A / Tx-P / Tx-Cの分離、複数State生成時の部分成功（Architecture 16.4・第23章） |
 | 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
 | 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
 | 暫定採用：CurrentWeather Provider | Open-Meteo（第19章）。最終Provider選定は未完了 |
@@ -746,6 +746,7 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | MVP暫定採用：RainForecast | Tomorrow.io Timelines API、rainIntensity、1m。周期5分・TTL30分・表示鮮度10分は暫定（第21章） |
 | 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
 | 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
+| 合意済み詳細設計 | Tx-Q / Tx-A / Tx-P / Tx-C、SQLite障害Recovery、Scheduler時刻・Backoff・HTTP10秒・429、Pending Publication（第23章）。未実装・未検証 |
 | 未決定 | 下記の実装詳細・Provider正式採用・具体値 |
 
 Backendの技術・実行・Transaction・Recovery方針はいずれも上表の暫定採用として扱う。設計内容は既存本文・Architectureの記載を維持し、具体値・実装詳細の未決定事項と区別する。確定API契約はこれらの暫定採用に依存して変更しない。
@@ -765,7 +766,7 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 正式SQLite DDL・Index・Migration、Generation採番。
 - Cache不正時の物理削除。
-- Backoffの係数・上限・Jitter・Retry-After、Control State復元失敗時の待機時間。
+- Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH各IDの未提供期待結果、Recovery・競合制御の実装詳細は未確認／未実装。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
 - API Endpoint正式Path・nginx設定。
 - Backup実行時刻・Path・Scheduler・失敗時再試行・復元コマンド。
@@ -835,9 +836,9 @@ RainForecastを5分周期・1 Request / 取得で運用すると、通常取得�
 - 日次・時間・秒間の制限をそれぞれ判定する。
 - Providerリセット境界が未確定の間は、ローリングウィンドウで保守的に管理する。
 - Quota不足による送信抑止と、実際に送信したHTTP Requestの失敗を区別する。
-- HTTP 429時は即時再試行せず、`Retry-After`等を考慮して待機する。詳細待機計算は後続設計とする。
+- HTTP 429は取得失敗とし、BackoffとRetry-Afterの遅い方まで待機する。具体ルールは23.3に従う。
 
-送信前の永続記録は、外部HTTPをDB Transactionの外で行う既存境界を変更しない。Quota記録の具体SQL・DDL・Transaction実装は今回確定しない。
+送信前の永続記録は、外部HTTPをDB Transactionの外で行う既存境界を変更しない。Tx-Qによる送信前Commitと解除時刻判定は第23章に従う。具体SQL・DDLは未決定である。
 
 | 対象 | Provider公称上限（ユーザー画面確認） | Backend安全上限（暫定） |
 |---|---|---|
@@ -854,7 +855,7 @@ Backend外で同一API Keyを利用するRequest数は、このBackendのSQLite�
 API停止中もCacheのTTL・有効CacheのFallback・Metadata・期限切れMaskを維持する。Quota不足やBackoffを理由に古いデータの期限を延長しない。
 Startupは外部取得完了を待たず保存Stateを復元してAPI提供を開始し、利用可能データは期限内に限って提供する。
 
-Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限、429待機計算は後続設計に残す。CurrentWeather Domain Dataの設計方針は第19章を参照する。
+Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限は後続確認とし、429待機計算は23.3に従う。CurrentWeather Domain Dataの設計方針は第19章を参照する。
 State単位の取得制御とProvider単位のRate Limitの区別はArchitecture 16.3に従う。
 
 ---
@@ -1505,3 +1506,125 @@ Daily Response：
 - 6時間Polling・TTL12時間の長期運用。
 
 今回コード実装・テストは行っていない。Provider利用条件の最終確認とIssue #5の表示詳細も後続に残し、Issue #4全体やWeeklyWeatherのレビュー完了と扱わない。
+
+---
+
+## 23. Backend Scheduler・SQLite Recovery・Pending Publication
+
+本章はIssue #4で合意済みの詳細設計を記録する。既存Backend技術・Provider・Quota安全上限等の暫定採用状態は維持し、実装・試験完了とは扱わない。Domain Data第18〜22章は変更しない。
+
+### 23.1 SQLite障害分類とRecovery
+
+Database HealthとBackend Service Healthを区別する。
+
+| 分類 | 内容・方針 |
+|---|---|
+| L1 | 一時的SQL操作失敗（SQLITE_BUSY等）。外部取得失敗と区別 |
+| L2 | 一時的Database全体利用不能。可能な機能は継続し、通常Schedulerを保留してRecoveryへ移行 |
+| L3 | 整合性異常。State単位Snapshot不正とDB全体破損を区別。安全な自動復旧判断ができないDB破損・Schema非互換はBLOCKED |
+| L4 | Storage / OS等の致命障害。安全な復旧を保証しない |
+
+HEALTHY / DEGRADED / RECOVERING / BLOCKEDは概念状態であり、全Service共通のenumや具体型を追加する決定ではない。
+一時障害でProcessを無条件終了せず、DBの自動削除・初期化・根拠のない修復は行わない。
+
+- 復旧可能な障害は前回チェック完了から固定5秒後に再確認し、RecoveryをSingle-flightとする。
+- 復旧可能なL2の確認回数に上限を設けない。
+- 毎回重い整合性検査を行わず、同一障害ログの大量出力を抑制する。
+- 接続・Schema互換性・Read・実際のWrite / Commit・Published State復元Validation・Acquisition Control State復元Validationを確認する。
+- Quota永続履歴を安全に検証できるまでTomorrow.ioはFail Closed。
+- SQLite利用可能後、原則1分以内のPublish / Read再開を初期目標とする。外部API成功・最新Data取得はDB復旧条件ではない。
+
+### 23.2 Transaction分離
+
+外部HTTP・Validation・Domain変換はSQLite Transaction外で行う。
+
+| Transaction | 内容 | タイミング |
+|---|---|---|
+| Tx-Q | Tomorrow.io Quota消費予定の永続記録 | HTTP送信前 |
+| Tx-A | Acquisition Control State更新 | HTTP取得・Validation後 |
+| Tx-P | Published State Data＋Metadata保存 | Tx-A成功後 |
+| Tx-C | Backend Cache更新 | Tx-P成功後 |
+
+Tx-Q Commit失敗ならTomorrow.ioへ送信しない。Tx-A失敗ならTx-Pへ進まない。
+Tx-P Commit成功後のみ新Stateを公開し、失敗時は旧Snapshotを維持する。Tx-C失敗でCommit済み公開を取り消さない。
+Transaction失敗と外部API取得失敗は区別する。各Transaction内の変更は失敗時Rollbackするが、別Transactionの成功を一括取消ししない。
+複数State生成時のDomain単位の部分成功は維持し、特定State失敗で正常Stateを一律に不採用としない。Cache I/O失敗でPublished State公開を妨げないArchitecture 8.5と整合させる。
+
+### 23.3 Scheduler・nextAttemptAt・Backoff
+
+MVPは単一Backend Process、5 Stateは論理的に独立取得・更新する。State単位setTimeoutで次回判定を予約し、発火時は保存状態と実際の現在時刻で再評価する。遅延Timerで予定時刻を現在時刻の代用にしない。
+State単位inFlightで重複を防ぎ、Task終了後に解除して次回判定を予約する。SQLite利用不能時は通常Schedulerを保留し、Recoveryへ移る。Startupは強制取得せず通常判定を利用する。
+
+nextAttemptAtは**次のHTTP取得を開始してよい最も早い時刻**とする。
+
+| 結果 | nextAttemptAt・制御 |
+|---|---|
+| 成功 | 取得開始時刻＋取得周期 |
+| 失敗 | 失敗処理完了時刻＋指数Backoff |
+| Quota不足で送信抑止 | nextAttemptAt・失敗回数を変更しない |
+| Tx-A成功後のTx-P失敗 | 取得成功として記録したnextAttemptAtを維持 |
+
+未取得・期限切れ・周期到達等で取得対象を判定したうえ、Backoff・Quota・Provider制約・inFlightも確認する。
+5 State共通Backoffは初回1分、係数2、上限30分（1、2、4、8、16、30分……）。MVPはJitterなし・即時Retryなし。
+HTTP 429は失敗とし、通常BackoffとRetry-Afterの遅い方まで待つ。Retry-Afterは秒数・HTTP Date形式に対応し、有効値が30分超でも尊重する。不正・欠損なら通常Backoffを適用する。
+
+全Providerの外部HTTP Timeoutは10秒とし、Node.js標準fetchとAbortSignal.timeout()を使用する方針。Frontend Pollingの5秒Timeoutとは別である。
+Timeoutは取得失敗とするがProvider処理・Quota消費取消しとは判断しない。周期を超えるTaskも重複起動せず、inFlightはTask終了後に解除する。
+Task全体の一律TimeoutはMVPに導入せず、HTTP TimeoutとSQLite Transaction・同期処理の停止を同一視しない。
+
+### 23.4 Tomorrow.io Quota判定
+
+Provider同時取得最大1件、Tx-Q送信前記録、失敗・Timeout時の消費非取消し、再起動後の履歴復元を維持する。
+Tx-Q失敗・履歴不正・確認不能ではFail Closed。
+ローリング24時間・60分・1秒ごとに保存履歴から最早解除見込み時刻を求め、複数制限ではその最大値を次回判定に使う。Timer発火時に全条件を再評価する。
+Quota不足だけではnextAttemptAt・失敗回数を変えない。
+安全上限400回 / 24時間、20回 / 60分、1回 / 1秒は**暫定Backend上限**であり、正式Provider制限ではない。
+
+### 23.5 Pending Publication保持と再公開
+
+Tx-A成功・Tx-P失敗時、Stateごと最大1件をメモリ保持する。永続Pending Queueは追加しない。
+保持情報はstateKey、Validation済みDomain Data、dataUpdatedAt、expiresAt、attemptStartedAt、Process内の取得順序識別子を少なくとも含む。
+元expiresAtを保持期限とし、Pending保持だけでは公開せず、Tx-P失敗だけで外部APIを即時再取得しない。
+
+| 条件 | 再公開に必要な確認 |
+|---|---|
+| P-01 | SQLiteがHEALTHY |
+| P-02 | PendingのSchema・Semantic Validation成功 |
+| P-03 | now < expiresAt |
+| P-04 | 既存Published Stateより古い取得結果ではない |
+| P-05 | 同一Stateにより新しい取得結果がない |
+| P-06 | State固有の採用条件を再確認可能 |
+
+すべてを満たす場合のみ再公開し、Schedule・WeeklyWeather等は復旧時JST日付で再Validationする。
+SQLite復旧 → Published / Control State復元検証 → Pending検証 → Tx-P保存 → Commit後公開 → Tx-C Cache更新 → 通常Scheduler再開の順とする。同一StateのPending処理と新規HTTPは直列化する。
+
+再公開では元dataUpdatedAt・expiresAtを維持し、lastAttemptAtは元試行開始、lastAttemptResultはsuccess、dataSourceはexternalApi、publishedAtは新Snapshot生成時刻とする。
+再公開・Pending破棄だけでは失敗回数・nextAttemptAt・Quota消費を変更しない。
+
+### 23.6 Pending障害・破棄
+
+TTL切れ、Validation失敗、新しいSnapshot存在、固有採用条件不成立なら破棄する。
+Tx-P一時失敗はPendingを維持しRecoveryへ戻る。BLOCKEDでは自動再公開しない。
+Commit結果不明ならDB Snapshotを照合してから再試行する。Process CrashでメモリPendingが消失したら通常Schedulerで再開する。
+
+### 23.7 Control State復元
+
+正常nextAttemptAtはStartup / Recovery後も尊重する。既存StateのControl State不正・欠損ではmin(acquisitionPeriod, 5分)の保守的待機を採用する。現行5 Stateでは5分となる。
+真の新規Stateは通常Schedulerで初回取得を許可する。Quota履歴不正は5分経過だけでは解除せず、保存Backoff・Quota無視の強制取得をしない。
+
+### 23.8 Scheduler異常系テスト観点
+
+SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個の独立テスト関数を要求するものではない。今回試験は実施していない。
+
+| ID範囲 | 分類 |
+|---|---|
+| SCH-01〜06 | HTTP取得・Timeout |
+| SCH-07〜13 | SQLite・Transaction |
+| SCH-14〜19 | Quota Guard |
+| SCH-20〜27 | Scheduler・再起動 |
+| SCH-28〜33 | 複合障害 |
+
+SCH-07 / 27 / 30 / 31の追加詳細確認にはPending Publication、Commit結果不明時の照合、復旧時競合制御、再起動時Pending消失を含める。
+**未提供情報**：各IDの既存期待結果一覧は今回の依頼・既存文書・Issue #4本文には記載されていない。IDと期待結果の対応を推測で作らず、原一覧の確認待ちとする。上表と指定4 IDの補足のみを反映しており、33件の個別期待結果反映は未完了である。
+
+Vitest Fake Timer、HTTP Mock（Timeout / 429 / 500 / Validation）、SQLite統合Commit / Rollback、固定Quota履歴の境界値、Startup / Recovery再起動相当テスト、Pi実機Process Crash・systemd復旧・72時間試験を予定する。

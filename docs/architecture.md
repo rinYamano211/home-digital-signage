@@ -1339,10 +1339,10 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 |---|---|
 | Shared State / Data Contract | SQLite暫定採用、HTTP Polling・共通API契約とState単位Atomicityは具体化済み。正式DDL・Index・Migration・Concurrent Access詳細は未決定（第16章） |
 | 更新制御 | 複数Stateの厳密な時点整合性・Atomic取得更新をMVPで要求しない前提での実現方式。Concurrent Request / 更新競合への対策、Freshness比較・退行防止の実現責務とMechanismをStore技術と合わせて決定する |
-| Cache | SQLite暫定採用、Cache Entry・Validation・Transactionは第16章。正式DDL・Provider依存の期限評価・Timeout・Backoff詳細は未決定 |
+| Cache | SQLite暫定採用、Cache Entry・Validation・Transactionは第16章。正式DDL・Provider依存の期限評価は未決定。Timeout・Backoff合意値は16.3 |
 | Config / Secrets | 環境変数 + TypeBox Validationを暫定採用。Secrets・.env・Permission・Last Known Validの具体的な保存管理は未決定 |
 | Config変更 | 通知方式（Event / Watch / Callback / Polling等）、Runtime Apply / Retry、Migration Library / 実装方式、Secret切替・Connection Test。Config Revision / Optimistic Lock等はMVPでの必要性を確認し、単一変更元では具体的な競合制御実装を必須としない。不要であればFutureの複数変更元導入時に具体化する |
-| Process / Recovery | 原則1 Backend Process、systemd暫定採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdog・Backoff具体値は未決定 |
+| Process / Recovery | 原則1 Backend Process、systemd暫定採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdogは未決定。Backoff・HTTP Timeoutの合意値は16.3 |
 | Startup / State更新 | 早期復旧と速やかな外部取得を両立するConcurrency・非同期処理・Task管理、State更新・通知のタイミング・同期方式、Recovery Event / Trigger |
 | Time / Date | OSの時刻同期機構・外部同期方式、Raspberry Pi 5 RTC・Backup Batteryの設定と確認、RTC内部のUTC / Local Time、OS Timezone、Timestamp表現、OS情報によるTime Usability判定 |
 | Runtime / Framework | 日時API、Monotonic Clock API、Timer / Scheduler、Polling / Event / Timer等による時間変化検知・再評価起動。標準TimerのMonotonic Time利用を確認し、利用可能なら標準機能を優先する |
@@ -1428,19 +1428,16 @@ Domain固有Validation、Data変換、Cache採用、Freshness、Published State�
 SQLiteを暫定採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。
 Published StateのDataとMetadataは1 JSON Snapshotとして保存し、不完全なSnapshotを公開しない。最新・直前の2世代を保持する。
 SQLiteの共有Connectionは保存機構の方針であり、他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
-複数State間の厳密な同時点整合性は要求しない。State単位のAtomicityと、取得結果単位のTransaction（16.4）を区別する。
+複数State間の厳密な同時点整合性は要求しない。State単位のAtomicityと、Tx-Q / Tx-A / Tx-P / Tx-Cの分離（16.4）を区別する。
 
-### 16.3 取得・Scheduler・Backoff
+### 16.3 Scheduler・取得制御
 
-標準setTimeoutとNode.js標準fetchは暫定採用とする。取得周期・有効期限はtechnology-stack.md 11.5の暫定値に従い、Frontendの30秒Pollingと分離する。
+MVPは単一Backend Process内で5 Stateを独立取得・更新する。State単位setTimeoutで次回判定を予約し、Timer発火時に保存状態と実際の現在時刻から取得条件を再評価する。inFlightで重複を防ぎ、Task終了後に解除・再予約する。
+SQLite利用不能時は通常Schedulerを保留して16.7のRecoveryへ移る。Startup時も強制取得せず通常判定を用いる。
 
-Startup時は保存Published Stateを復元し、外部取得完了を待たずAPI提供を開始する。
-未取得State・期限切れState、または`now >= dataUpdatedAt + acquisitionPeriod`のStateを更新対象とする。更新対象でも保存済みBackoff・Rate Limitを無視しない。
-有効なPublished Stateは更新待ち中も期限内なら提供できる。
-
-- 1取得TaskのHTTP Requestは原則1回。即時Retryしない。
-- 失敗時は有界の指数Backoffを使用する方針とし、成功時は連続失敗数をResetする。
-- Backoff状態はSQLiteへ永続化する。Backoff中も期限切れDataをAPIでMaskする。
+nextAttemptAtは次のHTTP取得を開始してよい最早時刻である。成功時は取得開始＋周期、失敗時は失敗処理完了＋Backoffとする。
+未取得・期限切れ・周期到達等に加え、Backoff・Provider制約・Quota・inFlightを確認する。
+Quota送信抑止ではnextAttemptAt・失敗回数を変えず、Tx-A成功後のTx-P失敗も成功記録済み時刻を維持する。
 
 ```typescript
 type AcquisitionControlState = {
@@ -1449,22 +1446,27 @@ type AcquisitionControlState = {
 };
 ```
 
-State単位の取得制御とProvider / Request単位のRate Limitを区別する。
-Jitter、指数係数、上限、Provider単位のRequest共有・Backoff等は詳細未決定である。Tomorrow.ioのQuota Guard・送信前永続記録・429待機は[技術スタック選定 第16章](technology-stack.md#16-weather-api選定とtomorrowioの取得制御)の暫定採用方針に従い、正式制限・具体SQL・待機計算は後続設計とする。
+5 State共通Backoffは1分開始・係数2・上限30分、Jitterなし、即時Retryなし。HTTP 429は失敗とし、BackoffとRetry-After（秒数 / HTTP Date）の遅い方まで待機する。有効Retry-Afterは30分超でも尊重し、不正・欠損は通常Backoffとする。
+全Provider外部HTTP Timeoutは10秒、標準fetch + AbortSignal.timeout()を使用する方針。Task全体Timeoutは導入せず、長時間Taskでも同一Stateを重複起動しない。TimeoutはProvider処理・Quota消費取消しを意味しない。
 
-### 16.4 Validation・Transaction・公開
+State SchedulerとProvider Quotaは分離し、Tomorrow.ioは送信前Tx-Q Commit、同時最大1件、永続履歴を確認不能ならFail Closedとする。Quota解除見込みは各ローリング窓の最早解除時刻の最大値を使い、次回発火時に再評価する。安全上限は暫定値を維持する。
+詳細・採用状態・SQL未決定の区別は[技術スタック選定 第23章](technology-stack.md#23-backend-schedulersqlite-recoverypending-publication)に従う。
 
-外部HTTP Request、Response Validation、Domain変換、Snapshot生成はSQLite Transactionの外で行う。
-取得結果に関係するCache、Published State、Acquisition Control Stateの更新は、短い1 TransactionでCommitする。
-Commit成功後に新Published Stateを公開し、Commit失敗時はRollbackして旧Snapshotを維持する。
+### 16.4 Validation・Transaction分離・公開
 
-1外部API Responseから複数Stateを生成する場合、State単位の部分成功を許可する。
-正常Stateは更新し、不正Stateは失敗・Fallback処理を行い、その取得結果を同じ取得結果単位のTransactionで保存する。
-**Transaction自体が失敗した場合は、同一Transaction内の全State更新がRollbackされる。**
-Domain Validationの部分成功は複数Stateの厳密な同時点整合性を要求するものではなく、Transaction Commitの部分成功とも異なる。
-HTTP Request自体の失敗と、特定StateのみのDomain Validation失敗を区別する。Provider ResponseとStateの具体対応は未決定とする。
+従来のCache・Published State・Control Stateの単一Transaction案を分離する。Cache更新失敗で公開を妨げない8.5の原則に合わせ、失敗の影響を局所化するためである。
+外部HTTP・Response Validation・Domain変換・Snapshot生成はTransaction外で行う。
 
-Scheduleの外部取得はGoogle Calendar + Service Accountの正式採用方針に従う。[技術スタック選定 第17章](technology-stack.md#17-schedule-api選定)に権限・Scope・検証結果・残課題を記録する。Schedule ServiceのOwnership、SQLite・Cache・Recoveryの採用状態、共通Metadata契約は維持する。Schedule Domain Dataと空予定の表現、全ページ取得・JST日付照合・同日Cache条件は[技術スタック選定 第18章](technology-stack.md#18-step-5schedule-domain-data詳細取得制御)に従う。
+| Transaction | 内容・順序 |
+|---|---|
+| Tx-Q | Tomorrow.io Quota消費予定をHTTP送信前に保存。Commit失敗なら送信しない |
+| Tx-A | HTTP取得・Validation後にControl State保存。失敗ならTx-Pへ進まない |
+| Tx-P | Tx-A成功後にPublished StateのData＋Metadata保存。Commit後だけ公開。失敗は旧Snapshotを維持 |
+| Tx-C | Tx-P成功後にCache更新。失敗してもCommit済みPublished State公開を取り消さない |
+
+SQL保存失敗と外部取得失敗を区別する。複数State生成時のDomain部分成功は維持し、不正Stateは失敗・Fallback、正常Stateは更新対象とする。
+各Transaction内の更新は原子的だが、独立Transactionをまたぐ一括Rollbackや複数Stateの厳密同時点整合性は要求しない。Tx-A成功・Tx-P失敗の再公開は16.6に従う。
+Scheduleの認証・Domain設計はtechnology-stack.md第17・18章に従い、Ownership・API契約は維持する。
 
 ### 16.5 Backend CacheとFallback
 
@@ -1499,17 +1501,30 @@ Generation採番・DDL・Migrationは未決定である。
 4. 直前世代も不正なら、そのStateを不採用・隔離しログへ記録する。他の正常Stateは独立して復元できるようにする。
 
 復元したSnapshotのFreshness・publishedAtを勝手に更新しない。2世代保持はDatabase全体破損・microSD故障への対策ではない。
-正常なAcquisition Control Stateでは保存nextAttemptAtを尊重する。不正・欠損時は即時連続取得を避け、保守的待機時間を設定して再開する方式を暫定採用する。具体待機時間は未決定。
+正常なAcquisition Control Stateでは保存nextAttemptAtを尊重する。既存Stateの不正・欠損ではmin(acquisitionPeriod, 5分)待機し、現行5 Stateでは5分とする。真の新規Stateは通常初回判定を許可する。Quota履歴不正は5分経過だけではFail Closedを解除しない。
 
 Lifecycleでは復元後に外部取得待ちなしでAPI提供を開始し、期限切れDataをMaskする。再起動だけではMetadataを更新しない。
 Graceful ShutdownではTask停止・DB終了を安全に行い、Process Crash後はsystemdで再起動する。
 
+#### Pending Publication
+
+Tx-A成功後のTx-P失敗では、Stateごと最大1件をメモリ保持する。永続Queueは追加せず、元expiresAtを保持期限とする。保持自体では公開せず、外部API即時再取得もしない。
+PendingはstateKey、Validation済みData、dataUpdatedAt、expiresAt、attemptStartedAt、Process内取得順序識別子を保持する。
+再公開はSQLite HEALTHY、Schema / Semantic Validation、期限内、既存Snapshotより古くない、新しい同State結果なし、State固有採用条件の再確認というP-01〜06をすべて要求する。
+復旧・Published / Control State復元検証後にPendingを検証し、Tx-P保存 → Commit後公開 → Tx-C更新を行ってから通常Schedulerを再開する。Pending処理と同一State新規HTTPは直列化する。
+元dataUpdatedAt・expiresAt・試行開始時刻を維持し、lastAttemptResult:success、dataSource:externalApi、publishedAtは新Snapshot生成時刻とする。再公開・破棄だけでは失敗回数・nextAttemptAt・Quotaを変えない。
+期限切れ・Validation不正・新Snapshot存在・固有条件不成立は破棄。一時Tx-P失敗は保持してRecoveryへ戻り、BLOCKEDでは再公開しない。Commit結果不明はDB照合後に再試行する。CrashでPendingが消えた場合は通常Schedulerで再開する。
+Schedule・WeeklyWeather等は復旧時のJST日付で再Validationする。詳細はtechnology-stack.md 23.5〜23.7に従う。
+
 ### 16.7 Database障害・WAL・Backupの境界
 
 保存データの一部破損とDatabase全体の利用不能を区別する。
-Database自体が利用不能な場合、Backendを正常稼働扱いにしない。停止・検証・手動復元を行う方針とし、根拠なく不正データを修復可能と仮定しない。
+Database HealthとBackend Service Healthを区別する。L1は一時SQL失敗、L2は一時DB全体利用不能、L3は整合性異常（State不正とDB破損を分離）、L4はStorage / OS致命障害とする。一時障害だけでProcessを無条件終了せず、可能機能を継続する。DB破損・Schema非互換等で安全な自動復旧判断ができなければBLOCKEDとし、自動削除・初期化・根拠のない修復はしない。
 共有Process・DBの障害は複数Backend Domainへ波及し得る。Task単位のFailure IsolationだけでProcess Crash・Database障害を隔離できるとはしない。
 既存5.6の可能な機能継続と、Databaseを使うBackendの正常稼働判定を区別し、Display側の保持情報も期限内に限って利用する。
+
+復旧可能障害は前回チェック完了から固定5秒で再確認し、Single-flightとする。復旧可能L2は回数上限なし。毎回重い整合性検査を繰り返さず、同一障害ログを抑制する。接続・Schema互換・Read・実Write / Commit・Published StateとControl Stateの復元Validationを確認する。Quota履歴を安全に検証するまではFail Closedを維持する。
+HEALTHY / DEGRADED / RECOVERING / BLOCKEDは概念状態であり、全Service共通の具体型ではない。SQLite利用可能後原則1分以内のPublish / Read再開を初期目標とする。外部API成功・最新Data取得はDB復旧条件に含めない。
 
 WAL・Checkpoint・Connection設定、Backup API・頻度・世代数等の採用状況はtechnology-stack.md第12・13章に従う。
 WAL肥大化は原因調査後に必要時手動対応し、定期強制TRUNCATEは行わない。突然の電源断では直近Commit喪失の可能性を許容するが、不完全Snapshotは公開しない。
