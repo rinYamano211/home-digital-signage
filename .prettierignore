@@ -1,0 +1,16 @@
+**/node_modules/
+**/dist/
+**/coverage/
+**/*.tsbuildinfo
+package-lock.json
+
+# Existing documentation is excluded to avoid unrelated bulk formatting.
+# New Markdown documents are checked by default.
+/README.md
+/docs/architecture.md
+/docs/hardware.md
+/docs/home-digital-signage-project-plan.md
+/docs/learning-log-technology-selection.md
+/docs/learning-log.md
+/docs/requirements.md
+/docs/technology-stack.md
