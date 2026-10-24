@@ -13,3 +13,4 @@ Raspberry Piを利用した家庭用デジタルサイネージ。
 - [ハードウェア検討・選定結果](docs/hardware.md)
 - [MVP要件・検討経過](docs/requirements.md)
 - [学習記録](docs/learning-log.md)
+- [Home Digital Signage - Development Roadmap](https://github.com/users/rinYamano211/projects/1)
