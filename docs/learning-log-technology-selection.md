@@ -1161,30 +1161,401 @@ Implementation Design
 
 「今決める必要があること」と「後で具体化できること」を区別することで、過剰な先行設計を避けながら、後続工程に必要なDecisionを残すことができる。
 
+## 2026-10 Backend・State管理・永続化の技術選定
+
+### Backend FrameworkとRuntimeは異なる責務を持つ
+
+Backendの技術選定では、Node.js、TypeScript、Fastify、TypeBoxを採用した。
+
+これらは一つのBackend Stackを構成するが、それぞれの責務は異なる。
+
+```text
+Node.js
+→ JavaScriptのServer-side Runtime
+
+TypeScript
+→ Type Safety / Data Contract
+
+Fastify
+→ HTTP Server / Routing / Request・Response処理
+
+TypeBox
+→ Schema定義 / Runtime Validation
+```
+
+FrontendでReact、TypeScript、Viteの責務を分けたのと同様に、Backendでも必要な機能を分解して技術を選定することが重要だと学んだ。
+
+特に、TypeScriptによる静的な型検査だけでは、外部APIや設定ファイルから実行時に受け取る値の正しさは保証できない。
+
+```text
+TypeScript
+→ 開発時の型検査
+
+Runtime Validation
+→ 実行時に入力データを検証
+```
+
+という違いがある。
+
+Data Contractを安全に扱うには、型定義と実行時のValidationを区別する必要がある。
+
 ---
 
-## 今回の技術選定から得た考え方
+### 同じSQLiteを利用してもStateの責務は統合しない
 
-Frontend開発・Build・Deploy方式の検討を通して、特に以下を今後のTechnology Selectionでも意識する。
+今回のArchitectureでは、次の3種類の論理Stateを区別している。
 
-- ArchitectureとTechnology Selectionを分け、採用したい技術に既存Architectureを不要に引っ張らせない。
-- 技術名だけで比較せず、それぞれが担う責務を明確にする。
-- Frameworkは機能数の多さではなく、要件に対する必要十分性で選ぶ。
-- Futureへの自由度を確保することと、Future機能を先行実装することを混同しない。
-- Programming ModelがArchitecture上のState Flowや責務境界と適合するか確認する。
-- Type SafetyをCoding補助だけでなくData Contractを明確にする手段として考える。
-- Transformation、Type Check、Test、Build等、似て見える工程でも責務を分けて考える。
-- Development ToolとProduction Runtimeを分離する。
-- 「実行できる場所」と「その責務を持たせるべき場所」を分けて判断する。
-- Resource制約のあるEdge Deviceでは、Productionで不要な処理を外部へ出すことを検討する。
-- Build Artifactを明確な境界にすると、Development PCからCI等へBuild主体を変更しやすい。
-- FutureでCI/CDを使いたいことと、MVPでCI/CDを導入することは別のDecisionとして考える。
-- Source Code ManagementとArtifact Deploymentの責務を分ける。
-- Artifactの転送方法とProduction Versionの切替方法を別のDecisionとして考える。
-- Production Directoryへの直接上書きでは、Deploy途中の中間状態が利用者から見える可能性を考慮する。
-- 新Versionを別Releaseとして完成させてから切り替えることで、Transfer FailureとProductionへの影響を分離できる。
-- Rollbackを考慮すると、Release単位でVersionを保持する構成が有効になる。
-- Deployの安全性を高める場合も、システム規模に対して過剰なInfrastructureを導入しない。
-- 学習目的を理由にArchitecture上不要な責務を追加しない。
-- Technology Selectionでは方式・責務・境界を決め、具体的なCommandやPath等のImplementation Detailは必要な段階まで固定しない。
-- Futureへの備えはFuture技術の先行導入ではなく、後から交換できる境界を作ることで実現する。
+```text
+Published State
+→ Frontendへ公開する確定済みデータ
+
+Backend Cache
+→ 外部APIから取得・検証したデータ
+
+Acquisition Control State
+→ 取得周期・Retry・Backoff・Quota等の制御情報
+```
+
+これらをSQLiteへ保存するとしても、論理的には異なる責務を持つ。
+
+例えば、外部APIからデータを取得できたことと、そのデータをFrontendへ公開できたことは同じではない。
+
+また、公開処理に失敗した場合でも、次回取得時刻やQuotaの管理が失われてよいわけではない。
+
+```text
+同じDatabaseを利用する
+≠
+同じStateとして扱う
+```
+
+物理的な保存先を統合することと、Architecture上の責務を統合することは別の判断になる。
+
+---
+
+### Transactionは処理全体ではなく整合性を守る単位で考える
+
+Databaseを利用すると、複数の処理を一つのTransactionへまとめれば安全になると考えやすい。
+
+しかし、外部API通信やRetry待機まで長いTransactionに含めると、DatabaseのLockや処理の独立性に影響する可能性がある。
+
+今回の設計では、取得制御・取得結果の保存・公開・後処理を分離する方針とした。
+
+```text
+Tx-Q
+→ 取得制御・Quota関連
+
+Tx-A
+→ 取得結果の保存
+
+Tx-P
+→ Published Stateへの公開
+
+Tx-C
+→ 後処理
+```
+
+ここから、Transactionは単に処理をまとめる仕組みではなく、**どの整合性を、どの範囲で保証するかを定義する境界**だと理解した。
+
+Transactionを分割する場合は、途中失敗時の状態とRecoveryも合わせて設計する必要がある。
+
+---
+
+### 保存成功と公開成功は別の状態になる
+
+外部APIから取得したデータを保存できても、その後のPublished State更新が失敗する可能性がある。
+
+```text
+外部API取得成功
+↓
+Backend Cache保存成功
+↓
+Published State更新失敗
+```
+
+この場合、取得したデータを即座に捨てて再取得すると、不要なAPI呼び出しやQuota消費につながる。
+
+そのため、今回の設計ではPending Publicationを扱う方針とした。
+
+Pending Publicationは、保存済みだが公開できていないデータを、条件が成立する場合に再公開するための仕組みである。
+
+ただし、Pendingを無条件に再公開してはいけない。
+
+- TTLが切れていないか
+- Validation結果が有効か
+- JST日付が変わっていないか
+- より新しいSnapshotが存在しないか
+
+などを確認する必要がある。
+
+また、DatabaseのCommit結果が不明な場合は、失敗と即断して再実行するのではなく、保存済みの状態を照合する必要がある。
+
+**障害復旧では、処理を再実行することだけでなく、現在の永続状態を正しく判断することが重要**だと学んだ。
+
+---
+
+## 2026-10 外部API・Scheduler・取得制御の技術選定
+
+### データの取得周期と表示鮮度は同じではない
+
+外部APIからデータを取得する間隔と、画面に表示してよいデータの鮮度は別の概念になる。
+
+```text
+取得周期
+→ いつ外部APIへ問い合わせるか
+
+TTL
+→ 取得データをいつまで有効とするか
+
+表示鮮度
+→ 利用者にどの程度新しい情報として表示できるか
+```
+
+今回のWeatherでは、Domainごとに必要な更新頻度が異なる。
+
+特にRainForecastは、他の天気情報と同じ鮮度条件では扱えない。
+
+このことから、取得処理を一括して管理するのではなく、DomainごとのScheduler・Cache・鮮度条件を設計する必要性を理解した。
+
+**データを取得できていることと、そのデータを現在の情報として表示してよいことは別**である。
+
+---
+
+### RetryだけでなくQuotaとBackoffを合わせて考える
+
+外部APIで通信エラーが発生した場合、Retryすれば回復することがある。
+
+しかし、Retryを無制限に実行すると、障害時ほどAPIへのアクセスが増加する。
+
+その結果、Rate LimitやQuota超過、さらなる障害につながる可能性がある。
+
+```text
+取得失敗
+↓
+Retry可否の判定
+↓
+Backoff
+↓
+Quota・Rate Limit確認
+↓
+次回取得
+```
+
+という取得制御が必要になる。
+
+特にHTTP 429のような利用制限に関する応答は、通常の一時的な通信失敗と同じ扱いにしない。
+
+また、あるDomainの取得が失敗しても、他のDomainの正常な取得や公開を妨げない設計が重要になる。
+
+外部API連携では、正常系の取得処理だけでなく、**失敗時に外部サービスと自システムの双方へ過剰な負荷を与えないこと**も設計対象になる。
+
+---
+
+### APIが利用できることと継続利用できることは別
+
+Weather Providerの検討では、Open-MeteoをCurrentWeather・HourlyWeather・WeeklyWeatherに正式採用し、Tomorrow.ioをRainForecastに条件付き正式採用した。
+
+ここで重要だったのは、APIへの疎通成功だけでは採用条件を満たしたとはいえないこと。
+
+確認すべき条件には、次のようなものがある。
+
+- 必要なData Fieldと時間粒度
+- APIプランによる利用可能範囲
+- 無料枠・課金条件
+- Rate Limit
+- 利用規約・商用利用条件
+- 実際のデータ品質・安定性
+
+Tomorrow.ioについては、1分粒度のrainIntensityなど、利用開始前に確認すべき条件が残っている。
+
+したがって、技術選定では、
+
+```text
+正式採用
+→ 現時点で必要な採用判断が成立
+
+条件付き正式採用
+→ 明示した条件の確認が必要
+
+未検証
+→ 実際の動作・性能等は未確認
+```
+
+を区別する。
+
+外部サービスの選定は、技術的に接続できるかだけでなく、継続的に利用できる条件まで含めて判断する必要がある。
+
+---
+
+## 2026-10 Raspberry Pi運用・品質保証の技術選定
+
+### System TimeとMonotonic Timeを使い分ける
+
+時間を扱う処理には、現在日時が必要なものと、経過時間が必要なものがある。
+
+```text
+System Time
+→ 現在日時・予定時刻・データの有効期限
+
+Monotonic Time
+→ Timeout・処理時間・経過時間
+```
+
+System TimeはNTP等による時刻補正の影響を受ける可能性がある。
+
+一方、Monotonic Clockは経過時間の計測に適している。
+
+今回のサイネージでは、保存・通信にUTCを基本として使用し、画面表示ではAsia/Tokyoを利用する。
+
+また、Pi 5のRTCとBackup Batteryを利用する方針としたが、RTCの存在だけで時刻の正確性が保証されるわけではない。
+
+RTC・OSの時刻同期・Applicationによる時刻利用可否は、それぞれ区別して考える必要がある。
+
+---
+
+### ConfigとSecretsは同じ設定情報でも管理方法が異なる
+
+Applicationには一般的な設定値と、API Keyなどの秘密情報が存在する。
+
+どちらも実行時に読み込む値だが、必要な保護は異なる。
+
+今回の構成では、
+
+```text
+一般Config
+→ systemd EnvironmentFile
+
+Secrets
+→ Git・Release Directory外の
+   アクセス制限付きローカルファイル
+```
+
+とする方針を採用した。
+
+ConfigとSecretsを分離することで、Gitへの誤登録、Deploy時の上書き、ログへの漏えいなどを防ぐ設計を考えやすくなる。
+
+また、設定ファイルを読み込めたことと、その内容が正しいことも別である。
+
+そのため、起動時のRuntime Validationを行う。
+
+**設定の供給方法・検証方法・変更の反映方法は、それぞれ設計すべき責務**になる。
+
+---
+
+### Logging・Monitoring・Testは目的が異なる
+
+運用の信頼性を高める仕組みとして、Logging、Monitoring、Testがある。
+
+```text
+Logging
+→ 発生した事象や障害の調査
+
+Monitoring
+→ 稼働状態やResourceの変化の把握
+
+Test
+→ 定義した条件を満たすかの検証
+```
+
+今回の構成では、Pinoとpersistent journald、OS標準のMonitoringを採用した。
+
+72時間連続稼働試験では、CPU・Memory・Temperature・Disk・Service状態などを計測する方針とした。
+
+ただし、ログを保存するだけでは安定稼働を証明できない。
+
+また、計測周期やログ保持容量を決めたことも、性能検証の完了を意味しない。
+
+```text
+計測できる
+↓
+状態を記録できる
+↓
+受入条件と照合できる
+```
+
+という段階を区別する必要がある。
+
+---
+
+### CIによる品質確認とProduction Deployは別
+
+Frontendの技術選定では、将来的なCI/CDとMVPのDeployを分けて考えた。
+
+その後の検討で、MVPからPR検証用CIを導入することを決定した。
+
+今回採用した品質確認は、
+
+```text
+ESLint
+→ Lint
+
+Prettier
+→ Format Check
+
+tsc
+→ Type Check
+
+Vitest
+→ Test
+
+GitHub Actions
+→ PR時の自動実行
+```
+
+である。
+
+一方、Production BuildとRaspberry PiへのDeployは、開発PCと手動操作を基本とする。
+
+```text
+PR検証の自動化
+≠
+Production Deployの自動化
+```
+
+という区別が重要になる。
+
+CIは、変更を統合する前に品質上の問題を発見するための仕組みであり、必ずしもProductionへの自動配布を伴う必要はない。
+
+必要な品質保証を段階的に導入し、SecretsをCIへ不要に渡さないことも重要な判断になる。
+
+---
+
+### 技術選定完了と実装・検証完了を区別する
+
+今回の技術選定では、Raspberry Pi 5 2GBを対象とする構成や、Backend・Database・Scheduler・運用方式を決定した。
+
+しかし、採用技術を決定したことは、その技術が実機上で期待どおりに動作することを証明したわけではない。
+
+```text
+Technology Selection
+→ 採用方式と理由を決定する
+
+Implementation
+→ 決定した方式を実装する
+
+Verification
+→ 実装が要件・受入条件を満たすか確認する
+```
+
+これらは別の工程になる。
+
+例えば、better-sqlite3のARM64互換性、Pi 5 2GBの性能、障害復旧、72時間連続稼働は、後続の環境構築・実機試験で確認する。
+
+技術選定の段階ですべての実機検証を完了条件にすると、後続工程で初めて確認できる内容まで先行して要求することになる。
+
+一方、未検証事項を曖昧に残すと、実装段階で確認が漏れる。
+
+そのため、
+
+```text
+採用状態
++
+未検証事項
++
+確認するタイミング
++
+担当Issue
+```
+
+をセットで記録することが重要になる。
+
+**技術選定は、すべての不確実性を解消する工程ではなく、残る不確実性を明示して次の工程へ引き継ぐ工程でもある。**
