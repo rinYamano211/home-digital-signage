@@ -1340,13 +1340,13 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 | Shared State / Data Contract | SQLite正式採用、HTTP Polling・共通API契約とState単位Atomicityは具体化済み。正式DDL・Index・Migration・Concurrent Access詳細は未決定（第16章） |
 | 更新制御 | 複数Stateの厳密な時点整合性・Atomic取得更新をMVPで要求しない前提での実現方式。Concurrent Request / 更新競合への対策、Freshness比較・退行防止の実現責務とMechanismをStore技術と合わせて決定する |
 | Cache | SQLite正式採用、Cache Entry・Validation・Transactionは第16章。正式DDL・Provider依存の期限評価は未決定。Timeout・Backoff合意値は16.3 |
-| Config / Secrets | systemd EnvironmentFile + TypeBox Validationを正式採用。Secrets・.env・Permission・Last Known Validの具体的な保存管理は未決定 |
+| Config / Secrets | 一般Configはsystemd EnvironmentFile、SecretはGit・Release外のアクセス制限付き専用ローカルファイル、起動時TypeBox検証を正式採用。Path・Permission具体値・更新／Rotation・Recovery詳細・Last Known Valid等の永続化は後続設計（技術選定24.2） |
 | Config変更 | 通知方式（Event / Watch / Callback / Polling等）、Runtime Apply / Retry、Migration Library / 実装方式、Secret切替・Connection Test。Config Revision / Optimistic Lock等はMVPでの必要性を確認し、単一変更元では具体的な競合制御実装を必須としない。不要であればFutureの複数変更元導入時に具体化する |
 | Process / Recovery | 原則1 Backend Process、systemd正式採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdogは未決定。Backoff・HTTP Timeoutの合意値は16.3 |
 | Startup / State更新 | 早期復旧と速やかな外部取得を両立するConcurrency・非同期処理・Task管理、State更新・通知のタイミング・同期方式、Recovery Event / Trigger |
-| Time / Date | OSの時刻同期機構・外部同期方式、Raspberry Pi 5 RTC・Backup Batteryの設定と確認、RTC内部のUTC / Local Time、OS Timezone、Timestamp表現、OS情報によるTime Usability判定 |
+| Time / Date | systemd-timesyncdが第一候補（Pi OS実構成確認後に最終判断）。Pi 5内蔵RTC・Backup Battery採用、UTC / ISO 8601・Asia/Tokyo・Monotonic Clockの既存方針を維持。RTC設定・同期状態・Time Usability実機確認は後続（技術選定24.3） |
 | Runtime / Framework | 日時API、Monotonic Clock API、Timer / Scheduler、Polling / Event / Timer等による時間変化検知・再評価起動。標準TimerのMonotonic Time利用を確認し、利用可能なら標準機能を優先する |
-| Logs / Metrics | Pino + persistent journald、Structured JSON Loggingを正式採用。Level・Rotation / Retention・Rate Limit・Metrics・Monitoring具体値は未決定 |
+| Logs / Metrics | Pino・persistent journald・OS標準Monitoring・systemd timer＋軽量スクリプトによる72時間計測を正式採用。100MiB・7日・INFO以上・60秒は実機前の初期設定案。最終値・Rate Limit・ログ項目・CSV Schema・Script・合否基準は後続（技術選定24.5） |
 
 ### 15.2 Issue #5：UI Design
 
