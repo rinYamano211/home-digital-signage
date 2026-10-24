@@ -1758,43 +1758,43 @@ CPU・メモリ・温度・Disk・Service状態・再起動／障害履歴を計
 RollbackはDB Schema互換性を確認して旧Releaseへ戻し、DB変更を伴う場合はSQLite Backup / Restore方針との整合を確認する。MVP自動Deployは採用しない。
 better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確認・Rollback手順・Release保持数は未実装・実機確認待ち。
 
-### 24.7 既存Issueへの引継ぎ
+### 24.7 後続Issueへの引継ぎ
 
-Issue #1〜#3はClosed、#4〜#13はOpenであることを確認した（2026-10-24）。既存Issue本文は今回#4以外を変更しない。
+技術選定フェーズは[Issue #4](https://github.com/rinYamano211/home-digital-signage/issues/4)で完了し、[PR #14](https://github.com/rinYamano211/home-digital-signage/pull/14)はmainへMerge済みである。#15・#16も作成済みであり、後続作業は以下で管理する。技術選定完了は実装・実機検証完了を意味しない。
 
-| 引継ぎ先 | 対応内容 |
+| 引継ぎ先 | 主な担当範囲 |
 |---|---|
-| #5 UI設計 | Domain表示、異常注記・更新日時・RainForecast鮮度、視認性。既存「当日」時間別表現は将来24時間要件と照合 |
-| #6 Pi環境 | OS・Node.js・ARM64・Native Dependency・RTC・同期・画面出力 |
-| #7 基本画面・時計 | System Time利用可否・JST表示・Kiosk・実機確認 |
-| #8 切替 | 3コンテンツ・異常時独立性・固定表示・表示時間 |
-| #9 Weather | Open-Meteo・条件付きTomorrow.io・4 Domain・Quota・Provider条件確認 |
-| #10 Schedule | Google Calendar・Service Account・Schedule Domain・認証運用 |
-| #11 写真 | Futureのまま。MVPへ追加しない |
-| #12 Startup / Recovery | systemd・起動復旧・手動Deploy / Rollback・Logging |
-| #13 結合・72時間 | SQLite障害・Pending・Quota・RTC・性能・Monitoring・受入試験。RainForecastの10分表示鮮度例外を既存Cache試験へ反映する際は要件と照合 |
+| [#5](https://github.com/rinYamano211/home-digital-signage/issues/5) | UI設計・Domain表示・視認性・RainForecast鮮度 |
+| [#6](https://github.com/rinYamano211/home-digital-signage/issues/6) | Raspberry Pi環境・OS・ARM64・Native Dependency・RTC・時刻同期 |
+| [#7](https://github.com/rinYamano211/home-digital-signage/issues/7) | 基本画面・時計・System Time・JST表示 |
+| [#8](https://github.com/rinYamano211/home-digital-signage/issues/8) | コンテンツ切替・異常時の独立性 |
+| [#9](https://github.com/rinYamano211/home-digital-signage/issues/9) | Open-Meteo・条件付きTomorrow.io・Weather固有処理 |
+| [#10](https://github.com/rinYamano211/home-digital-signage/issues/10) | Google Calendar・Service Account・Schedule固有処理 |
+| [#11](https://github.com/rinYamano211/home-digital-signage/issues/11) | 写真スライドショー。Future扱いを維持 |
+| [#12](https://github.com/rinYamano211/home-digital-signage/issues/12) | systemd・起動復旧・手動Deploy・Rollback・Logging |
+| [#13](https://github.com/rinYamano211/home-digital-signage/issues/13) | MVP結合・実機性能・障害復旧・72時間試験 |
+| [#15](https://github.com/rinYamano211/home-digital-signage/issues/15) | ESLint・Prettier・Type Check・Vitest・GitHub Actions |
+| [#16](https://github.com/rinYamano211/home-digital-signage/issues/16) | Backend共通基盤・SQLite・Cache・Scheduler・Quota・Transaction・Pending・Recovery・Backup |
 
-### 24.8 新規Issueの追加提案（未作成）
+#### 責務・依存関係
 
-| 追加候補 | 目的・完了条件 | 依存関係 |
-|---|---|---|
-| Backend共通基盤・SQLite・Scheduler・Recovery実装 | 保存／Validation・分離Tx・Pending・Quota・Recoveryを実装。SCH-01〜33を満たし、未決定DDL・順序識別等を実装設計で確定 | #4合意、#6環境、品質CI基盤に依存。#9・#10・#12の共通前提 |
-| 開発品質・CI構築 | 依存・設定・scripts・Workflowを実装し、PRのPASS / FAILとSecret非供給・使用量確認手順を検証 | #4採用結果に依存。Domain実装・共通基盤の前提として先行 |
-| Deploy運用手順整備（必要なら独立） | #12を過度に拡大する場合に分離。Release準備失敗・Health確認・DB互換Rollback・Backup / Restoreの手順と実機確認を完了条件にする | #6・共通基盤に依存し、#12と連携、#13前に完了 |
+- #15を開発品質・CI基盤として先行する。Backend未作成でも検証対象を段階的に追加する。
+- #6のPi環境確認は、独立する範囲で#15と並行可能。
+- #16はBackend共通基盤を1 Issueで管理し、実装PRを段階的に分割する。#15・#6と連携し、#9・#10は#16の共通機構を利用する。
+- #5のUI設計を踏まえて#7〜#10を進める。Productionのsystemd・Deploy・Rollback・Loggingは#12、アプリケーション内部Recoveryは#16が担当する。
+- 実機結合・障害復旧・性能・72時間試験は#13が担当する。Deploy運用手順の独立Issueは作成せず、#12に統合済みである。
 
-推奨順序は、#4最終レビュー → 品質CIと#6環境（独立範囲は並行可）→ 共通Backend基盤 → #5を踏まえ#7〜#10 → #12・必要ならDeploy手順 → #13。詳細の分割・Issue作成判断はUserへ残す。
-新規Issueを作成せず、既存実装Issueの範囲を独断で拡大しない。
+#### 条件付き採用・未検証事項
 
-### 24.9 Issue #4の完了判断と最終レビュー待ち
-
-Issue #4はResearchとして技術選定の完了を判断し、実装・実機性能・互換性・長期運用の検証完了とは分ける。以下を満たせば、条件付き採用や実機未検証が残っていても完了を判断できる。
-
-1. 正式採用・条件付き採用・初期設定案が文書化されている。
-2. 未検証事項の確認タイミングと対応する後続Issueが明確である。
-3. 追加が必要な実装Issueの扱いが整理されている。
-4. PR #14の最終レビューが完了し、変更がMergeされている。
-
-Tomorrow.io利用条件は#9のProvider実装・利用開始前、better-sqlite3 ARM64互換性は#6の環境構築・Dependency準備時に確認し、性能・長期運用は#13で検証する。これらをIssue #4のCloseを永久に妨げる条件とはしない。
-条件付き採用の成立確認は必須であり、不成立なら代替技術を再検討する。追加Issueは24.8の候補について作成・分担・依存関係を判断し、未検証項目の追跡先を失わないようにする。
-
-今回はPR最終レビュー・Merge前のため、Issue #4はOpen・最終レビュー待ちとする。Issue本文の既存完了条件は技術選定・設計評価・引継ぎの観点で読み、Pi上で実現可能な構成の評価と実機で検証済みであることを区別する。実装・実機検証を完了したかのようにチェックボックスを一括更新しない。
+- Tomorrow.ioのAPIプラン、1分粒度rainIntensity、無料枠・課金・Rate Limit・継続条件・規約／商用条件は#9で利用開始前に確認する。不成立なら代替Providerを再検討する。実降雨品質・安定性は#9・#13で検証する。
+- Open-Meteoの将来商用利用条件は#9で再確認する。
+- better-sqlite3のARM64 Native Build・動作確認は#6で行う。
+- systemd-timesyncdの最終判断、RTC・時刻同期の環境確認は#6で行う。
+- Raspberry Pi 5 2GBの性能・長期安定性・72時間試験は#13で検証する。
+- DDL・Migration・世代管理・取得結果の順序識別・Pending Publication・Quota Guard・分離Transaction・Recovery等の詳細実装と共通テストは#16で具体化する。SCH-01〜33の共通基盤該当ケースは#16、結合・実機ケースは#13へ引き継ぐ。
+- Config / Secretsの安全な供給は#16で具体化する。
+- Backupの初期設定案は#16、Logging・Monitoringの初期設定案は#12・#13で検証する。初期設定案を性能保証値や検証済みの値として扱わない。
+- 開発品質・CIの設定、Workflow、PASS / FAIL・Secret非供給・使用量確認は#15で具体化・検証する。
+- DeployのRelease準備失敗・Health確認・DB互換性を確認したRollback・Backup / Restoreの運用手順は#12で整備し、#13の実機受入前に確認する。
+- UIの時間別予報の表現は#5で将来24時間要件と照合する。
+- RainForecast固有の表示鮮度10分・TTL30分の例外は#13で既存受入条件と照合する。
