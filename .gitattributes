@@ -1,0 +1,11 @@
+/.gitattributes text eol=lf
+/.gitignore text eol=lf
+/.prettierignore text eol=lf
+/.prettierrc.json text eol=lf
+/eslint.config.js text eol=lf
+/package.json text eol=lf
+/package-lock.json text eol=lf
+/tsconfig.json text eol=lf
+/.github/workflows/*.yml text eol=lf
+/tests/*.ts text eol=lf
+/docs/development-quality.md text eol=lf
