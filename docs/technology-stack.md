@@ -4,7 +4,7 @@
 
 Raspberry Pi 5を使用する家庭用デジタルサイネージ（Home Digital Signage）の、Issue #4「[Research] 技術スタックを選定する」における技術の選定結果を記録する。
 
-本書では、Frontend開発・Build環境、Build・Deploy方式に加え、nginxによるProduction Serving・Reverse Proxy、HTTP Polling、Published State APIの契約を記録する。Backend技術・SQLite・Backupの暫定採用と具体的な実現方針も記録する。確定事項・暫定採用・検討中の案は各節で区別する。Issue #4全体の技術選定完了を意味しない。
+本書では、Frontend開発・Build環境、Build・Deploy方式に加え、nginxによるProduction Serving・Reverse Proxy、HTTP Polling、Published State APIの契約を記録する。Backend技術の正式採用・条件付き採用と具体的な実現方針も記録する（現在の総括は第24章）。確定事項・暫定採用・検討中の案は各節で区別する。Issue #4全体の技術選定完了を意味しない。
 
 Issue #1〜#3の確定事項・関連文書を正本として扱う。Architectureはarchitecture.mdに従う。採用技術、比較済みの選択肢、判断理由と未決定事項を分けて記録する。
 
@@ -179,14 +179,8 @@ Frontend開発環境ではNode.js、npm、React、TypeScript、Viteを利用す�
 **ViteによるTS / TSX Transformationと厳密なType Checkは別責務**として扱う。
 BuildできることをType Check完了と同一視しない。
 
-将来的なCIでは、以下のように分離する可能性がある。
-
-```text
-Lint → Type Check → Test → Build
-```
-
-これは検討例であり、CI構成・実行順序・具体的なツール・コマンドは今回確定しない。
-各技術やNode.jsのバージョンも本選定では固定しない。
+開発品質はESLint、Prettier、tscによるType Check、Vitestを正式採用する。GitHub Actionsの標準Ubuntu RunnerでPR作成・更新時にLint / Format Check / Type Check / Testを自動検証する。無料枠内を基本とし、使用量・予算を確認する。Production Build / Deployは別とし、Buildは開発PC、PiへのDeployは手動とする。Workflow・npm scripts・設定・依存は未実装であり、CIへSecretを渡さない構成を後続で整備する。
+実行順序・具体的な設定は実装時に確定する。Node.jsは24 LTSを選定し、その他の具体バージョン固定は後続で扱う。
 
 ---
 
@@ -248,7 +242,7 @@ Component State生成
 Display Component
 ```
 
-図は概念的な責務と通信経路を示す。Backend技術の暫定採用は第11章、MVP実行モデルはArchitecture第16章を参照する。具体的なAPI提供Process構成・Port番号は未決定。
+図は概念的な責務と通信経路を示す。Backend技術の正式採用は第11章、MVP実行モデルはArchitecture第16章を参照する。具体的なAPI提供Process構成・Port番号は未決定。
 
 `/api/...`はパスの例であり、具体的なEndpointは未決定。
 
@@ -288,7 +282,7 @@ Polling仕様：
 
 取得成功・失敗にかかわらずFrontendは`now < expiresAt`の場合のみ期限内と判定し、`now >= expiresAt`のデータを表示しない。最後の外部取得結果が`failure`でも、有効期限内のデータは利用可能とする。
 
-Runtime JSON Validationを必須とし、TypeBoxを暫定採用する（第11章）。
+Runtime JSON Validationを必須とし、TypeBoxを正式採用する（第11章）。
 
 Stateの保持は期限切れ情報の表示継続を意味しない。基本画面の起動はBackend/API取得完了を待たない既存方針を維持する。
 Frontend BuildとProduction Runtimeの境界は維持する。BackendのNode.js RuntimeとMVP実行モデルは第11章・Architecture第16章の採用状況に従う。
@@ -307,7 +301,7 @@ React + TypeScriptのソースからVite Buildで`dist/`を生成し、成果物
 - Raspberry Pi 5 2GBへ不要なBuild負荷をかけず、Production環境としての責務に集中させる。
 - Node.js / npm / TypeScript / Vite等のBuild環境をProduction Piへ必須化せず、Build環境とProduction Runtimeを分離する。
 - Development PCでのBuildは、開発中の試行錯誤が容易である。
-- MVPでCI/CDを先行導入して構成を複雑化しない。
+- MVPでProduction Build / DeployのCI/CDを先行導入しない。PR検証CIは第6章のとおり正式採用する。
 - 将来的なCI Buildへの移行を妨げない。
 
 ### 8.3 比較した選択肢
@@ -316,7 +310,7 @@ React + TypeScriptのソースからVite Buildで`dist/`を生成し、成果物
 |---|---|
 | Development PC Build | 採用。PiへのBuild負荷を避け、開発中の試行錯誤を容易にする |
 | Raspberry Pi Build | 非採用。PiへのBuild負荷、Build環境のProductionへの持ち込み、責務の混在を避ける |
-| CI Build | Futureでは有力な候補。MVPではCI Workflow、Artifact、Secrets、Deploy認証等の検討事項が増えるため採用しない |
+| CI Build | Futureでは有力な候補。MVPのProduction BuildではArtifact・Deploy認証等の負担を避け採用しない。PR検証用GitHub Actionsとは区別 |
 
 ### 8.4 Futureとの境界
 
@@ -331,7 +325,7 @@ dist/
 Raspberry Pi
 ```
 
-CI/CDの具体的な構成は本選定では固定しない。
+PR検証CIは第6章で正式採用済み。具体Workflow設定と将来のProduction自動Build / Deployは区別し、後者はMVP対象外とする。
 
 ---
 
@@ -583,9 +577,9 @@ APIから期限切れデータを除外しても、Frontendでの`expiresAt`判�
 
 ## 11. Backend技術スタック
 
-### 11.1 暫定採用一覧
+### 11.1 正式採用一覧
 
-以下はすべて**暫定採用**であり、実装・実機検証済みを意味しない。FrontendのReact + TypeScript + Viteと、第7・10章の確定API契約は維持する。
+以下は技術選定として**正式採用**であり、実装・実機検証済みを意味しない。Raspberry Pi 5 2GB上の性能・互換性は未検証である。FrontendのReact + TypeScript + Viteと、第7・10章の確定API契約は維持する。
 
 | 分野 | 技術・方式 | 役割・採用理由 |
 |---|---|---|
@@ -603,28 +597,28 @@ APIから期限切れデータを除外しても、Frontendでの`expiresAt`判�
 | Module System | ESM | BackendのModule方式 |
 | Test | Vitest | State契約・取得制御・永続化・Recoveryの検証 |
 | Logging | Pino + journald | Structured JSON LoggingとOS側のログ収集 |
-| Config | 環境変数 + TypeBox Validation | 起動時の設定供給・検証。Config / Secret詳細管理は未決定 |
+| Config | systemd EnvironmentFile + TypeBox Validation | 一般Configを供給し起動時検証。変更はBackend再起動で反映。SecretはGit・Release外のアクセス制限付き専用ローカルファイル |
 
 ### 11.2 比較上の判断と制約
 
-Backend Buildは原則Bundlingせず、開発PCでCompileする。Native Dependencyまで開発PCの成果物だけで完結させず、Pi側でProduction DependencyをInstallする方式を暫定採用する。
+Backend Buildは原則Bundlingせず、開発PCでCompileする。Native Dependencyまで開発PCの成果物だけで完結させず、Pi側でnpm ci --omit=devによりProduction DependencyをInstallする方式を正式採用する。
 Scheduler・HTTP Clientは標準機構を利用し、汎用Pipeline FrameworkやPlugin Framework、不要な独立ServiceをMVPへ追加しない。
-SQLiteはローカル保存とTransactionの実現手段として暫定採用し、物理故障への自動復旧を保証するものとは扱わない。
+SQLiteはローカル保存とTransactionの実現手段として正式採用し、物理故障への自動復旧を保証するものとは扱わない。
 
 本書では、BuildのBundling有無・Native Dependencyの配置、標準機構と汎用Frameworkの導入、Backup APIとDB本体の単純コピーの比較判断を記録する。
 
 ### 11.3 Backend Build / Deploy
 
-**暫定採用方式**
+**正式採用方式（未実装・実機未検証）**
 
 1. 開発PCでTypeScriptを`tsc`によりCompileする。
 2. SSHでRaspberry Piへ成果物を転送する。
 3. Release Directoryとsymbolic linkによる切替を使用する。
-4. better-sqlite3等のNative DependencyはPi側でProduction DependencyをInstallする。
+4. better-sqlite3等のNative DependencyはPi側でnpm ci --omit=devを実行し準備する。
 5. Backendの再起動・自動起動をsystemdで管理する。
 
 永続DBはRelease Directoryの外に配置する。Deploy失敗時に旧ReleaseへRollbackできる構成を目指す。
-Directory Path、Unit定義、Port、具体コマンド、依存Install・切替の詳細手順は未決定である。
+Directory Path、Unit定義、Port、Deploy Script・切替の詳細手順は未決定である。新Release準備失敗時は旧Releaseを維持し、RollbackはDB Schema互換性を確認してから行う。DB変更時はBackup / Restoreと整合させる。MVPは手動Deployとし、自動Deployは導入しない。
 
 ### 11.4 Backendの責務分担
 
@@ -652,7 +646,7 @@ Frontendの30秒Pollingとは別の設定である。5 Stateは独立して更�
 
 ### 12.1 保存方針と採用状況
 
-SQLite・better-sqlite3は暫定採用とする。Published State、Backend Cache、Acquisition Control Stateを1つのDatabaseの別Tableとして管理し、Published StateのDataとMetadataを1つのJSON Snapshotとして保存する。
+SQLite・better-sqlite3は正式採用とする（Pi性能・ARM64互換性は未検証）。Published State、Backend Cache、Acquisition Control Stateを1つのDatabaseの別Tableとして管理し、Published StateのDataとMetadataを1つのJSON Snapshotとして保存する。
 
 | 論理Table | 保存対象 |
 |---|---|
@@ -665,7 +659,7 @@ State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必�
 
 ### 12.2 SQLite設定・注意点
 
-SQLiteの実現方式として以下を採用方針に記録する。Database技術全体は暫定採用であり、実測前である。
+SQLiteの実現方式として以下を採用方針に記録する。Database技術は正式採用だが、実測前である。
 
 - `journal_mode=WAL`、`synchronous=NORMAL`。
 - SQLite標準の自動Checkpointを利用し、`wal_autocheckpoint=1000`。
@@ -682,7 +676,7 @@ microSD自体の物理故障からの自動復旧は保証しない。
 
 ## 13. Backup方式
 
-以下はすべて**暫定採用**である。
+SQLite Backup APIは正式採用する。頻度・保持数等は下表の初期方針であり、実装・復元検証は未完了である。
 
 | 項目 | 方針 |
 |---|---|
@@ -704,13 +698,13 @@ microSD自体の物理故障からの自動復旧は保証しない。
 
 ### 14.1 Logging
 
-Pino + journaldを暫定採用する。Structured JSON LoggingでService / Taskの識別情報を記録し、Secret・Tokenは出力しない。
+Pino + persistent journaldを正式採用する。Structured JSON LoggingでService / Taskの識別情報を記録し、Secret・Tokenは出力しない。
 API取得失敗、Fallback、Validation失敗、Recovery、Transaction失敗、Backup失敗、WAL異常を調査可能にする。
-Rotation・Retention・Rate Limitの具体値は未決定である。
+journald容量100MiB・保存7日・Production INFO以上は実機前の初期設定案であり、性能保証値ではない。具体Rate Limit等は第24章の引継ぎ事項とする。
 
 ### 14.2 Testの観点
 
-Vitestを暫定採用する。以下は検証すべき観点であり、実装・試験完了を意味しない。
+Vitestを正式採用する。以下は検証すべき観点であり、実装・試験完了を意味しない。
 
 - Published State / CacheのSchema ValidationとSemantic Validation。
 - Expiry境界（`now == expiresAt`）、Cache Fallbackと鮮度期限の非延長。
@@ -734,32 +728,32 @@ Vitestを暫定採用する。以下は検証すべき観点であり、実装�
 | 設計方針：HourlyWeather | Domain Data・24〜36枠の連続採用・採用直前の再確認・Frontend再選択（第20章）。Provider・周期・TTLは暫定 |
 | 設計方針：CurrentWeather | 4項目Domain Data・State全体の採用／不採用・取得時鮮度と公開TTLの分離（第19章）。Provider・取得周期・未来許容は暫定 |
 | 設計方針：Schedule Step 5 | Schedule Domain Data・全ページ取得と正規化・JST日付制御・Cache条件（第18章）。未確定詳細は18.6に区別 |
-| 暫定採用：技術・Deploy・Backup | Backend技術スタック全項目（11.1）、Backend Deploy方式、Backup全項目 |
+| 正式採用 | Backend主要技術・Build / Deploy、Config / Secrets方式、開発品質 / PR検証CI、Pino / persistent journald・OS標準監視、SQLite Backup API（第24章） |
 | 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
 | 暫定採用：Backend実行・取得制御 | 1 Backend Process内の複数非同期Task、State単位の独立Scheduler、即時Retryなし・有界指数Backoff（Architecture 16.1・16.3） |
 | 暫定採用：Transaction | Tx-Q / Tx-A / Tx-P / Tx-Cの分離、複数State生成時の部分成功（Architecture 16.4・第23章） |
 | 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
 | 暫定値・初期候補 | State取得周期・有効期限、foreign_keys / busy_timeout初期設定候補 |
-| 暫定採用：CurrentWeather Provider | Open-Meteo（第19章）。最終Provider選定は未完了 |
-| 暫定採用：WeeklyWeather | Open-Meteo Daily Forecast。周期6時間・TTL12時間はMVP暫定値（第22章） |
-| 暫定採用候補：その他Weather API | HourlyWeatherはOpen-Meteo（第16・20章） |
-| MVP暫定採用：RainForecast | Tomorrow.io Timelines API、rainIntensity、1m。周期5分・TTL30分・表示鮮度10分は暫定（第21章） |
+| 正式採用：CurrentWeather Provider | Open-Meteo（第19章）。実装・実機検証は未完了 |
+| 正式採用：WeeklyWeather | Open-Meteo Daily Forecast。周期6時間・TTL12時間はMVP暫定値（第22章） |
+| 正式採用：HourlyWeather | Open-Meteo（第16・20章）。周期・TTLは暫定 |
+| 条件付き正式採用：RainForecast | Tomorrow.io Timelines API、rainIntensity、1m。周期5分・TTL30分・表示鮮度10分は暫定（第21章） |
 | 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
 | 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
 | 合意済み詳細設計 | Tx-Q / Tx-A / Tx-P / Tx-C、SQLite障害Recovery、Scheduler時刻・Backoff・HTTP10秒・429、Pending Publication（第23章）。未実装・未検証 |
-| 未決定 | 下記の実装詳細・Provider正式採用・具体値 |
+| 未決定 | 下記の実装詳細・条件付き採用の条件確認・具体値 |
 
-Backendの技術・実行・Transaction・Recovery方針はいずれも上表の暫定採用として扱う。設計内容は既存本文・Architectureの記載を維持し、具体値・実装詳細の未決定事項と区別する。確定API契約はこれらの暫定採用に依存して変更しない。
+技術の正式採用、既存詳細設計の合意状態、運用値・実装方式の暫定状態を区別する。現在の横断採用状況は第24章に従う。設計内容は既存本文・Architectureの記載を維持し、具体値・実装詳細の未決定事項と区別する。確定API契約はこれらの暫定採用に依存して変更しない。
 
 ### 15.2 Build・Deployの実装詳細
 
 - Release Directoryの具体Path・命名方式・保持世代数。
 - Deploy Script・symbolic link切替コマンド・Chromium Reload方法。
-- SSH認証、systemd Unit・Port、CI/CDの具体構成。
+- SSH認証、systemd Unit・Port、Production自動DeployはMVP対象外。PR検証Workflow等の具体設定は後続実装。
 
 ### 15.3 Backend・外部連携の未決定事項
 
-- Weather API Providerの正式採用、Open-Meteoの追加検証・利用規約最終確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
+- Open-Meteoの追加・長期検証と商用利用時の利用条件再確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
@@ -772,7 +766,7 @@ Backendの技術・実行・Transaction・Recovery方針はいずれも上表の
 - Backup実行時刻・Path・Scheduler・失敗時再試行・復元コマンド。
 - SQLite Lock・Checkpoint異常時の詳細運用。
 - Config・Secret詳細管理、Runtime変更への適用方式。
-- Log Rotation・Retention・Rate Limit、未選定の別領域の技術・バージョン・Linter / Formatter等。
+- Log Rotation等の実装、初期保持値の実機確認・Rate Limit、未選定の別領域の詳細・具体バージョン。ESLint / Prettier等は正式採用済みで設定は未実装。
 
 Future機能を先行実装しない。Issue #4のClose前には文書・Issue間の整合性を確認する。
 
@@ -780,10 +774,10 @@ Future機能を先行実装しない。Issue #4のClose前には文書・Issue�
 
 ## 16. Weather API選定とTomorrow.ioの取得制御
 
-### 16.1 暫定採用候補
+### 16.1 Provider採用状態
 
 家庭用MVPでは月額0円で継続運用できるAPIを優先し、一般的な天気予報と短時間降雨予測を別Providerから取得することを許容する。
-以下は**暫定採用候補**としての選定記録であり、正式採用済みではない。CurrentWeatherは第19章でProviderの暫定採用とMVP運用値を具体化した。その他Stateの取得周期・TTLは既存暫定値を維持する。
+当初の暫定候補比較を経て、CurrentWeather / HourlyWeather / WeeklyWeatherのOpen-Meteoは正式採用、RainForecastのTomorrow.ioは条件付き正式採用とする（第24章）。取得周期・TTL等の合意値と暫定状態は維持する。
 
 | Published State | Provider候補 | 取得周期（暫定） | TTL（暫定） |
 |---|---|---|---|
@@ -793,7 +787,7 @@ Future機能を先行実装しない。Issue #4のClose前には文書・Issue�
 | WeeklyWeather | Open-Meteo | 6時間 | 12時間 |
 
 Open-Meteoを基本的な天気予報の取得候補、Tomorrow.ioを分単位降雨予報の取得候補とする。
-Open-Meteo currentの限定的な手動検証は19.7に記録する。他のData・長期安定性等の追加検証と利用規約の最終確認は未完了である。
+Open-Meteo currentの限定的な手動検証は19.7に記録する。第20・22章にも限定的な検証記録がある。長期安定性等の追加検証は未完了であり、将来の商用利用時は条件を再確認する。
 既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-Meteoの複数State取得Request共有方式は後続設計とする。
 
 R-03の分単位短時間降雨予測、雨の降り始め・降り終わりの見込みというMVP要件は維持する。1時間単位の予報を単に分換算したものは要件を満たす短時間降雨予測と扱わない。
@@ -873,9 +867,9 @@ State単位の取得制御とProvider単位のRate Limitの区別はArchitecture
 | API Scope | calendar.events.readonly |
 | 取得API | Google Calendar API events.list |
 | 登録・編集 | GoogleカレンダーのWeb・スマートフォンアプリ |
-| Backend取得 | Node.js / TypeScriptから取得。Backend技術スタックの暫定採用状態は11.1を維持 |
+| Backend取得 | Node.js / TypeScriptから取得。Backend技術スタックの正式採用状態は11.1に従う |
 | 取得周期・TTL | 10分・6時間：既存の暫定値 |
-| 保存 | 既存SQLite構成に従う。SQLiteの暫定採用状態は維持 |
+| 保存 | 既存SQLite構成に従う。SQLiteは正式採用、実機検証は未完了 |
 
 Published State `Schedule`、Frontendの30秒Polling、取得・Cache・Recovery・Metadata契約は変更しない。
 API接続検証の成功と、長期無人運用の検証完了は区別する。Issue #4全体は未完了である。
@@ -1058,7 +1052,7 @@ Step 5のSchedule設計記録までを対象とし、別Domainの詳細設計や
 ### 19.1 目的・Providerと採用状態
 
 MVPでは、単一の自宅周辺エリアの屋外現在気温と天気アイコンを表示する。
-Provider候補のOpen-Meteoは**暫定採用**であり、最終Provider選定完了とは扱わない。Forecast APIのcurrentを使用し、temperature_2m、weather_code、is_day、current.time、current.intervalを取得対象とする。
+Open-Meteoは技術選定として**正式採用**する。長期安定性・Pi実機検証の完了とは扱わない。Forecast APIのcurrentを使用し、temperature_2m、weather_code、is_day、current.time、current.intervalを取得対象とする。
 本章は合意済み設計の記録であり、アプリ実装・異常ケース検証完了を意味しない。
 
 ### 19.2 Domain Data Schema
@@ -1146,7 +1140,7 @@ isDayは昼夜アイコン選択に利用する。「更新待ち」は最後の
 - 15分の時刻境界をまたぐ複数回の取得を確認。
 - 観測サンプルでは未来時刻の返却は発生しなかった。
 
-長期安定性、全気象条件、すべての異常ケースは未検証である。利用規約・Provider最終選定、Validation実装・時刻設定の詳細は後続へ残す。異常時日時表示の具体的な表記・配置・文字サイズはIssue #5で決定する。
+長期安定性、全気象条件、すべての異常ケースは未検証である。将来的な商用利用条件の再確認、Validation実装・時刻設定の詳細は後続へ残す。異常時日時表示の具体的な表記・配置・文字サイズはIssue #5で決定する。
 Issue #4全体は未完了であり、CurrentWeather設計の完了扱いはGitHub差分のChatGPTレビュー合格後とする。
 
 ---
@@ -1178,7 +1172,7 @@ type HourlyWeatherItem = {
 | weatherCode | WMOベース整数コード。未知の整数も許容 |
 | precipitationProbability | 0〜100の有限数値。降水確率 |
 
-Open-Meteoは**暫定採用**であり最終Provider選定完了ではない。
+Open-Meteoは技術選定として**正式採用**する（運用値・実装検証は未完了）。
 取得対象はhourly.time、hourly.temperature_2m、hourly.weather_code、hourly.precipitation_probabilityとする。
 
 | 項目 | 方針・採用状態 |
@@ -1251,7 +1245,7 @@ R-07・Architecture 5.6の正常時注記なし、取得異常時の更新状態
 
 ### 20.6 未検証・後続確認
 
-- Open-Meteo最終採用・利用条件。
+- Open-Meteoは正式採用済み。将来的な商用利用条件は再確認する。
 - API周期30分・TTL2時間の運用値最終検証（R-07との値の整合は解消済み）。
 - 実APIのResponse形式・配列・時刻境界の検証。
 - 異常系を含む実装・テスト。
@@ -1265,7 +1259,7 @@ R-07・Architecture 5.6の正常時注記なし、取得異常時の更新状態
 
 ### 21.1 Provider・API・採用状態
 
-Tomorrow.ioを**MVP暫定採用**とする。Timelines APIのPOST /v4/timelinesを利用し、timestepは1m、unitsはmetric、startTimeはnow、endTimeはnowPlus65mを要求する。
+Tomorrow.ioを**条件付き正式採用**とする。プラン・無料枠／課金・Rate Limit・継続条件・規約／商用条件・予測品質／安定性を確認し、条件不成立なら代替Providerを再検討する。Timelines APIのPOST /v4/timelinesを利用し、timestepは1m、unitsはmetric、startTimeはnow、endTimeはnowPlus65mを要求する。
 雨に対象を絞るためrainIntensityを使用する。precipitationIntensityも取得可能だが、MVP判定には使わない。
 採用時点から将来60分間を必要とし、取得周期5分、Cache TTL30分、表示鮮度制限10分はいずれも暫定値である。Quota Guardは第16章を維持する。
 
@@ -1380,7 +1374,7 @@ Request開始順を判定する単調増加連番を推奨する（具体実装�
 
 ### 22.1 Provider・取得仕様
 
-Open-Meteo Forecast APIのDaily Forecastを**MVP暫定採用**する。
+Open-Meteo Forecast APIのDaily Forecastを**正式採用**する。
 GET https://api.open-meteo.com/v1/forecast にtimezone=Asia/Tokyo、forecast_days=9を指定し、緯度・経度は既存の設定地点を使用する。今回のユーザー検証ではAPI Keyは不要だった。
 Provider固有の配列はBackend Adapterで検証・変換し、FrontendへDomain Dataを公開する。
 
@@ -1505,13 +1499,13 @@ Daily Response：
 - 競合時の古い成功・失敗結果破棄。
 - 6時間Polling・TTL12時間の長期運用。
 
-今回コード実装・テストは行っていない。Provider利用条件の最終確認とIssue #5の表示詳細も後続に残し、Issue #4全体やWeeklyWeatherのレビュー完了と扱わない。
+今回コード実装・テストは行っていない。将来的な商用利用条件の再確認とIssue #5の表示詳細も後続に残し、Issue #4全体やWeeklyWeatherのレビュー完了と扱わない。
 
 ---
 
 ## 23. Backend Scheduler・SQLite Recovery・Pending Publication
 
-本章はIssue #4で合意済みの詳細設計を記録する。既存Backend技術・Provider・Quota安全上限等の暫定採用状態は維持し、実装・試験完了とは扱わない。Domain Data第18〜22章は変更しない。
+本章はIssue #4で合意済みの詳細設計を記録する。Backend技術の正式採用・Tomorrow.io条件付き採用とQuota安全上限等の暫定状態を区別し、実装・試験完了とは扱わない。Domain Data第18〜22章は変更しない。
 
 ### 23.1 SQLite障害分類とRecovery
 
@@ -1711,3 +1705,87 @@ SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個�
 
 
 Vitest Fake Timer、HTTP Mock（Timeout / 429 / 500 / Validation）、SQLite統合Commit / Rollback、固定Quota履歴の境界値、Startup / Recovery再起動相当テスト、Pi実機Process Crash・systemd復旧・72時間試験を予定する。
+
+---
+
+## 24. Issue #4最終反映：採用結果・検証状態・後続引継ぎ
+
+### 24.1 現在の採用状態
+
+本章は2026-10-24の合意を反映した採用状態の総括である。技術選定の正式採用は実装完了・Pi実機検証完了を意味しない。既存の検討理由・過去の検証結果、Domain Data、取得周期・TTL・Backoff・Quota合意値は維持する。
+
+| 状態 | 技術・方式 |
+|---|---|
+| 正式採用 | Node.js 24 LTS、TypeScript、Fastify、SQLite、better-sqlite3、TypeBox、systemd、標準setTimeout / fetch、npm、ESM、tsc（原則Bundlingなし）、Vitest、Pino + persistent journald |
+| 正式採用：Weather | CurrentWeather / HourlyWeather / WeeklyWeatherはOpen-Meteo |
+| 条件付き正式採用 | RainForecastのTomorrow.io。プランのTimelines API 1m rainIntensity可用性、無料枠・課金・Rate Limit・継続条件、規約・商用条件、実降雨品質・安定性の確認が必要。不成立なら代替Provider再検討 |
+| 第一候補・最終判断待ち | systemd-timesyncd。Pi OS実構成を確認して最終判断 |
+| 初期方針・設定案 | Backup原則1日1回・3世代。journald100MiB・7日、Production INFO以上、72時間試験計測60秒 |
+| 未検証 | Pi 5 2GBの性能・ARM64互換性・Native Build負荷、実装・障害復旧・長期運用・CI動作 |
+
+Open-Meteoの正式採用後も、将来の商用利用時は利用条件を再確認する。Tomorrow.ioの既存疎通成功は、将来の利用条件・降雨品質を保証しない。
+Snapshot2世代保持・世代別Row、State単位Scheduler、Tx-Q / Tx-A / Tx-P / Tx-C、Pending、Recovery、WAL / NORMAL・Backup APIは既存詳細設計に従い、具体DDL・SQL・Migration・Module構成は今回追加決定しない。
+
+### 24.2 Config / Secrets
+
+一般Configはsystemd EnvironmentFile、SecretはGitとRelease Directory外のアクセス制限付き専用ローカルファイルとし、起動時にTypeBoxで検証する。設定変更はBackend再起動で反映する方式を正式採用する。
+秘密情報をGitHub・ログへ出さない。具体Path・Permission・更新手順・Rotation・Recoveryは実装設計に残す。
+これはMVPの供給・適用方式の選定であり、Desired / Persisted / Actual Configuration、Config Recovery・Ownership・将来Runtime変更を許容する既存境界は維持する。
+
+### 24.3 Time / RTC
+
+systemd-timesyncdは第一候補とし、Pi OS実構成を確認して最終判断する。Pi 5内蔵RTCとRTC Backup Batteryを利用する。
+保存・通信はUTC / ISO 8601を基本とし、既存Published StateのUTC RFC3339、Schedule / WeeklyWeatherのJST暦日表現は維持する。画面はAsia/Tokyo、経過時間・Timeout等はMonotonic Clockを利用する。
+RTCが適切に動作しているなら、NTP未同期だけを理由にSystem Timeを利用不可としない。利用可能性の判定原則はArchitecture第10章を維持する。
+RTC初期化・同期状態・OS設定・実機確認は#6・#13へ引き継ぐ。
+
+### 24.4 開発品質・CI
+
+ESLint / Prettier / tsc / Vitestと、PR作成・更新時のGitHub Actionsを正式採用する。標準Ubuntu RunnerでLint、Format Check、Type Check、Testを実行し、無料枠内運用を基本とする。
+Production Buildは開発PC、PiへのDeployは手動。PR検証CIはProduction Build / Deployの自動化とは別である。
+Dependency・設定ファイル・npm scripts・Workflow、PASS / FAIL確認、失敗時調査、使用量・予算、SecretをCIへ渡さない構成は後続Issueで整備する。今回ファイルやWorkflowを実装しない。
+
+### 24.5 Logging / Monitoringと初期設定案
+
+Pino、persistent journald、OS標準Monitoringを正式採用する。外部監視基盤はMVPに導入しない。
+72時間試験はsystemd timer + 軽量スクリプトで定期計測する方式を正式採用する。容量100MiB・保持7日・Production INFO以上・計測60秒は実機前の初期設定案であり、性能保証・受入閾値ではない。
+CPU・メモリ・温度・Disk・Service状態・再起動／障害履歴を計測する。ログ項目・Rate Limit・機密情報対策・CSV Schema・Script・合否判定・回収方法は#12・#13で具体化する。R-06 / R-09の既存受入条件は変更しない。
+
+### 24.6 Backend Deploy / Rollback
+
+開発PCでtsc Compile、原則Bundlingなし、SSH / scp転送、Piでnpm ci --omit=dev、Release Directory / symbolic link切替、systemd再起動を正式採用する。
+新Release準備に失敗したら稼働中旧Releaseを維持する。DB・Config・SecretはRelease外へ置く。
+RollbackはDB Schema互換性を確認して旧Releaseへ戻し、DB変更を伴う場合はSQLite Backup / Restore方針との整合を確認する。MVP自動Deployは採用しない。
+better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確認・Rollback手順・Release保持数は未実装・実機確認待ち。
+
+### 24.7 既存Issueへの引継ぎ
+
+Issue #1〜#3はClosed、#4〜#13はOpenであることを確認した（2026-10-24）。既存Issue本文は今回#4以外を変更しない。
+
+| 引継ぎ先 | 対応内容 |
+|---|---|
+| #5 UI設計 | Domain表示、異常注記・更新日時・RainForecast鮮度、視認性。既存「当日」時間別表現は将来24時間要件と照合 |
+| #6 Pi環境 | OS・Node.js・ARM64・Native Dependency・RTC・同期・画面出力 |
+| #7 基本画面・時計 | System Time利用可否・JST表示・Kiosk・実機確認 |
+| #8 切替 | 3コンテンツ・異常時独立性・固定表示・表示時間 |
+| #9 Weather | Open-Meteo・条件付きTomorrow.io・4 Domain・Quota・Provider条件確認 |
+| #10 Schedule | Google Calendar・Service Account・Schedule Domain・認証運用 |
+| #11 写真 | Futureのまま。MVPへ追加しない |
+| #12 Startup / Recovery | systemd・起動復旧・手動Deploy / Rollback・Logging |
+| #13 結合・72時間 | SQLite障害・Pending・Quota・RTC・性能・Monitoring・受入試験。RainForecastの10分表示鮮度例外を既存Cache試験へ反映する際は要件と照合 |
+
+### 24.8 新規Issueの追加提案（未作成）
+
+| 追加候補 | 目的・完了条件 | 依存関係 |
+|---|---|---|
+| Backend共通基盤・SQLite・Scheduler・Recovery実装 | 保存／Validation・分離Tx・Pending・Quota・Recoveryを実装。SCH-01〜33を満たし、未決定DDL・順序識別等を実装設計で確定 | #4合意、#6環境、品質CI基盤に依存。#9・#10・#12の共通前提 |
+| 開発品質・CI構築 | 依存・設定・scripts・Workflowを実装し、PRのPASS / FAILとSecret非供給・使用量確認手順を検証 | #4採用結果に依存。Domain実装・共通基盤の前提として先行 |
+| Deploy運用手順整備（必要なら独立） | #12を過度に拡大する場合に分離。Release準備失敗・Health確認・DB互換Rollback・Backup / Restoreの手順と実機確認を完了条件にする | #6・共通基盤に依存し、#12と連携、#13前に完了 |
+
+推奨順序は、#4最終レビュー → 品質CIと#6環境（独立範囲は並行可）→ 共通Backend基盤 → #5を踏まえ#7〜#10 → #12・必要ならDeploy手順 → #13。詳細の分割・Issue作成判断はUserへ残す。
+新規Issueを作成せず、既存実装Issueの範囲を独断で拡大しない。
+
+### 24.9 最終レビュー待ち
+
+正式採用技術の文書反映と実機性能・互換性・長期運用の検証は別の完了条件である。条件付き採用と未決定実装詳細が残るため、Issue #4をCloseしない。
+Issue #4には選定結果・条件・未検証・引継ぎ・文書リンクを記録し、最終レビュー待ちとする。チェックボックスは実装や実機検証の完了を意味する形で一括更新しない。

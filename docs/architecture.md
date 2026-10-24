@@ -76,13 +76,13 @@ Common Moduleは共有先のServiceではなく、各Service内で利用する�
 DisplayはConfig / Logging、各BackendはCache / Config / Loggingを利用する。
 各ServiceはCommon Time Moduleを自身の内部で利用する。図の共通Moduleは独立した実行単位や共通の時刻Serviceを表さない。
 OS / HardwareはProcess Management、時刻同期・RTC等の基盤責務を担う。
-Process CrashはOS / Service Supervisor、OS HangはWatchdogで復旧する（第11章）。Backend Supervisorにはsystemdを暫定採用し、Watchdogの具体方式は未決定とする。
+Process CrashはOS / Service Supervisor、OS HangはWatchdogで復旧する（第11章）。Backend Supervisorにはsystemdを正式採用し、Watchdogの具体方式は未決定とする。
 時刻維持・同期とApplicationからの時刻利用の分担は第10章に示す。
 Cacheの意味・有効性は各Backendが所有し、Cache Moduleは保存・読出し等の共通処理を担う。
 
 WeatherのPublished StateはCurrentWeather / HourlyWeather / RainForecast / WeeklyWeatherに分かれる（5.5）。
 Display内部の各責務が持つDisplay Runtime Stateについては7.1、永続化・再構築については第7章を参照する。
-Shared State StoreはSQLiteを暫定採用する。具体的な保存・取得契約は第16章とtechnology-stack.mdを参照する。
+Shared State StoreはSQLiteを正式採用する。具体的な保存・取得契約は第16章とtechnology-stack.mdを参照する。
 Display ComponentはShared State Storeを直接参照せず、Published State取得・Component State生成の責務を介する（6.4）。
 
 ---
@@ -174,7 +174,7 @@ External API
 Shared State StoreはService間で現在状態を共有するための保存先として扱う。
 State管理専用Serviceは追加しない。
 下流側から上流側のStateを書き換えず、Display ComponentもPublished Stateを直接変更しない。
-具体的な実現方式はIssue #4で具体化する。Shared State StoreにはSQLiteを暫定採用し（第16章）、表示用HTTP API契約はtechnology-stack.md第7・10章に従う。
+具体的な実現方式はIssue #4で具体化する。Shared State StoreにはSQLiteを正式採用し（第16章）、表示用HTTP API契約はtechnology-stack.md第7・10章に従う。
 
 ### 5.3 採用理由と設計上の注意点
 
@@ -736,7 +736,7 @@ BackendはCache由来という事実を提供するだけとし、
 Displayは内部Cacheの実装や直接参照に依存せず、Published State経由で事実を受け取る。
 
 Cache由来の識別はtechnology-stack.md第10章のdataSourceに従う。表示状態・エラー分類・具体UIは後続設計で決定する。
-Cache保存はSQLiteを暫定採用し、Cache Entry・Validation・Transactionは第16章に従う。DDL等の詳細は未決定とする。
+Cache保存はSQLiteを正式採用し、Cache Entry・Validation・Transactionは第16章に従う。DDL等の詳細は未決定とする。
 
 ### 8.7 Cache / Fallbackの基本フロー
 
@@ -975,7 +975,7 @@ Secret Historyは原則保持せず、必要に応じActive / Pendingの最大2�
 
 Issue #3の論理設計として、時刻の基準・利用可否、Timezone、時間変化の責務を整理する。
 時刻同期はOS / Hardwareへ委譲し、ApplicationはCommon Time Moduleを介して時間情報を利用する。
-具体的なOS設定・日時API等はIssue #4で扱う。Backend Schedulerの標準setTimeoutは暫定採用済みであり、時刻利用の原則と実機確認は維持する。
+具体的なOS設定・日時API等はIssue #4で扱う。Backend Schedulerの標準setTimeoutは正式採用済みであり、時刻利用の原則と実機確認は維持する。
 
 ### 10.1 Time BasisとCommon Time Module
 
@@ -1337,16 +1337,16 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 
 | 分野 | 選定・確認する事項 |
 |---|---|
-| Shared State / Data Contract | SQLite暫定採用、HTTP Polling・共通API契約とState単位Atomicityは具体化済み。正式DDL・Index・Migration・Concurrent Access詳細は未決定（第16章） |
+| Shared State / Data Contract | SQLite正式採用、HTTP Polling・共通API契約とState単位Atomicityは具体化済み。正式DDL・Index・Migration・Concurrent Access詳細は未決定（第16章） |
 | 更新制御 | 複数Stateの厳密な時点整合性・Atomic取得更新をMVPで要求しない前提での実現方式。Concurrent Request / 更新競合への対策、Freshness比較・退行防止の実現責務とMechanismをStore技術と合わせて決定する |
-| Cache | SQLite暫定採用、Cache Entry・Validation・Transactionは第16章。正式DDL・Provider依存の期限評価は未決定。Timeout・Backoff合意値は16.3 |
-| Config / Secrets | 環境変数 + TypeBox Validationを暫定採用。Secrets・.env・Permission・Last Known Validの具体的な保存管理は未決定 |
+| Cache | SQLite正式採用、Cache Entry・Validation・Transactionは第16章。正式DDL・Provider依存の期限評価は未決定。Timeout・Backoff合意値は16.3 |
+| Config / Secrets | systemd EnvironmentFile + TypeBox Validationを正式採用。Secrets・.env・Permission・Last Known Validの具体的な保存管理は未決定 |
 | Config変更 | 通知方式（Event / Watch / Callback / Polling等）、Runtime Apply / Retry、Migration Library / 実装方式、Secret切替・Connection Test。Config Revision / Optimistic Lock等はMVPでの必要性を確認し、単一変更元では具体的な競合制御実装を必須としない。不要であればFutureの複数変更元導入時に具体化する |
-| Process / Recovery | 原則1 Backend Process、systemd暫定採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdogは未決定。Backoff・HTTP Timeoutの合意値は16.3 |
+| Process / Recovery | 原則1 Backend Process、systemd正式採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdogは未決定。Backoff・HTTP Timeoutの合意値は16.3 |
 | Startup / State更新 | 早期復旧と速やかな外部取得を両立するConcurrency・非同期処理・Task管理、State更新・通知のタイミング・同期方式、Recovery Event / Trigger |
 | Time / Date | OSの時刻同期機構・外部同期方式、Raspberry Pi 5 RTC・Backup Batteryの設定と確認、RTC内部のUTC / Local Time、OS Timezone、Timestamp表現、OS情報によるTime Usability判定 |
 | Runtime / Framework | 日時API、Monotonic Clock API、Timer / Scheduler、Polling / Event / Timer等による時間変化検知・再評価起動。標準TimerのMonotonic Time利用を確認し、利用可能なら標準機能を優先する |
-| Logs / Metrics | Pino + journald、Structured JSON Loggingを暫定採用。Level・Rotation / Retention・Rate Limit・Metrics・Monitoring具体値は未決定 |
+| Logs / Metrics | Pino + persistent journald、Structured JSON Loggingを正式採用。Level・Rotation / Retention・Rate Limit・Metrics・Monitoring具体値は未決定 |
 
 ### 15.2 Issue #5：UI Design
 
@@ -1387,14 +1387,14 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 - 自動Secret Rotation、Secret History・複数世代管理、高度なAudit Trail、Config Approval Workflow、Enterprise Secret Management。
 - Configの多世代History / Undo。
 
-API契約の確定、Backend技術の暫定採用、残る詳細の未決定はtechnology-stack.mdと本書第16章で区別する。
+API契約の確定、Backend技術の正式採用、残る詳細の未決定はtechnology-stack.mdと本書第16章で区別する。
 
 ---
 
 ## 16. Issue #4：Backendの具体的な実現方式
 
 本章は既存Logical Architectureの責務・Ownership・依存方向を維持し、Issue #4で合意した実現方式を追加する。
-技術スタック・Deploy・SQLite設定・Backupの採用状況は[技術スタック選定 第11〜15章](technology-stack.md#11-backend技術スタック)を正本とする。技術の暫定採用を実装・検証済みと扱わない。
+技術スタック・Deploy・SQLite設定・Backupの採用状況は[技術スタック選定 第11〜15章](technology-stack.md#11-backend技術スタック)を正本とする。技術の正式採用を実装・検証済みと扱わない。採用状態の正本はtechnology-stack.md第24章であり、既存詳細設計は維持する。
 
 ### 16.1 論理ServiceとBackend Process
 
@@ -1406,7 +1406,7 @@ Issue #3の独立実行単位という物理構成の目標を、このMVP実行
 - Taskの重複実行を防止する。
 - 外部取得中もAPI提供を継続する。
 - 1外部API障害・Task例外で他Taskを停止させない。
-- Process CrashはBackend内のTaskへ共通に影響し、systemdによるProcess再起動を利用する（systemdは暫定採用）。
+- Process CrashはBackend内のTaskへ共通に影響し、systemdによるProcess再起動を利用する（systemdは正式採用）。
 - Display基本画面の起動をBackend・API・Networkの利用可能性へ依存させない。
 
 HTTP Client、Scheduler / Retry実行機構、Cache I/O、Store I/O、Config、Logging、TimeはCommon Moduleとする。
@@ -1425,7 +1425,7 @@ Domain固有Validation、Data変換、Cache採用、Freshness、Published State�
 | Frontend Component State | Display内で生成する派生State。BackendやStoreへ戻さない |
 | Display Runtime State | Displayの切替位置等。MVPではCrash前の表示位置復元を要求しない |
 
-SQLiteを暫定採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。
+SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。
 Published StateのDataとMetadataは1 JSON Snapshotとして保存し、不完全なSnapshotを公開しない。最新・直前の2世代を保持する。
 SQLiteの共有Connectionは保存機構の方針であり、他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
 複数State間の厳密な同時点整合性は要求しない。State単位のAtomicityと、Tx-Q / Tx-A / Tx-P / Tx-Cの分離（16.4）を区別する。
@@ -1482,7 +1482,7 @@ type CacheEntry<T> = {
 ```
 
 Cache EntryのschemaVersionとAPI全体のschemaVersionは別のVersion管理対象である。
-Cache復元ではJSON Parse → TypeBox Schema Validation → Semantic Validation → 有効期限判定を行う（TypeBoxは暫定採用）。
+Cache復元ではJSON Parse → TypeBox Schema Validation → Semantic Validation → 有効期限判定を行う（TypeBoxは正式採用）。
 不正Cacheと期限切れCacheは区別し、期限切れCacheを公開用Fallbackとして採用しない。即時物理削除は要求せず、不正Cacheの物理削除は未決定とする。
 
 外部取得失敗時に有効CacheがあればPublished Stateを再生成する。
