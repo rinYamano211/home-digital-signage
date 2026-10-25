@@ -1,12 +1,28 @@
 import type { DestinationStream } from "pino";
-import { buildApp } from "./app.js";
+import type { EventEmitter } from "node:events";
+import { setImmediate as yieldToSignals } from "node:timers/promises";
+import { buildApp, registerRoutes } from "./app.js";
 import { ConfigError, loadConfig } from "./config/loader.js";
 import { createLogger } from "./logging/logger.js";
 import { installShutdown } from "./shutdown.js";
+import { ExclusiveLock } from "./storage/lock.js";
+import { BackendStore } from "./storage/store.js";
+import {
+  classifyDatabaseError,
+  type DatabaseStatus,
+} from "./storage/errors.js";
 
+interface StartupOptions {
+  signals?: Pick<EventEmitter, "on" | "off">;
+  finish?: (code: number) => void;
+  initializeStore?: (
+    lock: ExclusiveLock,
+  ) => BackendStore | Promise<BackendStore>;
+}
 export async function startBackend(
   env: Readonly<NodeJS.ProcessEnv>,
   destination?: DestinationStream,
+  options: StartupOptions = {},
 ) {
   let config;
   try {
@@ -18,38 +34,101 @@ export async function startBackend(
     );
     throw new ConfigError();
   }
-  // PR-A has no domain requiring a credential, so no Secret is loaded here.
   const logger = createLogger(config.logLevel, destination);
-  logger.info({ event: "startup_begin" }, "Backend starting");
-  const app = buildApp(logger);
+  let lock: ExclusiveLock;
   try {
-    await app.listen({ host: config.host, port: config.port });
+    lock = ExclusiveLock.inherited(config.dataDirectory);
   } catch {
-    logger.error({ event: "listen_failed" }, "Backend listen failed");
-    await app.close().catch(() => undefined);
+    logger.error({ event: "lock_required" }, "Exclusive storage lock required");
+    throw new Error("Exclusive storage lock required");
+  }
+  logger.info({ event: "startup_begin" }, "Backend starting");
+  const app = buildApp(logger, false);
+  let ownedStore: BackendStore | undefined;
+  let finishInitialization!: () => void;
+  const initialized = new Promise<void>((resolve) => {
+    finishInitialization = resolve;
+  });
+  app.addHook("onClose", async () => {
+    await initialized;
+    ownedStore?.close();
+    if (ownedStore)
+      logger.info({ event: "database_closed" }, "Database closed");
+  });
+  const shutdown = installShutdown(
+    app,
+    logger,
+    config.shutdownTimeoutMs,
+    options.finish ??
+      ((code) => {
+        if (code !== 0) process.exit(code);
+        process.exitCode = 0;
+      }),
+    options.signals ?? process,
+  );
+  let status: DatabaseStatus = {
+    state: "DEGRADED",
+    layer: "L2",
+    reason: "not_initialized",
+  };
+  let stage = "database_initialization_failed";
+  try {
+    try {
+      logger.info({ event: "database_initializing" }, "Initializing database");
+      await yieldToSignals();
+      if (!shutdown.requested) {
+        let acquired: BackendStore | undefined;
+        try {
+          try {
+            acquired = await (options.initializeStore ?? BackendStore.open)(
+              lock,
+            );
+          } catch (error) {
+            status = classifyDatabaseError(error);
+          }
+          // Both success and recoverable failure must drain pending OS signals.
+          // Synchronous SQLite cannot be interrupted by JS signal/timer callbacks.
+          await yieldToSignals();
+          if (!shutdown.requested && acquired) {
+            ownedStore = acquired; // Atomic ownership handoff: no await here.
+            acquired = undefined;
+            status = { state: "HEALTHY" };
+          }
+        } finally {
+          acquired?.close();
+        }
+      }
+    } finally {
+      finishInitialization();
+    }
+    if (shutdown.requested) {
+      await shutdown.shutdown();
+      return;
+    }
+    logger.info(
+      { event: "database_status", ...status },
+      "Database startup state",
+    );
+    registerRoutes(app);
+    stage = "listen_failed";
+    await app.listen({ host: config.host, port: config.port });
+    if (shutdown.requested) {
+      await shutdown.shutdown();
+      return;
+    }
+    logger.info({ event: "startup_complete" }, "Backend listening");
+    return { app, config, logger, status, shutdown };
+  } catch {
+    logger.error({ event: stage }, "Backend startup failed");
+    await shutdown.shutdown(1);
     throw new Error("Backend startup failed");
   }
-  logger.info({ event: "startup_complete" }, "Backend listening");
-  return { app, config, logger };
 }
-
 if (import.meta.main) {
-  // The only process.env read in application code: take a startup snapshot.
   const environment = { ...process.env };
   try {
-    const { app, config, logger } = await startBackend(environment);
-    installShutdown(
-      app,
-      logger,
-      config.shutdownTimeoutMs,
-      (code) => {
-        if (code !== 0) process.exit(code); // Bound hung resources after failure.
-        process.exitCode = 0;
-      },
-      process,
-    );
+    await startBackend(environment);
   } catch {
-    // The startup boundary has already logged a sanitized error.
     process.exitCode = 1;
   }
 }

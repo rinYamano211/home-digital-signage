@@ -12,6 +12,7 @@ export const LogLevelSchema = Type.Union([
 
 export const BackendConfigSchema = Type.Object(
   {
+    dataDirectory: Type.String({ minLength: 1 }),
     host: Type.Literal("127.0.0.1"),
     port: Type.Integer({ minimum: 1, maximum: 65535 }),
     logLevel: LogLevelSchema,

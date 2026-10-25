@@ -2,8 +2,11 @@ import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
+import { mkdtempSync, chmodSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test } from "vitest";
 
 beforeAll(async () => {
   await promisify(execFile)(process.execPath, [
@@ -21,14 +24,27 @@ async function reserve() {
   if (!address || typeof address === "string") throw new Error("No test port");
   return { server, port: address.port };
 }
+const directories: string[] = [];
+afterAll(() => {
+  for (const dir of directories) rmSync(dir, { recursive: true, force: true });
+});
 function launch(extra: NodeJS.ProcessEnv) {
+  const directory = mkdtempSync(join(tmpdir(), "signage-process-"));
+  chmodSync(directory, 0o700);
+  directories.push(directory);
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("SIGNAGE_")),
   );
-  const child = spawn(process.execPath, [resolve("dist/backend/main.js")], {
-    env: { ...env, ...extra },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    process.platform === "linux" ? "sh" : process.execPath,
+    process.platform === "linux"
+      ? ["scripts/with-backend-lock.sh", "backend"]
+      : [resolve("dist/backend/main.js")],
+    {
+      env: { ...env, SIGNAGE_DATA_DIR: directory, ...extra },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   let output = "";
   child.stdout.on("data", (chunk) => {
     output += chunk;
@@ -53,22 +69,25 @@ test("compiled entry rejects invalid config with nonzero exit and safe logs", as
   }
 });
 
-test("compiled entry reports listen conflict and exits nonzero", async () => {
-  const reservation = await reserve();
-  const running = launch({ SIGNAGE_BACKEND_PORT: String(reservation.port) });
-  try {
-    const [code] = await running.exit;
-    expect(code).toBe(1);
-    expect(running.output()).toContain("listen_failed");
-  } finally {
-    if (running.child.exitCode === null) running.child.kill();
-    await new Promise<void>((resolve) =>
-      reservation.server.close(() => resolve()),
-    );
-  }
-});
+test.runIf(process.platform === "linux")(
+  "compiled entry reports listen conflict and exits nonzero",
+  async () => {
+    const reservation = await reserve();
+    const running = launch({ SIGNAGE_BACKEND_PORT: String(reservation.port) });
+    try {
+      const [code] = await running.exit;
+      expect(code).toBe(1);
+      expect(running.output()).toContain("listen_failed");
+    } finally {
+      if (running.child.exitCode === null) running.child.kill();
+      await new Promise<void>((resolve) =>
+        reservation.server.close(() => resolve()),
+      );
+    }
+  },
+);
 
-test.runIf(process.platform !== "win32").each(["SIGTERM", "SIGINT"] as const)(
+test.runIf(process.platform === "linux").each(["SIGTERM", "SIGINT"] as const)(
   "compiled entry serves HTTP and exits cleanly on %s without Secrets",
   async (signal) => {
     const reservation = await reserve();
