@@ -1512,9 +1512,17 @@ Commit成功・未保存確認済みの失敗・結果不明を区別する。�
 3. 最新Snapshotが不正な場合だけ直前世代を検証する。Applicationが最新候補を期限切れと判定しても、それだけを理由に直前世代へ戻さない。
 4. 両世代とも不正なら対象Stateを隔離し、他Stateの正常な復元を妨げない。Parse・Schema・Semanticの失敗原因を分けて記録する。
 
-Repositoryは復元候補を返し、Applicationが期限・利用可能性を評価して既存API契約で公開する。復元だけではGeneration・publishedAt・dataUpdatedAt・expiresAtを更新しない。不正Snapshotの自動削除・無条件修復は行わない。隔離専用Tableは追加せず、整合性再確認でのみ解除し、時間経過だけでは解除しない。
+Repositoryは、ApplicationがRead引数として渡す同期・副作用なし・DB再入なしのValidatorを使い、JSON Parse → Schema → Semanticの順で検証する。Domain固有ルールはApplicationが所有する。Validator自体の予期しない例外はSnapshot不正と混同せず、それだけでFallback・State隔離しない。
+
+Schema・Counter・Snapshotは共有Connectionの排他管理下の短いRead Transactionで一貫して取得し、Transaction終了後に取得済みJSONを検証する。Transaction状態が未解決なら証跡を発行せず、Connectionを通常処理に戻さない。
+
+Repositoryはlatest / previous / empty（new / counter_only）/ isolated / database_errorを区別して復元候補を返し、Applicationが期限・利用可能性を評価して既存API契約で公開する。復元だけではGeneration・publishedAt・dataUpdatedAt・expiresAtを更新しない。不正Snapshotの自動削除・無条件修復は行わない。隔離専用Tableは追加せず、整合性再確認でのみ解除し、時間経過だけでは解除しない。
 
 Fallback中の新規保存は、DB・SchemaとCounterが正常、最新不正がState固有のJSON / Schema / Semantic異常だけ、新候補Validation成功、新しい取得結果と確認可能、未解決のCommit結果不明操作なし、Tx-P内のCounter再検証成功という条件をすべて要求する。新旧比較不能なら自動保存せず、Generation・publishedAtだけを証拠にしない。最大2世代保持のため、新規保存により唯一正常だった直前世代が削除され得る制約を受け入れ、実装テストで確認する。
+
+正常なlatest / previousのRead時だけ、同一Process・Connection・Stateに限定した不透明なReadEvidenceを発行する。証跡は元のCounter・Snapshot構成とJSON内容に結び付き、取得結果の鮮度・新旧を証明しない。条件付き保存ではApplicationが候補Validationと既存採用条件による新旧判定を担い、RepositoryはTx-P内で証跡とDB状態の完全一致を再確認してから採番・保存する。証跡は保存試行で消費し、成功・Rollback・不一致・結果不明の後は再利用しない。Connection終了・Process再起動でも無効とし、永続化しない。
+
+Fallback中のApplication保存はsaveConditionally()経路へ一元化する。既存save()・reconcile()は互換性を維持するため、通常save()の直接呼出しによる迂回をRepository単体で完全に防ぐInterfaceではない。Application統合時に迂回がないことを検証する。具体InterfaceとI-01〜I-16は[技術スタック選定 12.10](technology-stack.md#1210-b-3b-repositorytransactiongeneration設計)に従う。
 
 2世代保持はDatabase全体破損・microSD故障への対策ではない。
 正常なAcquisition Control Stateでは保存nextAttemptAtを尊重する。既存Stateの不正・欠損ではmin(acquisitionPeriod, 5分)待機し、現行5 Stateでは5分とする。真の新規Stateは通常初回判定を許可する。Quota履歴不正は5分経過だけではFail Closedを解除しない。
