@@ -217,6 +217,10 @@ test.each([9007199254740992n, 9223372036854775807n, 1.5, "not an integer"])(
       reason: "integer_out_of_range",
     });
     expect(rows(db)).toEqual([]);
+    expect(repo.save("currentWeather", json(1))).toMatchObject({
+      outcome: "saved",
+      generation: 1,
+    });
   },
 );
 test.each([9007199254740992n, 9223372036854775807n, 1.5])(
@@ -228,6 +232,10 @@ test.each([9007199254740992n, 9223372036854775807n, 1.5])(
       outcome: "not_saved",
       scope: "state",
       reason: "integer_out_of_range",
+    });
+    expect(repo.save("currentWeather", json(1))).toMatchObject({
+      outcome: "saved",
+      generation: 1,
     });
   },
 );
@@ -245,6 +253,10 @@ test("last safe Generation succeeds once, then stops without reset or wrap", () 
   });
   expect(counter(db)).toEqual({
     last_generation: BigInt(Number.MAX_SAFE_INTEGER),
+  });
+  expect(repo.save("currentWeather", json(1))).toMatchObject({
+    outcome: "saved",
+    generation: 1,
   });
 });
 test.each([
@@ -427,6 +439,63 @@ test("Rollback failure halts the entire shared Connection, even through another 
     scope: "database",
   });
 });
+test("State integrity failure during reconciliation holds only that State", () => {
+  const { db, repo } = fixture();
+  seed(db, 2, [2, 1]);
+  commitFault(db, true, () => {
+    db.exec(
+      "UPDATE state_generation_counters SET last_generation=1 WHERE state_key='schedule'",
+    );
+  });
+  expect(repo.save("schedule", json(3))).toMatchObject({
+    outcome: "unknown",
+    scope: "state",
+    reason: "reconciliation_failed",
+  });
+  expect(db.inTransaction).toBe(false);
+  const another = new PublishedStateRepository(db);
+  expect(another.save("schedule", json(4))).toMatchObject({
+    outcome: "unknown",
+    reason: "unresolved_save",
+  });
+  expect(another.save("currentWeather", json(1))).toMatchObject({
+    outcome: "saved",
+    generation: 1,
+  });
+  expect(counter(db)).toEqual({ last_generation: 1n });
+});
+test("DB corruption-equivalent failure during reconciliation blocks other States", () => {
+  const { db, repo } = fixture();
+  let reconciling = false;
+  commitFault(db, true, () => {
+    reconciling = true;
+  });
+  const prepare = db.prepare.bind(db);
+  const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+    if (reconciling && sql.startsWith("SELECT last_generation")) {
+      reconciling = false;
+      throw Object.assign(new Error("synthetic reconciliation corruption"), {
+        code: "SQLITE_CORRUPT",
+      });
+    }
+    return prepare(sql);
+  });
+  expect(repo.save("schedule", json(1))).toMatchObject({
+    outcome: "unknown",
+    scope: "database",
+    reason: "reconciliation_failed",
+  });
+  expect(db.inTransaction).toBe(false);
+  spy.mockClear();
+  expect(
+    new PublishedStateRepository(db).save("currentWeather", json(1)),
+  ).toMatchObject({
+    outcome: "not_saved",
+    scope: "database",
+    layer: "L3",
+  });
+  expect(spy).not.toHaveBeenCalled();
+});
 test("pre-existing Transaction is neither joined nor rolled back", () => {
   const { db, repo } = fixture();
   db.exec("BEGIN");
@@ -455,8 +524,132 @@ test.each(["missing", "incompatible"])(
       scope: "database",
       layer: "L3",
     });
+    const prepare = vi.spyOn(db, "prepare");
+    prepare.mockClear();
+    expect(
+      new PublishedStateRepository(db).save("hourlyWeather", json(1)),
+    ).toMatchObject({ outcome: "not_saved", scope: "database", layer: "L3" });
+    expect(prepare).not.toHaveBeenCalled();
   },
 );
+
+test("real State-specific NOT NULL violation rolls back and leaves other States writable", () => {
+  const { db, repo } = fixture();
+  seed(db, 2, [2, 1]);
+  const before = rows(db);
+  const prepare = db.prepare.bind(db);
+  let nativeCode: string | undefined;
+  vi.spyOn(db, "prepare").mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (sql.startsWith("INSERT INTO published_state_snapshots")) {
+      const run = statement.run.bind(statement);
+      vi.spyOn(statement, "run").mockImplementation((...parameters) => {
+        if (parameters[0] !== "schedule") return run(...parameters);
+        try {
+          // Execute the real SQLite statement with one invalid State's value;
+          // the canonical schema is unchanged, unlike adding a trigger.
+          return run(parameters[0], parameters[1], null);
+        } catch (error) {
+          nativeCode = (error as { code?: string }).code;
+          throw error;
+        }
+      });
+    }
+    return statement;
+  });
+  expect(repo.save("schedule", json(3))).toMatchObject({
+    outcome: "not_saved",
+    scope: "state",
+    layer: "L3",
+    reason: "write_constraint",
+  });
+  expect(nativeCode).toBe("SQLITE_CONSTRAINT_NOTNULL");
+  expect(db.inTransaction).toBe(false);
+  expect(counter(db)).toEqual({ last_generation: 2n });
+  expect(rows(db)).toEqual(before);
+  expect(
+    new PublishedStateRepository(db).save("currentWeather", json(1)),
+  ).toMatchObject({ outcome: "saved", generation: 1 });
+  expect(rows(db, "currentWeather")).toHaveLength(1);
+});
+
+test("real SQLITE_BUSY is L1 and allows another State after writer releases Transaction", () => {
+  const { db, repo } = fixture();
+  const blocker = new Database(db.name);
+  try {
+    db.pragma("busy_timeout=0");
+    blocker.exec("BEGIN IMMEDIATE");
+    expect(repo.save("schedule", json(1))).toMatchObject({
+      outcome: "not_saved",
+      scope: "database",
+      layer: "L1",
+      reason: "temporary_sql",
+    });
+    expect(db.inTransaction).toBe(false);
+    expect(rows(db)).toEqual([]);
+    expect(counter(db)).toBeUndefined();
+    blocker.exec("ROLLBACK");
+    expect(
+      new PublishedStateRepository(db).save("currentWeather", json(1)),
+    ).toMatchObject({ outcome: "saved", generation: 1 });
+  } finally {
+    if (blocker.inTransaction) blocker.exec("ROLLBACK");
+    blocker.close();
+  }
+});
+
+test("real SQLITE_READONLY is L2 and does not permanently block a resolved Connection", () => {
+  const { db, repo } = fixture();
+  seed(db, 2, [2, 1]);
+  const before = rows(db);
+  db.pragma("query_only=ON");
+  expect(repo.save("schedule", json(3))).toMatchObject({
+    outcome: "not_saved",
+    scope: "database",
+    layer: "L2",
+    reason: "database_unavailable",
+  });
+  expect(db.inTransaction).toBe(false);
+  expect(rows(db)).toEqual(before);
+  expect(counter(db)).toEqual({ last_generation: 2n });
+  db.pragma("query_only=OFF");
+  expect(
+    new PublishedStateRepository(db).save("currentWeather", json(1)),
+  ).toMatchObject({ outcome: "saved", generation: 1 });
+});
+
+test.each(["SQLITE_CORRUPT", "SQLITE_NOTADB", "SQLITE_IOERR"])(
+  "%s injection keeps DB-wide failures closed after Rollback resolves",
+  (code) => {
+    const { db, repo } = fixture();
+    seed(db, 2, [2, 1]);
+    const before = rows(db);
+    const prepare = db.prepare.bind(db);
+    let inject = true;
+    const spy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (inject && sql.startsWith("INSERT INTO published_state_snapshots")) {
+        inject = false;
+        // Corruption/storage-equivalent fault injection, not real file damage.
+        throw Object.assign(new Error("synthetic storage failure"), { code });
+      }
+      return prepare(sql);
+    });
+    expect(repo.save("schedule", json(3))).toMatchObject({
+      outcome: "not_saved",
+      scope: "database",
+      layer: code === "SQLITE_IOERR" ? "L4" : "L3",
+    });
+    expect(db.inTransaction).toBe(false);
+    expect(counter(db)).toEqual({ last_generation: 2n });
+    expect(rows(db)).toEqual(before);
+    spy.mockClear();
+    expect(
+      new PublishedStateRepository(db).save("currentWeather", json(1)),
+    ).toMatchObject({ outcome: "not_saved", scope: "database" });
+    expect(spy).not.toHaveBeenCalled();
+  },
+);
+
 test("sync saves serialize concurrent callers and refuse reentrant writes", async () => {
   const { db, repo } = fixture();
   const generations = await Promise.all(
