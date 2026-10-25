@@ -15,6 +15,8 @@ npx vitest run tests/poc/linux-flock.test.ts --reporter=verbose
 
 ローカルWindowsはNode.js v24.14.0。利用可能なWSL Linux環境がないため、Linux実測は既存Ubuntu CIで行う。Raspberry Pi OS・ARM64・本番filesystemは未検証。Kernel・Node.js・flock Version・UIDはテストの`POC_ENV`ログに出力する。
 
+2026-10-25の[Linux CI実測ログ](https://github.com/rinYamano211/home-digital-signage/actions/runs/40168527755/job/121094435549)で、Ubuntu 24.04.5、Kernel 6.17.0-1022-azure、x64、Node.js v24.21.0、util-linux flock 2.39.3、UID 1001を確認した。テストコードCommitは`87d31c0a957418bef48370dafb85e5da939a05fd`。PoC 13テストはすべてPASS、既存52テストを含む65件もPASS。Lint・Format・Type Checkも成功した。
+
 ## 検証方式とFD所有
 
 Shellが専用LockファイルをFD 9で開き、`flock -x/-s -w 1 9`を実行する。Node.jsを同じFD 9の継承付きで起動し、同じOpen File Descriptionを保持する。Node.jsから短命のflock子ProcessへFD 9をFD 3として明示的に渡し、`flock -s -w 1 3`で変換する。
@@ -25,22 +27,30 @@ Shellが専用LockファイルをFD 9で開き、`flock -x/-s -w 1 9`を実行�
 
 ## LOCK-01〜LOCK-12
 
-Linux CIの実測結果は初回実行後に記録する。テストの存在を検証成功とは扱わない。
+以下は上記CIで実Processを用いた実測結果。PASSには、保護できないケースを期待どおり再現した結果も含む。LOCK-07はSignal別の2テストで、合計13テストとなる。
 
-| ID      | 確認内容                                               | 結果     |
-| ------- | ------------------------------------------------------ | -------- |
-| LOCK-01 | 排他同士の競合                                         | 実測待ち |
-| LOCK-02 | 共有Lockの共存                                         | 実測待ち |
-| LOCK-03 | 共有保持中の排他拒否                                   | 実測待ち |
-| LOCK-04 | 同じFDの排他→共有変換、20回の競合試行                  | 実測待ち |
-| LOCK-05 | Wrapperだけ終了してもNode.jsのFDが保護を維持           | 実測待ち |
-| LOCK-06 | 正常終了後の排他再取得                                 | 実測待ち |
-| LOCK-07 | SIGTERM/SIGKILL、Backendのみ・Wrapperのみ・Group・孫FD | 実測待ち |
-| LOCK-08 | 150ms競合TimeoutとDB操作用marker非生成                 | 実測待ち |
-| LOCK-09 | 残存Lockファイルの再利用                               | 実測待ち |
-| LOCK-10 | 共有LockではBackend多重起動を禁止できない              | 実測待ち |
-| LOCK-11 | wx同時作成・既存・Symlink・権限拒否・作成直後Kill      | 実測待ち |
-| LOCK-12 | 排他Lock保持中のwx、解放後の既存DB保護                 | 実測待ち |
+| ID      | 確認内容                                               | 結果                                                 |
+| ------- | ------------------------------------------------------ | ---------------------------------------------------- |
+| LOCK-01 | 排他同士の競合                                         | PASS：競合Exit 73                                    |
+| LOCK-02 | 共有Lockの共存                                         | PASS：別Processも取得                                |
+| LOCK-03 | 共有保持中の排他拒否                                   | PASS：排他Exit 73                                    |
+| LOCK-04 | 同じFDの排他→共有変換、20回の競合試行                  | PASS：変換成功。割込み観測0/20、Atomicの証明ではない |
+| LOCK-05 | Wrapperだけ終了してもNode.jsのFDが保護を維持           | PASS：Wrapper Kill後も排他拒否、Node終了後は取得     |
+| LOCK-06 | 正常終了後の排他再取得                                 | PASS：Node Exit 0、排他再取得                        |
+| LOCK-07 | SIGTERM/SIGKILL、Backendのみ・Wrapperのみ・Group・孫FD | PASS：両Signalで下記の保持・解放を再現               |
+| LOCK-08 | 150ms競合TimeoutとDB操作用marker非生成                 | PASS：Exit 73、上限1.8秒以内、markerなし             |
+| LOCK-09 | 残存Lockファイルの再利用                               | PASS：ファイル残存、Lock再取得可能                   |
+| LOCK-10 | 共有LockではBackend多重起動を禁止できない              | PASS：2 Node同時起動を再現                           |
+| LOCK-11 | wx同時作成・既存・Symlink・権限拒否・作成直後Kill      | PASS：下記の拒否・残存を確認                         |
+| LOCK-12 | 排他Lock保持中のwx、解放後の既存DB保護                 | PASS：Lock競合を拒否、解放後もwxは既存を拒否         |
+
+LOCK-04では競合Processの起動markerを待ってから変換するが、Kernel内の待ちQueueへの登録は観測していない。20回は有限の競合試行であり、あらゆる割込み順序を網羅しない。
+
+LOCK-07のSIGTERM・SIGKILL実測は、Backendだけ終了するとwait中のWrapperも終了して解放、Wrapperだけ終了すると生存NodeのFDにより保持、Process Group全体終了で解放となった。明示的にFDを渡した孫Processは親終了後もLockを保持し、孫終了後に解放された。暗黙の子孫継承一般を安全とする結果ではない。
+
+LOCK-11は同時2作成のうち1件だけ成功、他方と既存ファイルはEEXIST（テストExit 17）。実在対象・dangling両SymlinkもEEXIST、対象データは不変。書込み不可DirectoryはEACCES（Exit 13）。空ファイル作成直後のSIGKILLではファイルが残り、その後のwxもEEXISTとなった。
+
+反例の再現は`npx vitest run tests/poc/linux-flock.test.ts -t LOCK-07`でFD残存、`-t LOCK-10`で多重起動、`-t LOCK-11`で不完全ファイル残存を確認する。テスト自身はこれらの期待した制約を確認してPASSする。
 
 ## 仕様上の制約と判断基準
 
@@ -52,7 +62,7 @@ Linuxのflockは協調的Lockであり、同じOpen File Descriptionの全FDが�
 
 ## B-3A-1への推奨候補・未検証事項
 
-実測前の候補はShellでFDを開いてNode.jsへexec継承し、Node.jsが寿命中保持する方式。追加Native依存なしで検証できるが、共有への非Atomic変換・終了処理・子ProcessへのFD継承規律が成立条件である。単純Wrapper保持だけを推奨とはしない。
+実測に基づく推奨候補はShellでFDを開いてNode.jsへexec継承し、Node.jsが寿命中保持する方式。追加Native依存なしで同じFDの操作とProcess終了による解放を確認できた。ただし、共有への非Atomic変換・終了処理・子ProcessへのFD継承規律が成立条件であり、本番方式の無条件な採用判断ではない。単純Wrapper保持だけを推奨とはしない。
 
 Native Bindingは同一Process内でLock操作・エラー管理を行いやすい一方、ARM64 Build・ABI・保守・追加依存の検証が必要で、今回は追加しない。Native化してもflock変換のAtomic性は得られない。別Lockによる遷移直列化などのLinux機能は代替候補であり、本PoCで採用確定しない。
 
