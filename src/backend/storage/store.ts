@@ -3,6 +3,7 @@ import type { ExclusiveLock } from "./lock.js";
 import { storagePaths, validateDatabaseFiles } from "./paths.js";
 import { migrate } from "./migrations.js";
 import { SchemaError } from "./errors.js";
+import { PublishedStateRepository } from "./published-state-repository.js";
 
 export function configureDatabase(db: Database.Database) {
   db.pragma("journal_mode = WAL");
@@ -16,7 +17,10 @@ export function configureDatabase(db: Database.Database) {
     throw new SchemaError();
 }
 export class BackendStore {
-  private constructor(private readonly db: Database.Database) {}
+  readonly publishedStates: PublishedStateRepository;
+  private constructor(private readonly db: Database.Database) {
+    this.publishedStates = new PublishedStateRepository(db);
+  }
   static open(lock: ExclusiveLock): BackendStore {
     lock.assertHeld();
     validateDatabaseFiles(lock.directory);

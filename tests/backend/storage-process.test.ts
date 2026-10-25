@@ -485,3 +485,29 @@ esac
     );
   },
 );
+
+linux(
+  "BackendStore Repository uses the owned Connection and cannot save after Close",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const job = harness(
+      dir,
+      `import {BackendStore} from ${moduleUrl("storage/store")};import {ExclusiveLock} from ${moduleUrl("storage/lock")};const store=BackendStore.open(ExclusiveLock.inherited(process.env.SIGNAGE_DATA_DIR));const result=store.publishedStates.save('schedule','{"data":null,"meta":{}}');if(result.outcome!=='saved'||result.generation!==1)throw new Error('save failed');store.close();store.close();if(store.publishedStates.save('schedule','{}').outcome==='saved')throw new Error('closed connection used');`,
+    );
+    expect(await job.done, job.output()).toBe(0);
+    const db = new Database(join(dir, "signage.db"), { fileMustExist: true });
+    try {
+      expect(
+        db
+          .prepare(
+            "SELECT last_generation FROM state_generation_counters WHERE state_key='schedule'",
+          )
+          .get(),
+      ).toEqual({ last_generation: 1 });
+    } finally {
+      db.close();
+    }
+    expect(await probe(dir)).toBe(0);
+  },
+);
