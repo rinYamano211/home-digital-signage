@@ -42,7 +42,7 @@ export function validateSchema(db: Database.Database) {
     throw new SchemaError();
   const rows = db
     .prepare(
-      "SELECT name, type, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
+      "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
     )
     .all() as { name: string; type: string; sql: string }[];
   if (rows.length !== 4) throw new SchemaError();

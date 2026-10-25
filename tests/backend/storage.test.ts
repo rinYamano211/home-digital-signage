@@ -174,3 +174,10 @@ test("migration definition failure is BLOCKED after rollback", () => {
   expect(() => migrate(db, [entry], 102)).toThrow(SchemaError);
   entry.validateBefore(db);
 });
+
+test("schema filter excludes only SQLite's literal reserved prefix", () => {
+  const db = database();
+  initializeSchema(db);
+  db.exec("CREATE TABLE sqliteXunexpected (id INTEGER)");
+  expect(() => validateSchema(db)).toThrow(SchemaError);
+});
