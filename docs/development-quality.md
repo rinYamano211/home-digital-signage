@@ -28,10 +28,10 @@ PR作成・更新前は`npm ci`と`npm run check`を実行し、diffを確認す
 
 ## 現在の検証範囲
 
-- ESLint：リポジトリのJS / MJS / CJSとTS / MTS / CTS / TSX。現時点では設定JSと検証用TSが対象。React固有ルールや実行環境別globalsはまだ追加しない。
+- ESLint：リポジトリのJS / MJS / CJSとTS / MTS / CTS / TSX。現時点では設定JS・Backend実装・検証用TSが対象。React固有ルールや実行環境別globalsはまだ追加しない。
 - Prettier：JS / TS / JSON / YAML / Markdown等の対応形式。新規Markdownも対象。既存のREADMEと7つの設計・学習文書のみ`.prettierignore`で個別除外し、Issue #15での一括整形を避ける。lockfileはnpmが生成するため対象外。
-- TypeScript：`tests/**/*.ts`。空の対象で成功させず、検証用コードを実際に型チェックする。
-- Vitest：標準のテスト検出を使用し、現在は`tests/smoke.test.ts`の1件。外部API・ネットワーク・Secret・時刻に依存しない。Domain機能の正しさを検証したことにはならない。
+- TypeScript：`src/backend/**/*.ts`と`tests/**/*.ts`。空の対象で成功させず、検証用コードを実際に型チェックする。
+- Vitest：既存のSmoke Testと`tests/backend/`のConfig・Secrets・HTTP・Lifecycleテスト。実Credential・外部APIには依存しない。HTTPはLoopbackを利用する。Processテスト内でtscによるBackendのCompileと起動を検証し、成果物は配布・Deployしない。Linux固有のPermission・Signal確認はUbuntu CIで実行する。詳細は[Backend開発手順](backend-development.md)を参照。
 - `node_modules/`、`dist/`、`coverage/`、TypeScriptの生成キャッシュはLint / Format対象外。新しい生成物が増えた際は除外設定も更新する。
 
 新規の設定・テスト・本手順書は`.gitattributes`でLF改行に固定し、WindowsでのCheckout後もPrettierとの改行差を避ける。既存設計文書の改行設定は変更しない。
@@ -61,7 +61,7 @@ PRのChecksまたはActionsタブから、失敗したStepのログと対象フ�
 ## 後続Issueへの引き継ぎ
 
 - #7：Frontend追加時にReact / TSX用Lintルール、Browser環境、Frontend用型チェック・テストを追加する。Vite Buildと型チェックを分離する。
-- #16：Backendの実際の配置に合わせて型チェック対象とテストを追加する。SQLite・Scheduler・Recovery等のテストはここで具体化する。外部サービスは実APIやSecretをCIへ持ち込まずに検証できるようにする。
+- #16：PR-AのBackend起動・Config・Secretsは検証対象へ追加済み。SQLite・Scheduler・Recovery等のテストは後続PRで具体化する。外部サービスは実APIやSecretをCIへ持ち込まずに検証できるようにする。
 - Package構成が決まった時点で各対象の設定とルートの検証コマンドを拡張する。現段階ではWorkspacesや空のアプリケーションディレクトリを作らない。
 - #6 / #12 / #13：Pi環境、Deploy運用、実機性能・72時間試験は別途実施する。今回のCI成功とは区別する。
 
