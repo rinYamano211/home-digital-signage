@@ -1537,25 +1537,38 @@ Backup実行時刻・Path・Scheduler・再試行・復元コマンド、Lock / 
 
 ### 16.8 SQLite初期化とBackend Lifecycle
 
-PR-B / B-1の設計方針として、**障害分類型Degraded Start**を採用する。16.7のL1〜L4とHEALTHY / DEGRADED / RECOVERING / BLOCKEDを維持し、一時的なDB障害だけでProcessを無条件終了させない。安全にHTTP Serverを稼働できる場合はDB利用不能状態で起動し、通常Schedulerを保留する。DB破損・Schema非互換はBLOCKEDとし、自動削除・無条件再初期化・根拠のない修復は行わない。OS・Storageの致命的障害でProcess継続を無条件に保証しない。
+PR-B / B-1の設計方針として、**障害分類型Degraded Start**を採用する。16.7のL1〜L4とHEALTHY / DEGRADED / RECOVERING / BLOCKEDを維持し、一時的なDB障害だけでProcessを無条件終了させない。専用排他Lockの取得済みを前提に、安全にHTTP Serverを稼働できる場合はDB利用不能状態で起動し、通常Schedulerを保留する。Lock取得失敗はSQLite障害やBLOCKEDではなく起動中止とし、LockなしのDEGRADED起動は許可しない。DB破損・Schema非互換はBLOCKEDとし、自動削除・無条件再初期化・根拠のない修復は行わない。OS・Storageの致命的障害でProcess継続を無条件に保証しない。
 
 初回DB作成は管理者による明示的なProvisioningに分離する。通常起動でDB欠損を初回起動と判断せず、Schema VersionとSchema実態を検証する。具体的な作成・Migration方針は[技術スタック選定 12.3〜12.4](technology-stack.md#123-初回db-provisioningと通常起動)に従う。
 
+#### 単一排他Lockと所有権
+
+Backend・Provisioning・Migrationは、単一の専用Lockファイルに対するLinux flockの排他Lock（EX）を共有の規約として使用する。Backendは起動から終了までEXを保持し、同じLockで多重起動も防止する。共有Lock（SH）・EX→SH変換・別のInstance Lockは採用しない。これによりPoCで確認した非Atomicな変換のリスクを設計上排除する。PoCの実測記録は変更せず、現在の本番方針は本節とtechnology-stack.md 12.3を正本とする。
+
+Shellが専用ファイルをFDで開き、EX取得成功後にexecでNode.jsへ同じFDを継承する。exec後は独立したWrapper Processを残さず、Node.jsがそのFDを稼働中保持する。SQLite Connectionは従来どおりBackendStoreの所有であり、Lock FDと所有対象を区別する。DB利用・Connection Closeが終わる前にLockを解放しない。子・孫ProcessにFDを不用意に継承せず、最終FDのCloseで解放される構成とする。
+
 #### 起動順序
 
-1. Config検証。
-2. Logger生成。
-3. Fastify構築・必要なLifecycle Hookの登録。
-4. SQLite Store初期化・Schema検証・必要なPublished State復元。
-5. Published State API Route登録。
-6. Fastify Listen。
-7. 既存のShutdown Signal Handler登録。
+1. Shellが安全な管理Directoryの専用LockファイルをOpenする。
+2. 有界TimeoutでEXを取得する。競合・操作失敗ならDBを開かず起動中止する。Shellは失敗種別に対応する定義済み終了コードと機密情報を含まないstderrを使用し、systemd等が収集できるようにする。Node.jsのPino Logger生成前にPino出力を必須としない。
+3. ShellのexecでNode.jsへ同じLock FDを継承する。
+4. Node.jsでConfig・必要なSecretを既存PR-Aの検証契約に従って検証し、Loggerを生成する。
+5. Fastify構築・必要なLifecycle Hookを登録し、SQLite Connection取得・初期化とListenより前に既存の`installShutdown()`でSIGTERM / SIGINTのHandlerを登録する。
+6. 既存SQLite DBを`fileMustExist: true`でOpenし、WAL / NORMAL等の設定・Version・DDL構造を検証する。必要なAllowlist MigrationだけをEX保持中に実行する。
+7. DB正常時はBackendStoreを利用可能にし、必要なPublished Stateを検証・復元する。
+8. Published State API Route登録後、Fastify Listenを行う。
+
+Config・Secret検証とShellの具体配置は実装時に整合させる。ここでは既存Node.js側の検証を継続するためEX取得後に配置し、Lock取得前にDBを開かないことを必須とする。Config・Secret不正等で起動中止する場合も、取得済みFDを残存させない。Secretの供給・検証の既存契約を変更したり、新たなCredential必須条件を追加したりしない。
 
 RouteはDB正常・異常のどちらでもListen前に登録する。安全にHTTPを起動できるDB障害では、DB利用不能としてRouteを登録してListenを継続する。DB正常時は保存Published StateのValidation・復元後にAPI提供を開始し、外部API初回取得を待たない。Config不正・Fastify構築失敗・Listen失敗等は既存の起動失敗処理を維持する。DB全体利用不能時の503と疎通確認の境界は[技術スタック選定 10.9](technology-stack.md#109-database全体利用不能時のapi応答)に従う。
 
 #### 終了と所有権の引継ぎ
 
-PR-Aの`installShutdown()`と`app.close()`を継続利用し、SQLite専用のSIGINT / SIGTERM Handlerは追加しない。Fastifyの`onClose`からStoreをCloseし、二重Closeにも安全にする。Connection取得後、Lifecycle Hookへの所有権引継ぎ前に起動失敗した場合もConnectionを確実にCloseする。PR-Aの10秒Shutdown Timeoutと終了コードの契約は維持する。
+PR-Aの`installShutdown()`と`app.close()`を継続利用し、SQLite専用のSIGINT / SIGTERM Handlerは追加しない。Fastifyの`onClose`からStoreをCloseし、二重Closeにも安全にする。起動途中の終了要求も同じHandlerで扱い、終了開始を起動処理と共有する。終了要求後はDB取得・初期化の継続や新しいRoute登録・Listenへ進まない。進行中の初期化とCloseを調整し、終了後にConnectionが新たに生成・取り残されないようにする。
+
+Store所有権のLifecycle Hookへの引継ぎ前は起動処理が取得済みConnectionのCloseを担い、引継ぎ後は`app.close()`から`onClose`へ一元化する。引継ぎと終了要求が競合してもClose漏れ・二重Closeによる不正を生じさせず、起動失敗時にも同じ責務で後始末する。Handler登録前のConfig検証失敗等で終了する場合もDBは未Openとし、継承Lock FDを他Processに残さずProcess終了時に解放する。PR-Aの10秒Shutdown Timeoutと終了コードの契約は維持する。
+
+終了順序はHTTP受付停止 → SQLite Connection Close → Node.js Process終了 → 最終Lock FD CloseによるEX解放とする。正常終了・SIGTERMは既存Shutdown経路に従う。SIGKILLはHookを実行できないためOSのFD Closeにより解放され、別ProcessがFDを保持して残らない構成を要求する。起動途中の失敗もConnectionとFDを後始末する。
 
 PR-CでSchedulerを導入する際は、Scheduler停止後にDBをCloseする。同期DB処理がShutdownを妨げる制約は[技術スタック選定 12.5](technology-stack.md#125-lifecycleの技術的制約と後続工程)に従う。
 

@@ -694,15 +694,29 @@ DB欠損時は既存DB消失・Mount異常・権限異常等を考慮し、無�
 
 DBはRelease Directory外に配置し、`/var/lib/home-digital-signage/signage.db`は候補Pathとして扱う。具体Path・Provisioning CLI名・実装詳細は未決定である。Directory作成・Permission・実機Deploy手順はIssue #12と連携する。
 
-**OSレベルの排他Lock＋SQLite Transaction**を正式な設計方針とする。Provisioning同士・通常Backend起動との競合を防ぎ、Migrationも同一Lock規約に従う。Lock取得後にDBの存在・Version・Schemaを再確認し、DB作成には既存ファイルを上書きできない排他的作成方式を用いる。単なるLockファイルの存在確認は採用せず、Process異常終了時にLockが適切に解放される方式を選ぶ。不完全なDBが残っても自動削除・再作成しない。
+**単一専用LockファイルのLinux flock排他Lock（EX）＋SQLite Transaction**を正式採用する。Backendは起動から終了までEXを保持し、同じLockで多重起動も防ぐ。ProvisioningはDB作成・初期化中、MigrationはBackend起動時のEX保持中に実行する。共有Lock（SH）、EX→SH変換、別のInstance Lockは使用しない。旧共有／排他方式を置き換える決定であり、PoCの履歴は[検証記録](poc/linux-flock-validation.md)に残す。
 
-OS Lockは協調するProcess間の排他であり、DBファイルの排他的作成とは別の保証である。初期化時だけのLockで稼働中Backendとの競合まで防げるとはしない。Linux・Node.jsでのLock実装、取得・解放API、保持範囲、稼働中DB利用保護、排他的DB作成・配置方法、CLI名・配置、DB Path・Directory・Permission、Lock取得失敗・Timeout・異常終了時の扱いは実装前に検証・具体化する。
+ShellでファイルをOpen → `flock -x`で有界Timeout付き取得 → execで同じFDをNode.jsへ継承し、Node.jsが稼働中保持する。FD番号や具体Script・Timeout値は実装時に具体化する。Lock取得失敗はDB Open前に起動中止し、LockなしでDEGRADED起動しない。Lock競合・操作失敗はSQLite障害と区別する。Node.js Logger生成前に失敗し得るため、Shell側では失敗種別ごとの定義済み終了コードと機密を含まないstderrを基本とし、systemd等が収集する。Pino初期化前のPino出力を必須としない。
+
+Lockファイルは安全な管理Directoryに配置し、稼働中に削除・置換しない。ファイルの存在だけで保持判定しない。systemd・手動・Provisioningを含む全起動経路で同一Lockを必須とし、迂回する直接起動を許可しない。子・孫への不用意なFD継承を防ぎ、正常終了・SIGTERM・SIGKILL後に別ProcessのFD保持が残らないようにする。FD所有と終了順序はArchitecture 16.8に従う。
+
+OS Lockはadvisoryであり、協調しないProcessのDB操作まで防止しない。DBファイルの排他的作成とは別の保証である。Path・Directory・Permission・Symlink対策、Lock付き起動経路の具体Script、CLI名・配置、Timeout値、Shell側終了コードの具体値・stderr形式は実装前に定義・検証する。既存DB・Secret等のPathやPermissionを今回新たに固定しない。
+
+Provisioningは次の順序とする。
+
+1. 明示的な管理コマンドからBackendと同一LockのEXを取得する。
+2. EX取得後にDB存在を再確認し、既存DBがあれば上書きせず拒否する。
+3. Node.jsの`fs.open(dbPath, "wx", 0o600)`で排他的に作成し、作成用FDをCloseする。
+4. SQLiteでOpenし、初期4 Tableと`user_version=1`を同一Transactionで設定する。
+5. 完了後にSchemaを検証し、SQLite ConnectionをCloseしてからLockを解放する。
+
+途中失敗で不完全DBが残っても自動削除・再作成しない。`wx`はDB完成や安全な親Directoryを保証しないため、DB・LockのPathと権限・Symlink対策を整合させる。
 
 ### 12.4 Schema VersionとMigration
 
-初期MVP Schema Versionは**1**とし、SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。
+初期MVP Schema Versionは**1**とし、SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。通常起動で既存Version 0を自動初期化しない。Table欠損・不正構造を検出し、state_generation_countersのTable欠損はDB全体のBLOCKEDとする。Counter Rowの整合性・State隔離とは区別する。
 
-- 明示的に登録された個別MigrationのAllowlist方式を正式採用する。既知Version間で旧Releaseとの読出し・書込み互換性を検証済みのMigrationのみ、通常Backend起動時の自動適用を許可する。適用前後にVersionとSchema実態を検証する。
+- 明示的に登録された個別MigrationのAllowlist方式を正式採用する。既知Version間で旧Releaseとの読出し・書込み互換性を検証済みのMigrationのみ、通常Backend起動時の自動適用を許可する。Backend起動時のEX保持中に実行し、適用前後にVersionとSchema実態を検証する。
 - DDLとVersion更新は同一Transactionで行う。DDL失敗・Rollback成功時は、DBのVersionとSchema実態を再検証し、失敗原因を分類する。
 - Rollback失敗時は、DBの整合性を確認できるまでDB利用機能を停止し、正常扱いにしない。
 - Commit結果不明時はVersionとSchema実態の両方を照合し、Migrationが適用済みか未適用かを確認する。Rollback失敗・Commit結果不明時は、根拠なくMigrationを再実行しない。
@@ -774,12 +788,37 @@ GenerationはState単位の正の整数で、新しい公開Snapshotほど大き
 
 - Snapshotが存在するStateにはCounterが存在する。
 - `last_generation >= MAX(generation)`。古いSnapshot削除等によりCounterが最大Generationより大きい場合は許容する。
-- Counter欠損、保存済みGenerationより小さいCounterは不整合であり、無条件に再作成・リセットしない。
+- Snapshotが存在する特定StateのCounter Row欠損、保存済みGenerationより小さいCounter等の値不整合は、そのStateのみ隔離する。Counterを無条件に再作成・リセットしない。
+- SnapshotとCounterの両方が存在しないAllowlist登録済みStateは新規Stateとして初期化可能とする。既存StateのCounter欠損を新規Stateと混同しない。
+- Counterだけが存在するStateは最終採番値を保持し、Generationの連続性を維持する。
 - SQLite INTEGER上限では安全側で採番を停止する。
 
-Counter整合性異常とSnapshot JSONのState単位Validation失敗を区別する。既存L1〜L4に従い、DB全体の破損・Schema非互換はBLOCKED、State固有JSON不正は対象State隔離とする。Counter異常をDB全体BLOCKEDとするかState単位隔離とするかの具体境界は実装前の検証・詳細設計事項とする。
+Counter整合性異常とSnapshot JSONのState単位Validation失敗を区別する。既存L1〜L4に従い、DB全体の破損・Schema非互換はBLOCKED、State固有JSON不正は対象State隔離とする。Counter Table自体の欠損は12.4のSchema不整合としてDB全体BLOCKEDとする。Counter TableのSchema破損もDB全体BLOCKEDとする。一方、特定StateのCounter Row異常はそのStateのみ隔離し、正常な他Stateへ波及させない。Counter Row整合性チェックはB-3A-1に含めず、後続のRepository実装で行う。
 
 GenerationはSnapshotの保存・公開順序であり、外部Dataの鮮度や取得結果の新旧を示さない。永続取得識別子・同値時処理・Pending P-04 / P-05の比較は23.5〜23.6に従い、Generation単独では古い結果の上書きを防げない。
+
+### 12.9 B-3A-1の実装範囲と検証条件
+
+B-3A-1はSQLite永続化基盤の実装であり、PR-B全体の完了ではない。
+
+| 区分 | 内容 |
+|---|---|
+| 対象 | 単一EX・Shell exec FD継承・多重起動防止、Provisioning CLI、BackendStoreの単一Connection、WAL / NORMAL、初期4 Table・Version 1・Schema検証、Migration Allowlist基盤、起動・Shutdown連携、DB障害分類、Unit Test・Linux Process結合テスト |
+| 対象外 | Published State API、Generation採番・Snapshot世代管理・Counter Row整合性チェックの実装、Cache TTL / Fallback、Scheduler、Quota Guard、Pending Publication、継続Recovery・Backup、Pi実機運用検証完了 |
+
+第10章のAPI・503契約やSnapshot等の既存設計は維持し、実装対象外という理由で削除・変更しない。PR-CのScheduler、PR-Eの継続Recovery・Backupの責務は維持する。
+
+実装時に以下を検証する。
+
+- 正常ProvisioningとBackend起動、既存DBの上書き拒否、同時Provisioning競合。
+- Backend多重起動拒否、稼働中のProvisioning拒否、Lock取得TimeoutとDB操作抑止。
+- 正常終了・SIGTERM・SIGKILLでの解放、Lock FDの子孫への意図しない継承防止、Connection・FD・Processの後始末。
+- DB欠損時の自動作成禁止、不完全DBの自動削除・再作成禁止。
+- Schema Version・DDL構造、Table欠損・Counter Table欠損、WAL / NORMAL、DDL・Version初期化のAtomicity。
+- Migration失敗時のRollbackと12.4の安全側処理。
+
+Linux固有Lock結合テストはMockだけで完了判定せず、実Processで行う。PoCの成功は本実装検証の代わりとしない。Raspberry Pi OS・ARM64・systemd・電源断はIssue #12・#13等の実機確認へ引き継ぐ。
+
 
 ---
 
@@ -867,7 +906,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
-- 個別Migration・OS Lock実装と保持範囲・稼働中DB保護・排他的DB作成方法、Provisioning CLI、DBの具体Path・Permission、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
+- 個別Migration・単一EXの具体ScriptとFD番号・Timeout値・起動経路の迂回防止、Provisioning CLI、DB・Lockの具体Path・Permission・Symlink対策、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
 - Cache不正時の物理削除。
 - Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH-01〜33は23.8に個別定義済み。Recovery・競合制御は未実装・未検証。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
