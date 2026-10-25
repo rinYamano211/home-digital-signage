@@ -1087,12 +1087,22 @@ type CacheReadResult<T> =
       outcome: "database_error";
       layer: "L1" | "L2" | "L3" | "L4";
       reason: string;
+    }
+  | {
+      outcome: "pending";
+      reason: "commit_result_unknown";
     };
 ```
 
-JSON Parse → Cache共通Schema・Domain Schema → Semantic Validation → 共通Cache ModuleでTTL判定、の順とする。Repository Readにexpiredを追加せず、TTL切れだけでinvalidにしない。Validator例外は通常Validation失敗と分離し、validator_error / database_errorでは証跡を発行しない。invalidの証跡はDB Row同一性の確認専用であり、Fallback利用の根拠ではない。不正Cache・期限切れCacheは公開用Fallbackに使わない。
+JSON Parse → Cache共通Schema・Domain Schema → Semantic Validation → 共通Cache ModuleでTTL判定、の順とする。Repository Readにexpiredを追加せず、TTL切れだけでinvalidにしない。Validator例外は通常Validation失敗と分離し、validator_error / database_error / pendingでは証跡を発行しない。invalidの証跡はDB Row同一性の確認専用であり、Fallback利用の根拠ではない。不正Cache・期限切れCacheは公開用Fallbackに使わない。
 
 dataUpdatedAt・expiresAtは元の値を保持し、Cache更新・FallbackによってTTLを延長しない。APIの期限Mask・Metadata保持・publishedAt更新条件は既存契約に従う。
+
+#### CacheReadEvidenceの拘束と消費
+
+CacheReadEvidenceは、Applicationが内部状態を参照・偽造できない不透明トークンとする。Repository内部でConnection識別、State Key、Read時のRow存在有無、存在時のcache_jsonの正確な文字列、消費状態、Process内での有効性を管理する。found / invalid / emptyの場合のみ発行し、同一Connection・同一Stateに拘束する。同じConnectionを共有する別のCache Repositoryインスタンスでも安全に照合できるようにし、別Connection・別Stateへの流用、偽造、消費済み証跡を拒否する。Process再起動後は復元しない。
+
+入力の共通検証・採用判断・証跡の事前検証で拒否され、保存試行を開始しない場合は、有効な証跡を消費しない。事前検証通過後、Transaction開始を試みる前に証跡を消費して保存試行を開始する。その後はTransaction開始失敗を含む成功・失敗・結果不明のいずれでも再利用せず、unchangedでも消費する。invalid由来の証跡はRow同一性だけを示し、データの正当性や新旧を保証しない。B-3Bのprevious専用ReadEvidence契約は変更しない。
 
 #### 条件付き保存とunchanged
 
@@ -1125,6 +1135,10 @@ type CacheSaveResult =
     };
 ```
 
+保存候補のDomain Schema・Semantic Validation、Domain固有の取得順序・新旧比較、Cache採用判断、Tx-P成功結果と候補の対応確認はApplicationが担当する。Repositoryは保存時にDomain Validatorや採用判断を重複実装しない。
+
+RepositoryはTransaction開始前にState Key Allowlist、JSONとしての直列化可能性、CacheEntry共通構造、schemaVersion: 1、必須Field、dataUpdatedAt・expiresAtの共通日時形式を検証する。日時は既存のUTC / ISO 8601契約に従うUTC RFC3339形式とし、独自形式を設けない。ApplicationのDomain Validatorが省略しても、Repositoryの共通構造検証は必ず行う。共通検証に合格した保存予定JSONを一度確定し、Tx-CとCommit照合で同じ文字列を再利用して再生成しない。証跡とDB状態の一致はTx-C内でも検証し、Atomicに保存する。
+
 概念Interfaceであり、具体Type名・Reasonは実装時に既存コードと整合させられるが、結果の意味上の分類を統合・削除しない。通常更新の無条件Blind Saveは設けない。
 
 保存には、正常候補、Applicationのadopt判断、有効なCacheReadEvidence、Tx-C内でRead時Rowと現在Rowが一致、同一Stateに未解決Tx-Cなし、共有Connectionの正常な利用可能性をすべて要求する。reject / unknownでは採用しない。証跡の偽造・別State / Connection流用・消費済み再利用を拒否する。証跡はDB状態一致を確認するもので、Domainの鮮度を保証しない。
@@ -1151,7 +1165,11 @@ Commit例外だけで未保存と判断せず、Transaction状態確認 → 必�
 | 一意に未保存と判定可能 | not_saved |
 | 不一致・照合不能等で判定不能 | unknownを維持し、自動再書込みしない |
 
-unknown時は同一Stateの後続Tx-Cを止め、Read-only reconcile()で再照合する。Connection自体が未解決なら全Repositoryの通常DB操作を停止する。Process Crash・外部DB変更をまたぐ操作単位の完全識別はMVPで保証しない。
+unknown時は同一Stateの後続Tx-Cに加え、通常Cache ReadもFail Closedとする。Readはpending（reason: commit_result_unknown）を返し、CacheEntry・ReadEvidenceを返さず、未確定CacheをFallbackに使わない。pendingは内容不正やDB障害そのものではなく、そのStateのTx-C保存結果が未解決であることを示す。Pending Publicationとは別の結果区分である。
+
+Read-only reconcile()は同一Stateの未解決Attemptの保存前後情報を使って照合し、保存を再実行しない。成功または未保存が確定した場合のみ通常Readを再開し、判定不能ならpendingを維持する。Connection正常時は他Stateの通常Read・Tx-Pを不必要に停止しない。Connection自体のTransaction状態が未解決なら、既存方針どおり全Repositoryの通常DB操作を停止する。
+
+Process再起動でAttempt情報が失われても、保存結果を自動的に成功・未保存と断定しない。再起動時の復旧・再評価の具体処理は後続Recovery工程とし、Process Crash・外部DB変更をまたぐ操作単位の完全識別はMVPで保証しない。
 
 Tx-P成功確定後にTx-Cへ進むが、Tx-C失敗でCommit済みPublished StateをRollbackしない。Tx-CはPublished State Generationを変更せず、Tx-P成功結果とTx-C候補の対応確認はApplication / PR-D側が所有する。Cache証跡はPublished Stateの採用条件・鮮度を保証せず、Cache由来のPublished State公開も既存の条件付き保存契約に従う。
 
@@ -1170,13 +1188,13 @@ B-3C必須Interfaceにdelete()は含めない。不正Cacheの物理削除は未
 | ID | 分類 | 条件・期待結果 |
 |---|---|---|
 | C-01 | Read・Validation | Row未存在 → empty＋証跡 |
-| C-02 | Read・Validation | 正常Cache → found＋検証済みEntry＋証跡 |
+| C-02 | Read・Validation | 正常Cache → found＋検証済みEntry＋Connection・State・Read時Row有無／正確なJSONに拘束された証跡 |
 | C-03 | Read・Validation | JSON構文不正 → invalid(json_parse) |
 | C-04 | Read・Validation | Schema不正・Version不一致 → invalid(schema) |
 | C-05 | Read・Validation | Semantic不正 → invalid(semantic) |
 | C-06 | Read・Validation | Validator例外 → validator_error、証跡なし |
 | C-07 | Read・Validation | DB Read失敗 → database_error、証跡なし |
-| C-08 | 条件付き保存・競合 | 初回保存成功 |
+| C-08 | 条件付き保存・競合 | 初回保存成功。共通構造・Version・必須Field・UTC日時・直列化可能性をTransaction前に必須検証し、Domain Validatorによる省略を許さない |
 | C-09 | 条件付き保存・競合 | 初回Read後の他処理によるRow作成を検出 |
 | C-10 | 条件付き保存・競合 | 採用条件を満たす不正Cache置換 |
 | C-11 | 条件付き保存・競合 | 不正Cacheの新旧比較不能時は保存拒否 |
@@ -1184,19 +1202,19 @@ B-3C必須Interfaceにdelete()は含めない。不正Cacheの物理削除は未
 | C-13 | 条件付き保存・競合 | 古い候補の保存拒否 |
 | C-14 | 条件付き保存・競合 | 新旧比較不能時の保存拒否 |
 | C-15 | 条件付き保存・競合 | Read後のCache Row変更を検出 |
-| C-16 | 条件付き保存・競合 | 不正・流用・消費済み証跡を拒否 |
+| C-16 | 条件付き保存・競合 | 偽造・別Connection・別State・消費済み証跡を拒否。同一Connectionの別Cache Repositoryでは照合可能。入力拒否時は未消費、保存試行開始後は結果を問わず消費 |
 | C-17 | Commit・照合 | 通常Commit成功 |
 | C-18 | Commit・照合 | 同一JSONはunchanged、証跡を消費 |
 | C-19 | Commit・照合 | Tx-C途中失敗でRollback・旧Cache維持 |
-| C-20 | Commit・照合 | Commit成功後の例外通知を照合 |
+| C-20 | Commit・照合 | Commit成功後の例外通知を、共通検証後に確定した保存予定JSONを再生成せず再利用して照合 |
 | C-21 | Commit・照合 | Commit未成立を照合 |
-| C-22 | Commit・照合 | 判定不能はunknown |
-| C-23 | Commit・照合 | reconcile()はRead-only、再書込みなし |
+| C-22 | Commit・照合 | 判定不能はunknown、通常ReadはpendingとなりEntry・証跡を返さずFallback禁止 |
+| C-23 | Commit・照合 | reconcile()はRead-onlyで再書込みなし。成功・未保存確定後のみ通常Read再開、判定不能ならpending維持 |
 | C-24 | 共有Connection・障害 | Tx-P中のTx-C重複開始を防止 |
 | C-25 | 共有Connection・障害 | Tx-C中のTx-P重複開始を防止 |
 | C-26 | 共有Connection・障害 | ValidatorからのDB再入を拒否 |
-| C-27 | 共有Connection・障害 | State単位Tx-C未解決を局所化 |
-| C-28 | 共有Connection・障害 | Connection未解決時は全Repository停止 |
+| C-27 | 共有Connection・障害 | State単位pendingを局所化し、Connection正常時は他Stateの通常Read・Tx-Pを継続 |
+| C-28 | 共有Connection・障害 | ConnectionのTransaction未解決時は全Repositoryの通常DB操作を停止・保護 |
 | C-29 | 共有Connection・障害 | State固有異常とDB全体障害を区別 |
 | C-30 | TTL・回帰 | RepositoryはTTLを判定せず、Cache Moduleで期限判定 |
 | C-31 | TTL・回帰 | Tx-C失敗でもPublished State維持 |

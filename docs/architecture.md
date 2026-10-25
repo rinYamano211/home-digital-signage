@@ -1495,13 +1495,19 @@ API Read・単なるDB復元ではpublishedAtを更新しない。表示用API�
 
 CacheEntry構造・backend_cache Tableを維持し、Cache専用Generation / Revisionは追加しない。Application / 各Backend ServiceはDomain Schema・Semanticルール、TTL設定、採用判断・新旧比較、Fallback可否、Published State再生成、Tx-P成功結果とTx-C候補の対応確認を所有する。共通Cache Moduleは共通構造・Version、期限判定、Read結果からの利用可否判断、不正と期限切れの区別を担当する。Cache Repositoryは既存単一ConnectionでRead・条件付きSave、JSON Parse・Validator実行、State Key検証、証跡管理・DB状態一致確認、Tx-C Atomic保存・Commit照合・DB障害分類を担当する。ModuleとRepositoryは概念上の責務であり、独立Class・ファイル分割を要求しない。
 
-Readはfound / invalid / empty / validator_error / database_errorを区別し、found・invalid・emptyにCacheReadEvidenceを発行する。invalidの証跡はRow同一性の確認だけに利用し、Cacheを有効化するものではない。不正・期限切れCacheを公開用Fallbackに使わず、Validator例外を通常Validation失敗と混同しない。物理削除方針は未決定で、B-3C必須Interfaceにdelete()は含めない。
+Readはfound / invalid / empty / validator_error / database_error / pendingを区別し、found・invalid・emptyにCacheReadEvidenceを発行する。invalidの証跡はRow同一性の確認だけに利用し、Cacheを有効化するものではない。不正・期限切れCacheを公開用Fallbackに使わず、Validator例外を通常Validation失敗と混同しない。物理削除方針は未決定で、B-3C必須Interfaceにdelete()は含めない。
 
 Cacheの通常保存は、Applicationのadopt判断と有効な証跡、Tx-C内でのRow有無・JSON一致を組み合わせる。初回はRead時・保存時ともRowなしを要求する。不正Cache置換も信頼できる情報で安全性を確認し、Published Stateが正常という理由だけで候補を新しいと推測しない。比較不能ならFail Closedとし、Blind Saveを通常更新経路に設けない。証跡はDomainの鮮度を保証しない。条件を確認したうえで保存予定JSONが現存JSONと完全一致すれば書込みを省略しunchangedとするが、保存実行を意味せず証跡は消費する。
 
 Tx-CはTx-P成功確定後の別Transactionとし、失敗しても公開済みStateをRollbackせず、Published StateのGenerationを変更しない。Commit例外だけで未保存とせず、Transaction解決・保存前後の識別可能性・対象Stateの別書込み排除・照合の一貫性を前提にsaved / not_saved / unknownを判定する。unknownでは同一Stateの後続Tx-Cを止め、Read-only reconcile()で照合し、自動再書込みしない。
 
 Published State / Cache RepositoryでConnection単位のbusy・connectionUnresolved・DB全体blockedを共有する。Tx-P / Tx-Cの未解決Attemptと各ReadEvidenceはRepository固有に分離する。同じConnectionでTransactionを重複させず、Validatorからの再入を拒否する。State固有異常とDB全体障害を区別し、Connection正常時のState単位Tx-C未解決を正常な他Stateへ無条件に波及させない。Connection未解決時は全Repositoryの通常操作を停止し、BackendStoreのConnection所有権を維持する。
+
+CacheReadEvidenceはApplicationから内部を参照・偽造できないProcess内限定の不透明トークンとする。Connection・State・Read時Row有無・正確なcache_json・消費状態・有効性を内部管理し、同一Connectionの別Cache Repositoryでも照合可能とする。別Connection・別State・偽造・消費済みを拒否し、再起動後は復元しない。入力検証で保存試行前に拒否した場合は有効証跡を消費せず、事前検証通過後、Transaction開始を試みる前に消費する。その後は開始失敗・成功・失敗・結果不明・unchangedを問わず再利用しない。
+
+保存時のDomain Validation・新旧比較・採用判断・Tx-P成功結果との対応はApplicationが所有する。RepositoryはTransaction前にAllowlist、JSON直列化可能性、CacheEntry共通構造・Version・必須Field・既存UTC RFC3339日時を必須検証する。Domain Validatorが省略しても共通検証は省略せず、検証済み保存予定JSONを確定し、Tx-Cと照合で再生成せず再利用する。
+
+Tx-C unknownでは対象Stateの通常Readもpending（commit_result_unknown）として保留し、Entry・証跡を返さずFallbackに使用しない。pendingはCache不正・DB障害・Pending Publicationと区別する。Read-only reconcile()は未解決Attemptの保存前後情報で照合し、成功・未保存確定時のみ通常Readを再開する。判定不能なら保留を維持する。Connection正常時は他StateのRead・Tx-Pを継続できるが、ConnectionのTransaction未解決時は全Repositoryを保護する。再起動でAttemptを失っても成功・未保存と断定せず、復旧・再評価の具体処理は後続Recoveryで扱う。
 
 具体Interface・照合・C-01〜C-32は[技術スタック選定 12.11](technology-stack.md#1211-b-3c-backend-cache-repository設計)に従う。B-3Cは設計レビュー完了・実装未着手であり、Scheduler・全Transactionオーケストレーション・Pending対応・Cacheからの再公開・継続Recovery・Backup・実機検証は後続工程へ引き継ぐ。
 

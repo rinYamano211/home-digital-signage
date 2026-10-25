@@ -2818,3 +2818,12 @@ Commit成功後に例外が通知される場合を考えると、無条件Retry
 ### ValidationとTTLを分離する
 
 構造・意味が正常であることと、時間的に利用可能なことは別である。RepositoryはParse・Schema・Semanticの結果を返し、共通Cache Moduleが期限を評価する。期限切れをinvalidと混同せず、不正・期限切れを公開用Fallbackに使わない。Cache更新やFallbackで元のdataUpdatedAt・expiresAtを延長しない。これらは設計上の判断であり、B-3C実装・テストの成功記録ではない。
+
+
+### B-3C設計レビュー：証跡・Validation・結果不明時のRead
+
+- Cacheの証跡はConnection・State・Rowの同一性を示す不透明トークンであり、Domainデータの鮮度や正当性を保証しない。入力拒否と保存試行開始を区別し、試行開始後は結果にかかわらず使い捨てる。
+- Repositoryの共通構造・Version・日時・直列化検証と、ApplicationのDomain Validation・採用判断は別責務である。共通検証済みJSONを一度確定し、保存とCommit照合で再利用する。
+- Commit結果不明のCacheをReadできると未確定データがFallbackへ混入するため、対象StateのReadもpendingとして保留する。Read-only照合で保存済み・未保存が確定してから再開する。
+- State単位の保留とConnection全体のTransaction未解決を区別し、正常な別Stateへの不要な波及を防ぐ。再起動をまたぐ復旧は後続工程とする。
+- 今回は設計修正のみ。C-01〜C-32は未検証で、B-3Cの実装・テストは未着手。
