@@ -164,3 +164,13 @@ test.each([
 test("unclassified/OS fatal error does not silently continue", () => {
   expect(() => classifyDatabaseError({ code: "EIO" })).toThrow("L4");
 });
+
+test("migration definition failure is BLOCKED after rollback", () => {
+  const db = database();
+  const entry = fixture(db);
+  entry.apply = () => {
+    throw new TypeError("invalid definition");
+  };
+  expect(() => migrate(db, [entry], 102)).toThrow(SchemaError);
+  entry.validateBefore(db);
+});

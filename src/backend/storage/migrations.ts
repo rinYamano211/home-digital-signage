@@ -16,6 +16,25 @@ export function migrate(
   allowed: readonly Migration[] = MIGRATIONS,
   target = 1,
 ) {
+  try {
+    applyMigrations(db, allowed, target);
+  } catch (error) {
+    // Definition/validator failures require manual review, not an OS-fatal exit.
+    // Keep SQLite result codes so temporary and storage failures retain their layer.
+    if (
+      error instanceof SchemaError ||
+      (typeof (error as { code?: unknown })?.code === "string" &&
+        (error as { code: string }).code.startsWith("SQLITE_"))
+    )
+      throw error;
+    throw new SchemaError();
+  }
+}
+function applyMigrations(
+  db: Database.Database,
+  allowed: readonly Migration[],
+  target: number,
+) {
   const seen = new Set<number>();
   while (db.pragma("user_version", { simple: true }) !== target) {
     const version = Number(db.pragma("user_version", { simple: true }));
