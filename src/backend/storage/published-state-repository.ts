@@ -297,7 +297,7 @@ export class PublishedStateRepository {
         this.db.exec("COMMIT");
         if (!this.transactionResolved()) return this.unresolvedRead();
       } catch (error) {
-        if (!this.rollback()) return this.unresolvedRead();
+        if (!this.finishFailedReadTransaction()) return this.unresolvedRead();
         return this.readFailure(failure(error));
       }
       const [latest, previous] = image.snapshots;
@@ -360,6 +360,26 @@ export class PublishedStateRepository {
       };
     } finally {
       this.coordination.busy = false;
+    }
+  }
+  private finishFailedReadTransaction(): boolean {
+    try {
+      const active = this.db.inTransaction;
+      if (active === false) return true; // COMMIT may have completed before throwing.
+      if (active !== true) return false;
+    } catch {
+      return false;
+    } // Never guess or issue ROLLBACK on an unknown status.
+    try {
+      this.db.exec("ROLLBACK");
+    } catch {
+      // ROLLBACK itself may have completed before its exception notification.
+      // Only an observable final state can resolve this read-only Transaction.
+    }
+    try {
+      return this.transactionResolved();
+    } catch {
+      return false;
     }
   }
   private unresolvedRead(): ReadResult<never> {

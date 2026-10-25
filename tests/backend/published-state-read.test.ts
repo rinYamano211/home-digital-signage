@@ -668,41 +668,67 @@ test("temporary SQL error aborts Read without evidence and can be re-read explic
   expect(repo.read("schedule", validator).outcome).toBe("previous");
 });
 test.each([false, true])(
-  "Read COMMIT exception after=%s issues no evidence",
+  "R-01/R-02/R-03/R-07 Read COMMIT exception after=%s verifies final state and Rollback necessity",
   (after) => {
-    const { db, repo } = fixture();
+    const { db, repo, logger } = fixture();
     seed(db);
+    const before = image(db);
     commitFault(db, after);
-    expect(repo.read("schedule", validator)).toMatchObject({
+    const exec = vi.spyOn(db, "exec");
+    const result = repo.read("schedule", validator);
+    expect(result).toEqual({
       outcome: "database_error",
       layer: "L1",
+      reason: "temporary_sql",
     });
+    expect(result).not.toHaveProperty("evidence");
+    expect(exec.mock.calls.filter(([sql]) => sql === "ROLLBACK")).toHaveLength(
+      after ? 0 : 1,
+    );
     expect(db.inTransaction).toBe(false);
-    expect(repo.read("schedule", validator).outcome).toBe("previous");
+    expect(image(db)).toEqual(before);
+    expect(
+      new PublishedStateRepository(db, logger).read("schedule", validator)
+        .outcome,
+    ).toBe("previous");
+    expect(repo.save("currentWeather", json(4))).toMatchObject({
+      outcome: "saved",
+    });
   },
 );
-test("Read Rollback failure halts all operations on the unresolved Connection", () => {
-  const { db, repo } = fixture();
+
+test("R-04/R-07/R-08 Read Rollback failure keeps an active Transaction and stops the shared Connection", () => {
+  const { db, repo, logger } = fixture();
   seed(db);
+  const before = image(db);
   const exec = db.exec.bind(db);
-  vi.spyOn(db, "exec").mockImplementation((sql) => {
+  const spy = vi.spyOn(db, "exec").mockImplementation((sql) => {
     if (sql === "COMMIT" || sql === "ROLLBACK") throw sqlFailure();
     return exec(sql);
   });
-  expect(repo.read("schedule", validator)).toEqual({
+  const result = repo.read("schedule", validator);
+  expect(result).toEqual({
     outcome: "database_error",
     layer: "L4",
     reason: "transaction_unresolved",
   });
-  expect(repo.read("currentWeather", validator)).toMatchObject({
+  expect(result).not.toHaveProperty("evidence");
+  expect(db.inTransaction).toBe(true);
+  expect(image(db)).toEqual(before);
+  const other = new PublishedStateRepository(db, logger);
+  spy.mockClear();
+  expect(other.read("currentWeather", validator)).toMatchObject({
     outcome: "database_error",
     layer: "L4",
+    reason: "transaction_unresolved",
   });
-  expect(repo.save("currentWeather", json(1))).toMatchObject({
+  expect(other.save("currentWeather", json(4))).toMatchObject({
     outcome: "unknown",
-    scope: "database",
+    reason: "transaction_unresolved",
   });
+  expect(spy).not.toHaveBeenCalled();
 });
+
 test("conditional Rollback failure preserves B-3B-1 shared Connection stop", () => {
   const { db, repo } = fixture();
   seed(db);
@@ -888,4 +914,130 @@ test("Validator-controlled failure reasons are not copied into logs", () => {
     latestInvalid: { reason: "sensitive reason" },
   });
   expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("sensitive");
+});
+
+test("R-06/R-07 Rollback succeeds then throws: Read checks final state without disabling Connection", () => {
+  const { db, repo, logger } = fixture();
+  seed(db);
+  const before = image(db);
+  const exec = db.exec.bind(db);
+  let failed = false;
+  const spy = vi.spyOn(db, "exec").mockImplementation((sql) => {
+    if (sql === "COMMIT" && !failed) {
+      failed = true;
+      expect(db.inTransaction).toBe(true);
+      throw sqlFailure();
+    }
+    const result = exec(sql);
+    if (sql === "ROLLBACK") {
+      expect(db.inTransaction).toBe(false);
+      throw new Error("Rollback result notification failed");
+    }
+    return result;
+  });
+  const result = repo.read("schedule", validator);
+  expect(result).toEqual({
+    outcome: "database_error",
+    layer: "L1",
+    reason: "temporary_sql",
+  });
+  expect(result).not.toHaveProperty("evidence");
+  expect(db.inTransaction).toBe(false);
+  expect(image(db)).toEqual(before);
+  expect(spy.mock.calls.filter(([sql]) => sql === "ROLLBACK")).toHaveLength(1);
+  expect(
+    new PublishedStateRepository(db, logger).read("schedule", validator)
+      .outcome,
+  ).toBe("previous");
+  expect(repo.save("currentWeather", json(4))).toMatchObject({
+    outcome: "saved",
+  });
+});
+test.each([false, true])(
+  "R-05/R-07/R-08 unreadable Transaction status after COMMIT after=%s blocks other Repository",
+  (after) => {
+    const { db, logger } = fixture();
+    seed(db);
+    const before = image(db);
+    const exec = db.exec.bind(db);
+    let unknown = false;
+    const uncertain = new Proxy(db, {
+      get(target, property) {
+        if (property === "inTransaction" && unknown)
+          throw new Error("Cannot observe Transaction");
+        if (property === "exec")
+          return (sql: string) => {
+            if (sql === "COMMIT") {
+              if (after) exec(sql);
+              unknown = true;
+              throw sqlFailure();
+            }
+            return exec(sql);
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const repo = new PublishedStateRepository(uncertain, logger);
+    const result = repo.read("schedule", validator);
+    expect(result).toEqual({
+      outcome: "database_error",
+      layer: "L4",
+      reason: "transaction_unresolved",
+    });
+    expect(result).not.toHaveProperty("evidence");
+    expect(db.inTransaction).toBe(!after);
+    expect(image(db)).toEqual(before);
+    // Recover the observable flag only: the unresolved latch must remain closed.
+    unknown = false;
+    const other = new PublishedStateRepository(uncertain, logger);
+    const prepare = vi.spyOn(db, "prepare");
+    const spy = vi.spyOn(db, "exec");
+    expect(other.read("currentWeather", validator)).toMatchObject({
+      outcome: "database_error",
+      reason: "transaction_unresolved",
+    });
+    expect(other.save("currentWeather", json(4))).toMatchObject({
+      outcome: "unknown",
+      reason: "transaction_unresolved",
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(spy).not.toHaveBeenCalled();
+  },
+);
+test("R-04/R-07 Rollback returning without ending Transaction remains unresolved", () => {
+  const { db, repo } = fixture();
+  seed(db);
+  const before = image(db);
+  const exec = db.exec.bind(db);
+  vi.spyOn(db, "exec").mockImplementation((sql) => {
+    if (sql === "COMMIT") throw sqlFailure();
+    if (sql === "ROLLBACK") return db;
+    return exec(sql);
+  });
+  const result = repo.read("schedule", validator);
+  expect(result).toEqual({
+    outcome: "database_error",
+    layer: "L4",
+    reason: "transaction_unresolved",
+  });
+  expect(result).not.toHaveProperty("evidence");
+  expect(db.inTransaction).toBe(true);
+  expect(image(db)).toEqual(before);
+});
+test("B-3B-1 save retains its conservative Rollback exception contract", () => {
+  const { db, repo } = fixture();
+  seed(db);
+  const exec = db.exec.bind(db);
+  vi.spyOn(db, "exec").mockImplementation((sql) => {
+    if (sql === "COMMIT") throw sqlFailure();
+    const result = exec(sql);
+    if (sql === "ROLLBACK") throw sqlFailure();
+    return result;
+  });
+  expect(repo.save("currentWeather", json(4))).toMatchObject({
+    outcome: "unknown",
+    reason: "transaction_unresolved",
+  });
+  expect(db.inTransaction).toBe(false);
 });
