@@ -910,7 +910,6 @@ type ReadResult<T> =
       outcome: "latest";
       generation: number;
       snapshot: T;
-      evidence: ReadEvidence;
     }
   | {
       outcome: "previous";
@@ -929,12 +928,17 @@ type ReadResult<T> =
       outcome: "database_error";
       reason: string;
       layer: "L1" | "L2" | "L3" | "L4";
+    }
+  | {
+      outcome: "validator_error";
+      stage: "schema" | "semantic";
+      reason: string;
     };
 ```
 
-RepositoryはJSON Parse → schema() → semantic()の順で実行し、失敗段階を区別する。Validatorは同期・副作用なし・DB再入なしとし、Domain固有ルールはApplicationが所有する。Validator自体の予期しない例外は通常のValidation失敗と混同せず、その例外だけで無条件Fallback・State隔離しない。Validator例外の具体的な通知形式は未決定であり、通常のSnapshot Validation失敗と区別する通知契約を実装前に整理する。
+RepositoryはJSON Parse → schema() → semantic()の順で実行し、失敗段階を区別する。Validatorは同期・副作用なし・DB再入なしとし、Domain固有ルールはApplicationが所有する。schema()またはsemantic()の予期しない例外は、該当stage（schema / semantic）とreasonを持つvalidator_errorとして返す。valid: falseによる通常の検証失敗やdatabase_errorとは区別する。Validator例外だけで直前SnapshotへFallback・State隔離せず、ReadEvidenceも発行しない。例外詳細はログで調査可能にするが、機密情報やSnapshot全文を無条件に出力しない。
 
-latest / previousの正常ReadだけでReadEvidenceを発行する。emptyはSnapshotとCounterが両方ないAllowlist登録済みのnewと、Counterのみ存在するcounter_onlyを区別する。Counter不整合ではFallbackしない。正常な最新はTTL切れだけでpreviousにせず、TTL判定・期限Mask・API生成はApplicationに維持する。隔離専用Tableを追加せず、再Read時に整合性を再確認し、時間経過だけで隔離を解除しない。Read・復元でGeneration・Metadataを書き換えず、不正Snapshotを自動削除・修復しない。
+ReadEvidenceは、最新Snapshotが通常のValidation失敗で不正・直前Snapshotが正常なpreviousのRead時だけ発行する。latest・empty・isolated・database_error・validator_errorでは発行しない。emptyはSnapshotとCounterが両方ないAllowlist登録済みのnewと、Counterのみ存在するcounter_onlyを区別する。Counter不整合ではFallbackしない。正常な最新はTTL切れだけでpreviousにせず、TTL判定・期限Mask・API生成はApplicationに維持する。隔離専用Tableを追加せず、再Read時に整合性を再確認し、時間経過だけで隔離を解除しない。Read・復元でGeneration・Metadataを書き換えず、不正Snapshotを自動削除・修復しない。
 
 #### ReadEvidenceの意味と有効範囲
 
@@ -951,12 +955,12 @@ interface EvidenceRecord {
   connection: Database.Database;
   stateKey: StateKey;
   image: StateImage;
-  source: "latest" | "previous";
+  source: "previous";
   consumed: boolean;
 }
 ```
 
-Repositoryが発行し、呼出し側の任意生成・改変は拒否する。TypeScriptのBrandだけに依存せず、WeakMap等の内部管理で実行時の正当性を検証し、既存Connection共有Coordinationと整合させる。同一Process・同一Connection・同一Stateでのみ有効とする。imageにはCounter Rowの有無・値、Snapshot件数・各Generation・保存済みJSON文字列を対応付ける。
+Repositoryがpreviousの正常Readで発行し、呼出し側の任意生成・改変は拒否する。内部記録に発行元sourceを保持し、previous由来であることを実行時にも検証する。TypeScriptのBrandだけに依存せず、WeakMap等の内部管理で実行時の正当性を検証し、既存Connection共有Coordinationと整合させる。同一Process・同一Connection・同一Stateでのみ有効とする。imageにはCounter Rowの有無・値、Snapshot件数・各Generation・保存済みJSON文字列を対応付ける。
 
 証跡は原則1回使用とし、Tx-P保存試行で消費する。保存成功・Rollback・DB状態不一致・Commit結果不明の後は再利用不可とする。Connection終了・Process再起動後は無効で、永続化しない。時間経過だけを失効条件にせず、DB変更はTx-P内の再照合で拒否する。
 
@@ -978,14 +982,14 @@ interface ConditionalSaveRequest {
 }
 ```
 
-概念的なRepositoryメソッドは`saveConditionally(request: ConditionalSaveRequest): SaveResult`とする。Applicationが候補Validationと既存Domain採用条件による新旧判定を行い、newerだけを保存候補とする。not_newer・unknownは保存しない。Repositoryは新旧判定の正しさ自体を保証しない。
+概念的なRepositoryメソッドは`saveConditionally(request: ConditionalSaveRequest): SaveResult`とし、previous由来の有効な証跡のみを受け付ける。Applicationが候補Validationと既存Domain採用条件による新旧判定を行い、newerだけを保存候補とする。not_newer・unknownは保存しない。Repositoryは新旧判定の正しさ自体を保証しない。
 
 最新不正Snapshotから必要情報を信頼できる形で比較できなければ保存せず、正常な直前より新しいというだけで最新不正Snapshotより新しいと推測しない。Generation・publishedAtだけを根拠にせず、Fallback中は既存7条件をすべて要求する。
 
 条件付きTx-Pは以下の順序とする。
 
 1. Applicationが候補Validation・新旧比較を完了する。
-2. Repositoryが証跡・State・Connection・未解決操作を確認する。
+2. Repositoryが証跡の正当性・previous由来・State・Connection・未解決操作を確認する。
 3. BEGIN IMMEDIATEを実行する。
 4. Schemaを確認する。
 5. Counter・Snapshotを再読出しする。
@@ -1001,7 +1005,7 @@ interface ConditionalSaveRequest {
 
 #### 既存save()との互換性と制約
 
-既存`save(stateKey, snapshotJson)`・`reconcile()`の契約とB-3B-1テスト・挙動を維持し、条件付き保存は専用経路として追加する。Fallback中のApplication経路ではsaveConditionally()を使う。通常save()を直接呼び出してFallback条件を迂回できる可能性は既知のInterface制約であり、Repository単体で完全防止を保証しない。Application統合時に保存呼出しを一元化し、迂回がないことを検証する。
+既存`save(stateKey, snapshotJson)`・`reconcile()`の契約とB-3B-1テスト・挙動を維持し、条件付き保存は専用経路として追加する。Fallback中のApplication経路ではprevious由来の証跡でsaveConditionally()を使う。通常の最新Snapshot更新は既存save()とApplication側採用条件に従い、B-3B-2では通常更新全体へ楽観的競合制御を導入しない。将来の拡張は否定しないが、今回の完成条件に含めない。通常save()を直接呼び出してFallback条件を迂回できる可能性は既知のInterface制約であり、Repository単体で完全防止を保証しない。Application統合時に保存呼出しを一元化し、迂回がないことを検証する。
 
 #### B-3B-2 Interfaceのテスト受入条件
 
@@ -1010,21 +1014,21 @@ interface ConditionalSaveRequest {
 | ID | テスト観点 |
 |---|---|
 | I-01 | JSON Parse・Schema・Semanticの順序と失敗分類 |
-| I-02 | Validator例外をSnapshot不正と混同しない |
-| I-03 | 最新正常・TTL切れでも最新候補を返す |
-| I-04 | 最新不正・直前正常でFallback |
+| I-02 | schema / semanticの予期しない例外はvalidator_error。通常Validation失敗・DB障害と区別し、Fallback・隔離・証跡発行を行わない |
+| I-03 | 最新正常・TTL切れでもlatestを返し、ReadEvidenceは発行しない |
+| I-04 | 最新が通常Validationで不正・直前正常の場合のみpreviousへFallbackし、ReadEvidenceを発行 |
 | I-05 | 両世代不正でState隔離 |
 | I-06 | Counter不整合でFallback禁止 |
 | I-07 | Read時に一貫したDB状態を取得 |
-| I-08 | 偽造証跡・別Stateへの流用を拒否 |
-| I-09 | 別Connection・使用済み証跡を拒否 |
+| I-08 | 偽造証跡・別Stateへの流用・previous以外に由来する証跡を拒否 |
+| I-09 | 別Connection・消費済み証跡を拒否 |
 | I-10 | Read後のCounter・Snapshot変更を検出 |
 | I-11 | 新旧比較不能なら保存禁止 |
-| I-12 | 7条件成立時の条件付き保存 |
+| I-12 | previous由来の有効な証跡とFallback保存7条件を満たす場合のみ条件付き保存を許可 |
 | I-13 | Commit結果不明の既存照合契約維持 |
 | I-14 | 正常な別Stateへの障害非波及 |
 | I-15 | 最大2世代保持による直前Snapshot削除 |
-| I-16 | 既存save()・reconcile()との互換性 |
+| I-16 | 通常save()・reconcile()の既存契約を維持し、通常更新全体を証跡必須へ変更しない |
 
 #### 実装PR分割とテスト受入条件
 
