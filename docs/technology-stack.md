@@ -696,11 +696,11 @@ DBはRelease Directory外に配置し、`/var/lib/home-digital-signage/signage.d
 
 **単一専用LockファイルのLinux flock排他Lock（EX）＋SQLite Transaction**を正式採用する。Backendは起動から終了までEXを保持し、同じLockで多重起動も防ぐ。ProvisioningはDB作成・初期化中、MigrationはBackend起動時のEX保持中に実行する。共有Lock（SH）、EX→SH変換、別のInstance Lockは使用しない。旧共有／排他方式を置き換える決定であり、PoCの履歴は[検証記録](poc/linux-flock-validation.md)に残す。
 
-ShellでファイルをOpen → `flock -x`で有界Timeout付き取得 → execで同じFDをNode.jsへ継承し、Node.jsが稼働中保持する。FD番号や具体Script・Timeout値は実装時に具体化する。Lock取得失敗はDB Open前に起動中止し、LockなしでDEGRADED起動しない。Lock競合・操作失敗はSQLite障害と区別し、機密を含まない構造化ログへ記録する。
+ShellでファイルをOpen → `flock -x`で有界Timeout付き取得 → execで同じFDをNode.jsへ継承し、Node.jsが稼働中保持する。FD番号や具体Script・Timeout値は実装時に具体化する。Lock取得失敗はDB Open前に起動中止し、LockなしでDEGRADED起動しない。Lock競合・操作失敗はSQLite障害と区別する。Node.js Logger生成前に失敗し得るため、Shell側では失敗種別ごとの定義済み終了コードと機密を含まないstderrを基本とし、systemd等が収集する。Pino初期化前のPino出力を必須としない。
 
 Lockファイルは安全な管理Directoryに配置し、稼働中に削除・置換しない。ファイルの存在だけで保持判定しない。systemd・手動・Provisioningを含む全起動経路で同一Lockを必須とし、迂回する直接起動を許可しない。子・孫への不用意なFD継承を防ぎ、正常終了・SIGTERM・SIGKILL後に別ProcessのFD保持が残らないようにする。FD所有と終了順序はArchitecture 16.8に従う。
 
-OS Lockはadvisoryであり、協調しないProcessのDB操作まで防止しない。DBファイルの排他的作成とは別の保証である。Path・Directory・Permission・Symlink対策、Lock付き起動経路の具体Script、CLI名・配置、Timeout値、構造化ログの具体形式は実装前に具体化・検証する。既存DB・Secret等のPathやPermissionを今回新たに固定しない。
+OS Lockはadvisoryであり、協調しないProcessのDB操作まで防止しない。DBファイルの排他的作成とは別の保証である。Path・Directory・Permission・Symlink対策、Lock付き起動経路の具体Script、CLI名・配置、Timeout値、Shell側終了コードの具体値・stderr形式は実装前に定義・検証する。既存DB・Secret等のPathやPermissionを今回新たに固定しない。
 
 Provisioningは次の順序とする。
 
@@ -788,10 +788,12 @@ GenerationはState単位の正の整数で、新しい公開Snapshotほど大き
 
 - Snapshotが存在するStateにはCounterが存在する。
 - `last_generation >= MAX(generation)`。古いSnapshot削除等によりCounterが最大Generationより大きい場合は許容する。
-- Counter欠損、保存済みGenerationより小さいCounterは不整合であり、無条件に再作成・リセットしない。
+- Snapshotが存在する特定StateのCounter Row欠損、保存済みGenerationより小さいCounter等の値不整合は、そのStateのみ隔離する。Counterを無条件に再作成・リセットしない。
+- SnapshotとCounterの両方が存在しないAllowlist登録済みStateは新規Stateとして初期化可能とする。既存StateのCounter欠損を新規Stateと混同しない。
+- Counterだけが存在するStateは最終採番値を保持し、Generationの連続性を維持する。
 - SQLite INTEGER上限では安全側で採番を停止する。
 
-Counter整合性異常とSnapshot JSONのState単位Validation失敗を区別する。既存L1〜L4に従い、DB全体の破損・Schema非互換はBLOCKED、State固有JSON不正は対象State隔離とする。Counter Table自体の欠損は12.4のSchema不整合としてDB全体BLOCKEDとする。Counter Row欠損・値不整合におけるDB全体BLOCKEDとState単位隔離の具体境界は実装前の検証・詳細設計事項とし、無条件リセット等は行わない。
+Counter整合性異常とSnapshot JSONのState単位Validation失敗を区別する。既存L1〜L4に従い、DB全体の破損・Schema非互換はBLOCKED、State固有JSON不正は対象State隔離とする。Counter Table自体の欠損は12.4のSchema不整合としてDB全体BLOCKEDとする。Counter TableのSchema破損もDB全体BLOCKEDとする。一方、特定StateのCounter Row異常はそのStateのみ隔離し、正常な他Stateへ波及させない。Counter Row整合性チェックはB-3A-1に含めず、後続のRepository実装で行う。
 
 GenerationはSnapshotの保存・公開順序であり、外部Dataの鮮度や取得結果の新旧を示さない。永続取得識別子・同値時処理・Pending P-04 / P-05の比較は23.5〜23.6に従い、Generation単独では古い結果の上書きを防げない。
 
@@ -802,7 +804,7 @@ B-3A-1はSQLite永続化基盤の実装であり、PR-B全体の完了ではな�
 | 区分 | 内容 |
 |---|---|
 | 対象 | 単一EX・Shell exec FD継承・多重起動防止、Provisioning CLI、BackendStoreの単一Connection、WAL / NORMAL、初期4 Table・Version 1・Schema検証、Migration Allowlist基盤、起動・Shutdown連携、DB障害分類、Unit Test・Linux Process結合テスト |
-| 対象外 | Published State API、Generation採番・Snapshot世代管理の実装、Cache TTL / Fallback、Scheduler、Quota Guard、Pending Publication、継続Recovery・Backup、Pi実機運用検証完了 |
+| 対象外 | Published State API、Generation採番・Snapshot世代管理・Counter Row整合性チェックの実装、Cache TTL / Fallback、Scheduler、Quota Guard、Pending Publication、継続Recovery・Backup、Pi実機運用検証完了 |
 
 第10章のAPI・503契約やSnapshot等の既存設計は維持し、実装対象外という理由で削除・変更しない。PR-CのScheduler、PR-Eの継続Recovery・Backupの責務は維持する。
 

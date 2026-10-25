@@ -1550,14 +1550,13 @@ Shellが専用ファイルをFDで開き、EX取得成功後にexecでNode.jsへ
 #### 起動順序
 
 1. Shellが安全な管理Directoryの専用LockファイルをOpenする。
-2. 有界TimeoutでEXを取得する。競合・操作失敗ならDBを開かず起動中止し、機密情報を含まない構造化ログへ原因を記録する。
+2. 有界TimeoutでEXを取得する。競合・操作失敗ならDBを開かず起動中止する。Shellは失敗種別に対応する定義済み終了コードと機密情報を含まないstderrを使用し、systemd等が収集できるようにする。Node.jsのPino Logger生成前にPino出力を必須としない。
 3. ShellのexecでNode.jsへ同じLock FDを継承する。
 4. Node.jsでConfig・必要なSecretを既存PR-Aの検証契約に従って検証し、Loggerを生成する。
-5. Fastify構築・必要なLifecycle Hookを登録する。
+5. Fastify構築・必要なLifecycle Hookを登録し、SQLite Connection取得・初期化とListenより前に既存の`installShutdown()`でSIGTERM / SIGINTのHandlerを登録する。
 6. 既存SQLite DBを`fileMustExist: true`でOpenし、WAL / NORMAL等の設定・Version・DDL構造を検証する。必要なAllowlist MigrationだけをEX保持中に実行する。
 7. DB正常時はBackendStoreを利用可能にし、必要なPublished Stateを検証・復元する。
 8. Published State API Route登録後、Fastify Listenを行う。
-9. 既存のShutdown Signal Handlerを登録する。
 
 Config・Secret検証とShellの具体配置は実装時に整合させる。ここでは既存Node.js側の検証を継続するためEX取得後に配置し、Lock取得前にDBを開かないことを必須とする。Config・Secret不正等で起動中止する場合も、取得済みFDを残存させない。Secretの供給・検証の既存契約を変更したり、新たなCredential必須条件を追加したりしない。
 
@@ -1565,7 +1564,9 @@ RouteはDB正常・異常のどちらでもListen前に登録する。安全にH
 
 #### 終了と所有権の引継ぎ
 
-PR-Aの`installShutdown()`と`app.close()`を継続利用し、SQLite専用のSIGINT / SIGTERM Handlerは追加しない。Fastifyの`onClose`からStoreをCloseし、二重Closeにも安全にする。Connection取得後、Lifecycle Hookへの所有権引継ぎ前に起動失敗した場合もConnectionを確実にCloseする。PR-Aの10秒Shutdown Timeoutと終了コードの契約は維持する。
+PR-Aの`installShutdown()`と`app.close()`を継続利用し、SQLite専用のSIGINT / SIGTERM Handlerは追加しない。Fastifyの`onClose`からStoreをCloseし、二重Closeにも安全にする。起動途中の終了要求も同じHandlerで扱い、終了開始を起動処理と共有する。終了要求後はDB取得・初期化の継続や新しいRoute登録・Listenへ進まない。進行中の初期化とCloseを調整し、終了後にConnectionが新たに生成・取り残されないようにする。
+
+Store所有権のLifecycle Hookへの引継ぎ前は起動処理が取得済みConnectionのCloseを担い、引継ぎ後は`app.close()`から`onClose`へ一元化する。引継ぎと終了要求が競合してもClose漏れ・二重Closeによる不正を生じさせず、起動失敗時にも同じ責務で後始末する。Handler登録前のConfig検証失敗等で終了する場合もDBは未Openとし、継承Lock FDを他Processに残さずProcess終了時に解放する。PR-Aの10秒Shutdown Timeoutと終了コードの契約は維持する。
 
 終了順序はHTTP受付停止 → SQLite Connection Close → Node.js Process終了 → 最終Lock FD CloseによるEX解放とする。正常終了・SIGTERMは既存Shutdown経路に従う。SIGKILLはHookを実行できないためOSのFD Closeにより解放され、別ProcessがFDを保持して残らない構成を要求する。起動途中の失敗もConnectionとFDを後始末する。
 
