@@ -10,6 +10,7 @@ import {
   type CacheReadResult,
   type CacheConditionalSaveRequest,
 } from "../../src/backend/storage/backend-cache-repository.js";
+import { connectionCoordination } from "../../src/backend/storage/connection-coordination.js";
 import { evaluateCacheRead } from "../../src/backend/storage/cache-entry.js";
 import {
   PublishedStateRepository,
@@ -960,3 +961,275 @@ test("Cache Rollback completes then throws; final-state proof permits confirmed 
   expect(db.inTransaction).toBe(false);
   expect(cache.read("schedule", validator).outcome).toBe("empty");
 });
+
+test("R35-01/R35-02 successful COMMIT then unreadable Transaction status preserves Attempt and stops all Repositories", () => {
+  const { db, logger } = fixture();
+  seed(db);
+  let armed = false;
+  let unavailable = false;
+  const exec = db.exec.bind(db);
+  const observed = new Proxy(db, {
+    get(target, property) {
+      if (property === "inTransaction" && unavailable)
+        throw new Error("status unavailable");
+      if (property === "exec")
+        return (sql: string) => {
+          const value = exec(sql);
+          if (sql === "COMMIT" && armed) unavailable = true;
+          return value;
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const cache = new BackendCacheRepository(observed, logger);
+  const published = new PublishedStateRepository(observed, logger);
+  const evidence = token(cache.read("schedule", validator));
+  const otherEvidence = token(cache.read("currentWeather", validator));
+  armed = true;
+  expect(cache.saveConditionally(request(evidence, 2))).toEqual({
+    outcome: "unknown",
+    scope: "database",
+    reason: "transaction_unresolved",
+  });
+  expect(db.inTransaction).toBe(false);
+  expect(row(db)).toEqual({ cache_json: JSON.stringify(entry(2)) });
+  // Test-only inspection of an internal map; no production Recovery/reset interface.
+  const pending = (
+    cache as unknown as {
+      pending: Map<
+        StateKey,
+        { before: { exists: boolean; json: unknown }; planned: string }
+      >;
+    }
+  ).pending;
+  expect(pending.get("schedule")).toMatchObject({
+    before: { exists: true, json: JSON.stringify(entry()) },
+    planned: JSON.stringify(entry(2)),
+  });
+  expect(connectionCoordination(observed).connectionUnresolved).toBe(true);
+  // Even if observation becomes possible again, no automatic recovery is allowed.
+  unavailable = false;
+  armed = false;
+  const prepare = vi.spyOn(db, "prepare");
+  const execSpy = vi.spyOn(db, "exec");
+  const same = new BackendCacheRepository(observed, logger);
+  expect(same.read("schedule", validator)).toMatchObject({
+    outcome: "database_error",
+    layer: "L4",
+    reason: "transaction_unresolved",
+  });
+  expect(
+    same.saveConditionally(request(otherEvidence, 2, "currentWeather")),
+  ).toMatchObject({ outcome: "unknown", reason: "transaction_unresolved" });
+  expect(same.reconcile("schedule")).toMatchObject({
+    outcome: "unknown",
+    reason: "transaction_unresolved",
+  });
+  expect(published.read("schedule", validator)).toMatchObject({
+    outcome: "database_error",
+    layer: "L4",
+  });
+  expect(published.save("schedule", "{}")).toMatchObject({
+    outcome: "unknown",
+    reason: "transaction_unresolved",
+  });
+  expect(published.reconcile("schedule")).toMatchObject({
+    outcome: "unknown",
+    reason: "transaction_unresolved",
+  });
+  expect(prepare).not.toHaveBeenCalled();
+  expect(execSpy).not.toHaveBeenCalled();
+  expect(pending.has("schedule")).toBe(true);
+});
+test("R35-01 transient post-COMMIT observation failure requires explicit Row proof within existing reconciliation", () => {
+  const { db, logger } = fixture();
+  seed(db);
+  let armed = false;
+  let failures = 0;
+  const exec = db.exec.bind(db);
+  const observed = new Proxy(db, {
+    get(target, property) {
+      if (property === "inTransaction" && failures > 0) {
+        failures--;
+        throw new Error("one observation failed");
+      }
+      if (property === "exec")
+        return (sql: string) => {
+          const value = exec(sql);
+          if (sql === "COMMIT" && armed) {
+            armed = false;
+            failures = 1;
+          }
+          return value;
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const cache = new BackendCacheRepository(observed, logger);
+  const evidence = token(cache.read("schedule", validator));
+  const prepare = vi.spyOn(db, "prepare");
+  armed = true;
+  expect(cache.saveConditionally(request(evidence, 2))).toEqual({
+    outcome: "saved",
+    reconciled: true,
+  });
+  expect(
+    prepare.mock.calls.filter(([sql]) => sql.startsWith("SELECT cache_json")),
+  ).toHaveLength(2);
+  expect(connectionCoordination(observed).connectionUnresolved).toBe(false);
+});
+test.each([
+  "cache_read",
+  "cache_save",
+  "published_read",
+  "published_save",
+] as const)(
+  "R35-03/R35-04/R35-05/R35-06 toJSON %s reentry is refused without nested operations or token consumption",
+  (operation) => {
+    const { db, cache, published } = fixture();
+    seed(db);
+    published.save("schedule", JSON.stringify({ value: 1 }));
+    const before = stateImage(db);
+    const evidence = token(cache.read("schedule", validator));
+    let nested: unknown;
+    let calls = 0;
+    const candidate = {
+      ...entry(2),
+      toJSON() {
+        calls++;
+        expect(db.inTransaction).toBe(false);
+        if (operation === "cache_read")
+          nested = cache.read("schedule", validator);
+        if (operation === "cache_save")
+          nested = cache.saveConditionally(request(evidence, 9));
+        if (operation === "published_read")
+          nested = published.read("schedule", validator);
+        if (operation === "published_save")
+          nested = published.save(
+            "currentWeather",
+            JSON.stringify({ value: 9 }),
+          );
+        return entry(2);
+      },
+    };
+    const result = cache.saveConditionally({
+      ...request(evidence, 2),
+      entry: candidate,
+    });
+    expect(nested).toMatchObject({
+      outcome: operation.endsWith("read") ? "database_error" : "not_saved",
+      reason: "connection_busy",
+    });
+    expect(result).toEqual({ outcome: "saved", reconciled: false });
+    expect(calls).toBe(1);
+    expect(row(db)).toEqual({ cache_json: JSON.stringify(entry(2)) });
+    expect(stateImage(db)).toEqual(before);
+    expect(row(db, "currentWeather")).toBeUndefined();
+    expect(connectionCoordination(db).busy).toBe(false);
+  },
+);
+test("R35-07 root toJSON transformation is validated and its exact JSON is reused for Commit proof", () => {
+  const { db, cache } = fixture();
+  seed(db);
+  const evidence = token(cache.read("schedule", validator));
+  let calls = 0;
+  const candidate = {
+    ...entry(2),
+    toJSON() {
+      calls++;
+      return entry(3);
+    },
+  };
+  faultCommit(db, true);
+  expect(
+    cache.saveConditionally({ ...request(evidence, 2), entry: candidate }),
+  ).toEqual({ outcome: "saved", reconciled: true });
+  expect(calls).toBe(1);
+  expect(row(db)).toEqual({ cache_json: JSON.stringify(entry(3)) });
+});
+test.each(["version", "timestamp", "missing_data"])(
+  "R35-07 transformed %s common-validation failure does not consume evidence",
+  (fault) => {
+    const { db, cache } = fixture();
+    seed(db);
+    const evidence = token(cache.read("schedule", validator));
+    const before = row(db);
+    let calls = 0;
+    const candidate = {
+      ...entry(2),
+      toJSON() {
+        calls++;
+        if (fault === "version") return { ...entry(3), schemaVersion: 2 };
+        if (fault === "timestamp") return { ...entry(3), expiresAt: "bad" };
+        return {
+          schemaVersion: 1,
+          dataUpdatedAt: entry().dataUpdatedAt,
+          expiresAt: entry().expiresAt,
+        };
+      },
+    };
+    expect(
+      cache.saveConditionally({ ...request(evidence, 2), entry: candidate }),
+    ).toMatchObject({
+      outcome: "not_saved",
+      scope: "input",
+      reason: "invalid_cache_entry",
+    });
+    expect(calls).toBe(1);
+    expect(row(db)).toEqual(before);
+    expect(connectionCoordination(db).busy).toBe(false);
+    expect(cache.saveConditionally(request(evidence, 2))).toMatchObject({
+      outcome: "saved",
+    });
+  },
+);
+test("R35-08 toJSON exception leaves DB and evidence intact, releases gate and permits later operations", () => {
+  const { db, cache, published } = fixture();
+  seed(db);
+  const evidence = token(cache.read("schedule", validator));
+  const before = row(db);
+  const exec = vi.spyOn(db, "exec");
+  const candidate = {
+    ...entry(2),
+    toJSON() {
+      expect(db.inTransaction).toBe(false);
+      throw new Error("secret serialization failure");
+    },
+  };
+  expect(
+    cache.saveConditionally({ ...request(evidence, 2), entry: candidate }),
+  ).toMatchObject({
+    outcome: "not_saved",
+    scope: "input",
+    reason: "invalid_cache_entry",
+  });
+  expect(exec).not.toHaveBeenCalled();
+  expect(row(db)).toEqual(before);
+  expect(connectionCoordination(db).busy).toBe(false);
+  expect(published.save("schedule", "{}")).toMatchObject({ outcome: "saved" });
+  expect(cache.saveConditionally(request(evidence, 2))).toMatchObject({
+    outcome: "saved",
+  });
+});
+test.each(["invalid_input", "reject", "unknown", "fake_evidence"])(
+  "R35-08 preflight %s rejection always releases gate and preserves original token",
+  (kind) => {
+    const { db, cache } = fixture();
+    seed(db);
+    const evidence = token(cache.read("schedule", validator));
+    const candidate = request(evidence, 2);
+    if (kind === "invalid_input") candidate.entry.expiresAt = "bad";
+    if (kind === "reject") candidate.adoption = { outcome: "reject" };
+    if (kind === "unknown") candidate.adoption = { outcome: "unknown" };
+    if (kind === "fake_evidence") candidate.evidence = {} as CacheReadEvidence;
+    const exec = vi.spyOn(db, "exec");
+    expect(cache.saveConditionally(candidate).outcome).toBe("not_saved");
+    expect(exec).not.toHaveBeenCalled();
+    expect(connectionCoordination(db).busy).toBe(false);
+    expect(cache.saveConditionally(request(evidence, 2))).toMatchObject({
+      outcome: "saved",
+    });
+  },
+);

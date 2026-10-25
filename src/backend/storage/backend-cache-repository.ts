@@ -203,8 +203,20 @@ export class BackendCacheRepository {
         scope: "input",
         reason: "unsupported_state",
       };
-    let refusal = this.refusal(request.stateKey);
+    const refusal = this.refusal(request.stateKey);
     if (refusal) return refusal;
+    // Common validation/getters/toJSON can execute caller code. Hold the gate
+    // before invoking any of it; preflight still runs outside a Transaction.
+    this.coordination.busy = true;
+    try {
+      return this.saveWithinGate(request);
+    } finally {
+      this.coordination.busy = false;
+    }
+  }
+  private saveWithinGate<T>(
+    request: CacheConditionalSaveRequest<T>,
+  ): CacheSaveResult {
     let planned: string;
     try {
       if (!isCacheEntry(request.entry)) throw new TypeError();
@@ -262,9 +274,6 @@ export class BackendCacheRepository {
         scope: "input",
         reason: "consumed_cache_evidence",
       };
-    refusal = this.refusal(request.stateKey);
-    if (refusal) return refusal;
-    this.coordination.busy = true;
     let attempt: Attempt | undefined;
     try {
       if (!this.resolved()) return this.unresolved();
@@ -298,8 +307,6 @@ export class BackendCacheRepository {
         : { outcome: "not_saved" as const, ...problem };
       if (result.outcome !== "saved") this.blockIfFatal(problem);
       return result;
-    } finally {
-      this.coordination.busy = false;
     }
   }
   /** Read-only comparison of a pending attempt; never a retry or a write. */
