@@ -789,11 +789,11 @@ GenerationはState単位の正の整数で、新しい公開Snapshotほど大き
 - Snapshotが存在するStateにはCounterが存在する。
 - `last_generation >= MAX(generation)`。古いSnapshot削除等によりCounterが最大Generationより大きい場合は許容する。
 - Snapshotが存在する特定StateのCounter Row欠損、保存済みGenerationより小さいCounter等の値不整合は、そのStateのみ隔離する。Counterを無条件に再作成・リセットしない。
-- SnapshotとCounterの両方が存在しないAllowlist登録済みStateは新規Stateとして初期化可能とする。既存StateのCounter欠損を新規Stateと混同しない。
+- SnapshotとCounterの両方が存在しないAllowlist登録済みStateは、初回Tx-P内でAtomicに初期化可能とする。既存StateのCounter欠損を新規Stateと混同しない。
 - Counterだけが存在するStateは最終採番値を保持し、Generationの連続性を維持する。
-- SQLite INTEGER上限では安全側で採番を停止する。
+- Generationは1以上、Counterは0以上のJavaScript安全整数とし、上限は`Number.MAX_SAFE_INTEGER`（9,007,199,254,740,991）とする。SQLite INTEGERは`bigint`で読出し・検証し、安全範囲確認後に`number`へ変換する。上限到達・範囲外では安全側で採番を停止し、リセット・循環しない。
 
-Counter整合性異常とSnapshot JSONのState単位Validation失敗を区別する。既存L1〜L4に従い、DB全体の破損・Schema非互換はBLOCKED、State固有JSON不正は対象State隔離とする。Counter Table自体の欠損は12.4のSchema不整合としてDB全体BLOCKEDとする。Counter TableのSchema破損もDB全体BLOCKEDとする。一方、特定StateのCounter Row異常はそのStateのみ隔離し、正常な他Stateへ波及させない。Counter Row整合性チェックはB-3A-1に含めず、後続のRepository実装で行う。
+Counter整合性異常とSnapshot JSONのState単位Validation失敗を区別する。既存L1〜L4に従い、DB全体の破損・Schema非互換はBLOCKED、State固有JSON不正は対象State隔離とする。Counter Table自体の欠損は12.4のSchema不整合としてDB全体BLOCKEDとする。Counter TableのSchema破損もDB全体BLOCKEDとする。一方、特定StateのCounter Row異常はそのStateのみ隔離し、正常な他Stateへ波及させない。Counter Row整合性チェックはB-3A-1に含めず、B-3BのRepository実装で行う。Counter不整合ではSnapshot Fallbackを行わない。
 
 GenerationはSnapshotの保存・公開順序であり、外部Dataの鮮度や取得結果の新旧を示さない。永続取得識別子・同値時処理・Pending P-04 / P-05の比較は23.5〜23.6に従い、Generation単独では古い結果の上書きを防げない。
 
@@ -818,6 +818,93 @@ B-3A-1はSQLite永続化基盤の実装であり、PR-B全体の完了ではな�
 - Migration失敗時のRollbackと12.4の安全側処理。
 
 Linux固有Lock結合テストはMockだけで完了判定せず、実Processで行う。PoCの成功は本実装検証の代わりとしない。Raspberry Pi OS・ARM64・systemd・電源断はIssue #12・#13等の実機確認へ引き継ぐ。
+
+
+### 12.10 B-3B Repository・Transaction・Generation設計
+
+以下はB-3Bの確定設計であり、Repository実装・テスト完了を意味しない。既存BackendStoreの単一Connectionを利用し、独立Connectionや別Storeを導入しない。Storeの内部ConnectionをRepositoryへ接続する具体Interfaceは実装時に整理する。
+
+#### Repository責務とValidation
+
+Published State RepositoryはSnapshot保存・取得、Generation、Counter整合性、Tx-P、最大2世代保持を担当する。既存5 StateのKey Allowlistを検証し、共通・Domain固有Validatorを利用する。Domain固有ルールのOwnership、外部HTTP・Domain変換・採用判断・Scheduler・TTL判定・表示用API生成はApplication側に維持する。
+
+JSON Parse・Schema・Semantic Validationの失敗を区別してログへ記録し、Snapshot不正のFallback判定に使用する。State固有異常は対象Stateを隔離し、DB全体破損・Schema非互換はBLOCKED、一時SQL・DB利用不能は既存L1 / L2に従う。隔離専用Tableは追加せず、整合性再確認で解除し、時間経過だけでは解除しない。Counterを自動修復・リセットしない。
+
+#### Tx-Pと同一Stateの直列化
+
+公開候補の事前Validation・Domain変換・外部HTTPはTransaction外で行う。State単位の単一Transaction内で、次の順序をAtomicに実行する。
+
+1. Counter・Snapshot整合性を検証する。
+2. 次Generationを採番する。
+3. state_generation_countersを更新する。
+4. published_state_snapshotsへ確定済みSnapshot JSONをINSERTする。
+5. 最新＋直前の最大2世代を残して旧SnapshotをDELETEする。
+6. Commitする。
+
+途中失敗で部分更新を残さない。backend_cache・acquisition_controlはTx-Pに含めず、Tx-Q / Tx-A / Tx-P / Tx-Cの分離を維持する。新SnapshotはCommit成功確認後だけ公開する。同一StateのTx-Pは直列化し、結果不明の照合が終わるまで後続Tx-Pを開始しない。共有ConnectionのTransaction状態が不明なら通常処理へ戻さず、安全に処理できる正常な別Stateのみ可能な範囲で継続する。Pendingと新規取得の競合制御はPR-C・PR-Dに維持する。
+
+#### 保存・照合結果の契約
+
+結果は以下の3分類を区別する。具体的なType名やInterfaceは実装時に整理し、失敗と結果不明を単一の失敗へ潰さない。
+
+| 結果 | 判定・呼出し側の扱い |
+|---|---|
+| 成功 | Commit完了または下記照合で保存成功を確認。公開可能な保存結果として返す |
+| 失敗確定 | Rollback等と照合によって未保存を確認。既存Snapshotを維持し、再試行可否は既存採用条件・障害分類に従う |
+| 結果不明 | 保存されたか未判定。同一Stateの後続Tx-Pを止め、無条件の再試行・公開をしない |
+
+Commit例外だけでRollback確定と判断しない。例外後はSQLite Transaction状態を確認して必要に応じRollbackを試みる。Transaction状態不明のConnectionを通常処理へ戻さない。
+
+照合用にState Key、保存前Counter、候補Generation、保存予定Snapshot JSON、保存前Snapshotの世代構成・内容を保持し、照合時点のCounter・Snapshotと比較する。候補確定後のSnapshot JSONは保持した同じ内容を使用し、照合時に再生成しない。
+
+- 成功判定は、SQLite Transactionが未完了・状態不明ではなく解決済みであり、DB照合結果が一貫していることを前提とする。Counterが候補Generationと一致し、該当Snapshot JSONが保存予定内容と一致することに加え、保存前Snapshotの世代構成・内容を基準に、今回のTx-PによるINSERT・DELETE後に期待される保持・削除結果を照合する。保存後の世代構成が最新＋直前の最大2世代保持と整合し、期待する保存後状態に矛盾がない場合だけ成功とする。Counter・候補Snapshotだけの部分一致では成功確定しない。
+- Counter・Snapshot構成・内容が保存前と一致し、未完了Transactionが存在しないことを確認できれば未保存とする。
+- 不一致・想定外Generation・DB照合不能は判定不能として保留し、自動再試行・公開しない。
+
+MVPではTx-P専用の永続操作IDを追加しない。Process Crashや外部DB変更をまたぐ操作単位の完全識別は保証しない。照合設計は取得結果の新旧を証明する仕組みではなく、Pending P-04 / P-05の再起動をまたぐ順序識別・同値処理を解決しない。
+
+#### 復元結果とFallback
+
+Repositoryの復元結果は以下を区別する。いずれも表示用API Responseではなく、Applicationが期限・利用可能性を判断するための結果である。
+
+| 結果 | 条件・扱い |
+|---|---|
+| 最新候補 | Counter整合性と最新SnapshotのParse・Schema・Semantic Validationが正常。期限切れでも、その理由だけでは直前へ戻さない |
+| 直前候補 | Counter正常、最新がParse・Schema・Semantic Validationで不正、直前が正常 |
+| Snapshotなし | Snapshotが存在しない。12.8に従い新規StateまたはCounterのみを区別 |
+| State隔離 | Counter不整合、両世代Snapshot不正等。Counter不整合ではFallbackしない |
+| DB全体障害 | Schema非互換・DB破損等はBLOCKED、利用不能等は既存分類に従う。State単位の空データと混同しない |
+
+復元だけではGeneration・publishedAt・dataUpdatedAt・expiresAtを変更しない。不正Snapshotを自動削除・無条件修復しない。最新正常なら最新候補を返し、Applicationが既存APIの期限Mask等を適用する。
+
+Fallback中の新規Tx-Pは、次のすべてを満たす場合だけ許可する。
+
+1. DB全体が利用可能でSchema整合性を確認できる。
+2. Counter Rowが正常で最大Snapshot Generation以上である。
+3. 最新不正がState固有のJSON・Schema・Semantic Validation異常に限定される。
+4. 新候補のSchema・Semantic Validationが成功する。
+5. 既存採用条件に基づき新しい取得結果と確認できる。
+6. 同一Stateに未解決のCommit結果不明操作がない。
+7. Tx-P内でCounter整合性を再検証できる。
+
+新旧比較不能なら自動保存を許可しない。不正な最新Snapshotから取得順序・鮮度比較に必要な情報を信頼できる形で取得できなければ、候補が新しいと推測しない。既存のState固有採用条件に基づいて新旧比較を検証できない場合は、新規Tx-Pの自動実行を保留する。Generation・publishedAtだけを取得順序の証拠としない。これは上記7条件の明確化であり、条件を満たすFallback中の保存を全面禁止するものではない。最大2世代保持により新規Tx-Pが唯一正常だった直前Snapshotを削除し得る。これは保存方針の制約として明記し、後述のテストで確認する。
+
+#### 実装PR分割とテスト受入条件
+
+| 工程 | 設計上の予定範囲 |
+|---|---|
+| B-3B-1 | Repository基盤、Counter Validation、Generation採番、Tx-P Atomic保存、2世代保持、Commit結果不明照合、保存系Unit / SQLite統合テスト |
+| B-3B-2 | 最新・直前Read、JSON / Schema / Semantic Validation、State隔離、Fallback候補、Fallback中の条件付き保存、読出し・復元系テスト |
+
+以下は実装前の受入条件であり、実行済みテスト結果ではない。
+
+- 初回・連続採番、State間独立性、Counterのみ存在する場合、Counter欠損・不整合・安全整数上限超過、初回Tx-P内のAtomic初期化。
+- Tx-P途中失敗のRollbackと部分更新防止、成功・未保存・結果不明の照合、Commit成功後の例外通知で重複保存しないこと、DB照合不能時のFail Closed。
+- 最新＋直前の最大2世代、最新不正のFallback、正常最新が期限切れでもFallbackしないこと、両世代不正のState隔離。
+- Fallback中の条件付き保存、新旧比較不能時の保存禁止、新規保存で唯一正常な直前世代が削除されるケース。
+- 他Stateへの障害非波及、DB全体のSchema不整合・利用不能、Process Crash後の永続操作ID不在による識別制約。
+
+SCH-07は保存失敗・結果不明、SCH-11は最新不正時Fallback、SCH-12は正常な別Stateの継続という既存観点の具体化として扱い、別の矛盾する条件を追加しない。Domain固有の新旧比較・Scheduler・Pendingの完成をB-3Bだけで保証しない。Quota Guardの保存構造・具体SQL、Cache・TTL・Fallback、継続Recovery・Backupは後続工程に維持する。
 
 
 ---
@@ -906,7 +993,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
-- 個別Migration・単一EXの具体ScriptとFD番号・Timeout値・起動経路の迂回防止、Provisioning CLI、DB・Lockの具体Path・Permission・Symlink対策、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
+- 個別Migration・単一EXの具体ScriptとFD番号・Timeout値・起動経路の迂回防止、Provisioning CLI、DB・Lockの具体Path・Permission・Symlink対策、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理は未決定（23.5）。Tx-P単体のCommit結果不明時照合は12.10で設計済みだが実装未完了であり、Crashをまたぐ完全識別は保証しない。
 - Cache不正時の物理削除。
 - Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH-01〜33は23.8に個別定義済み。Recovery・競合制御は未実装・未検証。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
@@ -1741,7 +1828,7 @@ Tx-A成功・Tx-P失敗時、Stateごと最大1件をメモリ保持する。永
 
 P-04・P-05は既存条件を維持する。publishedAtは既存契約どおりSnapshot生成時刻であり、取得順序の比較に単独使用しない。
 dataUpdatedAtは取得Dataの鮮度比較に利用できるが、再起動・同時刻取得を含む厳密な順序比較は未決定である。Process内取得順序識別子だけでは再起動をまたぐ比較を保証できない。
-Generation採番は12.8で定義するが、保存・公開順序であり取得順序の識別子ではない。永続取得識別子、比較同値時の扱い、P-04 / P-05とCommit結果不明時の具体照合方法は引き続き未決定である。安全に比較条件を検証できない場合、自動再公開を行わず古いPendingによる上書きを防ぐ。
+Generation採番は12.8で定義するが、保存・公開順序であり取得順序の識別子ではない。Tx-P単体のCommit照合は12.10で定義するが、永続取得識別子・比較同値時の扱い・再起動をまたぐP-04 / P-05の取得順序比較は引き続き未決定である。安全に比較条件を検証できない場合、自動再公開を行わず古いPendingによる上書きを防ぐ。
 
 SQLite復旧 → Published / Control State復元検証 → Pending検証 → Tx-P保存 → Commit後公開 → Tx-C Cache更新 → 通常Scheduler再開の順とする。同一StateのPending処理と新規HTTPは直列化する。
 
@@ -1756,11 +1843,11 @@ TTL切れ、Validation失敗、新しいSnapshot存在、固有採用条件不�
 | DB全体の一時的利用不能（L2） | Pending保持、通常Scheduler保留、SQLite Recoveryへ移行 |
 | 一時SQL操作失敗（L1） | 原因分類後、適切な再確認・再試行経路へ移行。外部API即時再取得なし |
 | State固有の制約違反・Validation不備 | DB全体を無条件に障害扱いせず、対象Stateを隔離・ログ記録 |
-| Commit結果不明 | DBの最新Snapshot・世代を照合し、Commit済みか確認してから再試行を判断 |
+| Commit結果不明 | 同一Stateの後続Tx-Pを停止し、12.10のCounter・Snapshot照合で成功／未保存／判定不能を区別。判定不能では再試行・公開しない |
 | DB全体破損・Schema非互換（L3） | BLOCKED。自動修復・初期化・再公開を行わない |
 
 Tx-P失敗だけでProvider取得失敗回数を加算せず、Tx-AでCommit済みの取得成功記録をRollbackしない。新State公開はTx-P Commit成功後だけとし、旧SnapshotのTTL判定を継続する。PendingはStateごと最大1件とし、DB全体RecoveryとState隔離を分ける。L4の致命障害に安全な自動復旧を仮定しない。
-Commit結果不明ならDB Snapshotを照合してから再試行する。Process CrashでメモリPendingが消失したら通常Schedulerで再開する。
+Commit結果不明なら12.10の条件でDB照合し、未保存確認等の結果に基づいて再試行を判断する。判定不能では保留する。Process CrashでメモリPendingが消失したら通常Schedulerで再開する。
 
 ### 23.7 Control State復元
 
@@ -1786,7 +1873,7 @@ SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個�
 
 | ID | テスト条件 | 期待結果 |
 |---|---|---|
-| SCH-07 | Tx-PのCommit失敗 | 旧Published Stateを維持 |
+| SCH-07 | Tx-PのCommit失敗・結果不明 | 失敗確定なら旧Published Stateを維持。結果不明は12.10で照合し、判定不能では再試行・公開しない |
 | SCH-08 | Tx-CのCommit失敗 | Commit済みの新Published Stateを維持 |
 | SCH-09 | SQLiteが一時的に利用不能 | 通常Schedulerを保留し、5秒間隔の復旧処理へ移行 |
 | SCH-10 | SQLiteが復旧 | Snapshot・取得制御情報を検証し、通常Schedulerを再開 |
@@ -1834,8 +1921,9 @@ SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個�
 次の内容を既存テストIDの詳細条件として追加してください。
 
 **SCH-07**
-- Tx-P Commit失敗時に旧Snapshotを維持する。
-- Commit結果不明時はDB内Snapshotを照合し、二重公開や世代不整合を防ぐ。
+- Tx-Pの失敗確定時は旧Snapshotを維持する。
+- Commit結果不明は12.10の照合条件で判定し、Commit成功後に例外が通知されても重複保存・二重公開しない。判定不能ではFail Closedとする。
+- SCH-11の不正最新からのFallback、SCH-12のState異常の非波及は12.10の読出し・隔離条件で具体化する。正常最新の期限切れだけではFallbackしない。
 
 **SCH-27**
 - Tx-A成功・Tx-P失敗時にPendingを最大1件保持する。

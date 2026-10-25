@@ -1494,15 +1494,29 @@ API Read・単なるDB復元ではpublishedAtを更新しない。表示用API�
 ### 16.6 Snapshot世代管理とRecovery
 
 最新1世代＋直前1世代＝合計2世代保持と、世代別Row方式を正式採用する。Snapshot追加・Counter更新・保持数超過分の削除は同一Transactionで行う。
-GenerationはState単位の正の整数で、保存Transaction内で採番し、最終採番値を永続化する。最新SnapshotはState内のGeneration最大Rowである。Snapshotが0件でもCounterを保持し、欠損・不整合時に無条件再生成・リセットしない。INTEGER上限では安全側で採番を停止する。Generationは保存・公開順序であり、外部Dataの鮮度・取得結果の新旧ではない。P-04 / P-05の比較をGenerationだけで代替しない。
+GenerationはState単位の正の整数で、保存Transaction内で採番し、最終採番値を永続化する。最新SnapshotはState内のGeneration最大Rowである。Snapshotが0件でもCounterを保持し、欠損・不整合時に無条件再生成・リセットしない。MVPはJavaScript安全整数上限（Number.MAX_SAFE_INTEGER）で採番を停止し、リセット・循環しない。Generationは保存・公開順序であり、外部Dataの鮮度・取得結果の新旧ではない。P-04 / P-05の比較をGenerationだけで代替しない。
 具体DDL・Index・Counter不変条件はtechnology-stack.md 12.6〜12.8、Schema Version管理・Migrationの適用条件は[技術スタック選定 12.4](technology-stack.md#124-schema-versionとmigration)に従う。
 
-1. SQLiteからState単位にJSON Parse・Schema・Semantic Validationを行う。
-2. 最新Snapshotが不正なら、直前世代をValidationして復元候補にする。
-3. 最新Snapshotが正常だが期限切れの場合は、期限切れだけを理由に直前世代へ戻さない。
-4. 直前世代も不正なら、そのStateを不採用・隔離しログへ記録する。他の正常Stateは独立して復元できるようにする。
+#### RepositoryとApplication
 
-復元だけではpublishedAt・dataUpdatedAt・expiresAtを変更しない。2世代保持はDatabase全体破損・microSD故障への対策ではない。
+Published State Repositoryは、既存BackendStore所有の単一SQLite ConnectionでSnapshot保存・取得、Generation採番、Counter整合性、Tx-P、最大2世代保持を担当する。独立Connection・別Storeは追加しない。State Key Allowlistを検証し、共通・Domain固有Validatorを利用できるが、Domain固有ルール自体は所有しない。Domainの採用判断・外部HTTP・Scheduler・TTL判定・表示用API Response生成はApplication側の責務とする。
+
+Tx-PはState単位でCounter・Snapshot整合性確認 → 採番 → Counter更新 → Snapshot INSERT → 最大2世代を残すDELETE → Commitを一体で行い、部分更新を残さない。Cache・Acquisition Control更新は含めず、外部HTTP・Domain変換・公開候補の事前ValidationはTransaction外とする。新SnapshotはCommit成功確認後だけ公開する。同一StateのTx-Pは直列化し、Commit結果不明時は照合終了まで後続Tx-Pを止める。
+
+Commit成功・未保存確認済みの失敗・結果不明を区別する。例外だけで未保存と断定せず、Transaction状態確認と必要なRollbackを行い、状態不明のConnectionを通常処理へ戻さない。保存前Counter・Snapshot構成と内容、候補Generation・確定済みSnapshot JSON、照合時のDBを比較し、結果不明のまま再試行・公開しない。詳しい判定条件と操作識別の限界は[技術スタック選定 12.10](technology-stack.md#1210-b-3b-repositorytransactiongeneration設計)に従う。DB全体障害とState固有異常をL1〜L4で分離し、正常な別Stateは安全に共有Connectionを利用できる範囲で継続する。
+
+#### Snapshot復元とState隔離
+
+1. Counter整合性を検証し、不整合ならFallbackせず対象Stateを隔離する。Counter Table欠損・Schema破損はDB全体BLOCKEDとする。
+2. 最新SnapshotをJSON Parse・Schema・Semantic Validationし、正常なら復元候補として返す。
+3. 最新Snapshotが不正な場合だけ直前世代を検証する。Applicationが最新候補を期限切れと判定しても、それだけを理由に直前世代へ戻さない。
+4. 両世代とも不正なら対象Stateを隔離し、他Stateの正常な復元を妨げない。Parse・Schema・Semanticの失敗原因を分けて記録する。
+
+Repositoryは復元候補を返し、Applicationが期限・利用可能性を評価して既存API契約で公開する。復元だけではGeneration・publishedAt・dataUpdatedAt・expiresAtを更新しない。不正Snapshotの自動削除・無条件修復は行わない。隔離専用Tableは追加せず、整合性再確認でのみ解除し、時間経過だけでは解除しない。
+
+Fallback中の新規保存は、DB・SchemaとCounterが正常、最新不正がState固有のJSON / Schema / Semantic異常だけ、新候補Validation成功、新しい取得結果と確認可能、未解決のCommit結果不明操作なし、Tx-P内のCounter再検証成功という条件をすべて要求する。新旧比較不能なら自動保存せず、Generation・publishedAtだけを証拠にしない。最大2世代保持のため、新規保存により唯一正常だった直前世代が削除され得る制約を受け入れ、実装テストで確認する。
+
+2世代保持はDatabase全体破損・microSD故障への対策ではない。
 正常なAcquisition Control Stateでは保存nextAttemptAtを尊重する。既存Stateの不正・欠損ではmin(acquisitionPeriod, 5分)待機し、現行5 Stateでは5分とする。真の新規Stateは通常初回判定を許可する。Quota履歴不正は5分経過だけではFail Closedを解除しない。
 
 Lifecycleでは復元後に外部取得待ちなしでAPI提供を開始し、期限切れDataをMaskする。再起動だけではMetadataを更新しない。
@@ -1515,7 +1529,7 @@ PendingはstateKey、Validation済みData、dataUpdatedAt、expiresAt、attemptS
 再公開はSQLite HEALTHY、Schema / Semantic Validation、期限内、既存Snapshotより古くない、新しい同State結果なし、State固有採用条件の再確認というP-01〜06をすべて要求する。
 復旧・Published / Control State復元検証後にPendingを検証し、Tx-P保存 → Commit後公開 → Tx-C更新を行ってから通常Schedulerを再開する。Pending処理と同一State新規HTTPは直列化する。
 元dataUpdatedAt・expiresAt・試行開始時刻を維持し、lastAttemptResult:success、dataSource:externalApi、publishedAtは新Snapshot生成時刻とする。再公開・破棄だけでは失敗回数・nextAttemptAt・Quotaを変えない。
-期限切れ・Validation不正・新Snapshot存在・固有条件不成立は破棄。L2のTx-P失敗はPending保持・通常Scheduler保留・DB Recoveryへ移行する。L1は原因分類して再確認・再試行へ、State固有制約／Validation不備は対象State隔離へ分ける。DB全体を無条件に障害扱いせず、BLOCKEDでは再公開しない（詳細はtechnology-stack.md 23.6）。Commit結果不明はDB照合後に再試行する。CrashでPendingが消えた場合は通常Schedulerで再開する。
+期限切れ・Validation不正・新Snapshot存在・固有条件不成立は破棄。L2のTx-P失敗はPending保持・通常Scheduler保留・DB Recoveryへ移行する。L1は原因分類して再確認・再試行へ、State固有制約／Validation不備は対象State隔離へ分ける。DB全体を無条件に障害扱いせず、BLOCKEDでは再公開しない（詳細はtechnology-stack.md 23.6）。Commit結果不明は同一Stateの後続Tx-Pを止めてDB照合し、未保存確認等の結果に基づいて再試行を判断する。判定不能では再試行・公開しない。CrashでPendingが消えた場合は通常Schedulerで再開する。
 Schedule・WeeklyWeather等は復旧時のJST日付で再Validationする。詳細はtechnology-stack.md 23.5〜23.7に従う。
 
 ### 16.7 Database障害・WAL・Backupの境界
