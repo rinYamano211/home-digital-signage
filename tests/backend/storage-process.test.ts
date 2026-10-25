@@ -511,3 +511,17 @@ linux(
     expect(await probe(dir)).toBe(0);
   },
 );
+
+linux(
+  "BackendStore shares Cache and Published Connection lifecycle",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const job = harness(
+      dir,
+      `import {BackendStore} from ${moduleUrl("storage/store")};import {ExclusiveLock} from ${moduleUrl("storage/lock")};const store=BackendStore.open(ExclusiveLock.inherited(process.env.SIGNAGE_DATA_DIR));const validator={schema(value){return {valid:true,value};},semantic(value){return {valid:true,value};}};const read=store.cache.read('schedule',validator);if(read.outcome!=='empty')throw new Error('expected empty');const result=store.cache.saveConditionally({stateKey:'schedule',entry:{schemaVersion:1,data:{value:1},dataUpdatedAt:'2026-10-25T00:00:00Z',expiresAt:'2026-10-25T01:00:00Z'},evidence:read.evidence,adoption:{outcome:'adopt'}});if(result.outcome!=='saved')throw new Error('cache save');if(store.publishedStates.save('schedule','{}').outcome!=='saved')throw new Error('snapshot save');store.close();store.close();if(store.cache.read('schedule',validator).outcome!=='database_error')throw new Error('cache close');if(store.publishedStates.save('schedule','{}').outcome==='saved')throw new Error('snapshot close');`,
+    );
+    expect(await job.done, job.output()).toBe(0);
+    expect(await probe(dir)).toBe(0);
+  },
+);
