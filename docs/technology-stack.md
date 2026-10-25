@@ -573,6 +573,15 @@ Scheduleについては、API Response生成時にも`data.date`とAsia/Tokyo基
 API Response生成時の期限・Schedule日付判定による変換だけでは、新しいSnapshotを生成したものとは扱わない。
 APIから期限切れデータを除外しても、Frontendでの`expiresAt`判定は引き続き必須とする。API取得後に期限を迎えたデータも表示に利用しない。
 
+
+### 10.9 Database全体利用不能時のAPI応答
+
+SQLite全体が利用不能な場合、Published State APIは`503 Service Unavailable`を返す。DB破損・Schema非互換によるBLOCKEDも503とし、DB障害を`200 OK`と空データで表現しない。
+
+SQLiteが正常な場合、State単位の未公開・期限切れ・不正は既存契約に従い、正常な他Stateの提供を妨げない。Frontendは503をPolling失敗として扱い、保持済みの有効なComponent Stateを既存TTLルールに従って利用する。
+
+PR-Aの`/ping`は疎通確認専用であり、DB HealthやReadinessを意味しない。Published State APIの正式Endpoint Pathと503時のJSON Error Schemaは未決定である。
+
 ---
 
 ## 11. Backend技術スタック
@@ -654,7 +663,7 @@ SQLite・better-sqlite3は正式採用とする（Pi性能・ARM64互換性は�
 | backend_cache | Published State単位のBackend Cache |
 | acquisition_control | Backendの取得制御用永続状態 |
 
-Published Stateの**最新と直前の2世代保持**と、**世代ごとに別Rowで保存する方式**は、いずれも暫定採用とする。具体DDL・Index・Generation採番・Migrationは未決定である。
+Published Stateの**最新と直前の2世代保持**と、**世代ごとに別Rowで保存する方式**は、いずれも暫定採用とする。具体DDL・Index・Generation採番・個別Migrationは未決定である。Schema Version管理とMigrationの適用条件は12.4で定義する。
 State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必須としない。Tx-Q / Tx-A / Tx-P / Tx-C分離とState単位の部分成功はArchitecture 16.4に従う。
 
 ### 12.2 SQLite設定・注意点
@@ -671,6 +680,35 @@ SQLiteの実現方式として以下を採用方針に記録する。Database技
 WAL + NORMALは直近Commitの電源断耐久性を完全保証しない。突然の電源断で直近Commitが失われる可能性は許容するが、不完全なSnapshotは公開しない。
 CheckpointによってWALの物理ファイルサイズが必ず縮小するわけではない。Lock・Checkpoint異常時の詳細運用は未決定である。
 microSD自体の物理故障からの自動復旧は保証しない。
+
+
+### 12.3 初回DB Provisioningと通常起動
+
+初回DB作成は、管理者が明示的に実行するProvisioningだけで許可する。通常Backend起動はbetter-sqlite3の`fileMustExist: true`を用い、DBを自動新規作成しない。
+
+Provisioning時に既存DBがあれば上書きせず中止する。失敗後にDBが残っても、自動削除・再作成しない。初期Schema・Index・Schema VersionはTransactionで整合性を保って構築する。
+
+DB欠損時は既存DB消失・Mount異常・権限異常等を考慮し、無条件に初回起動とは判断しない。ファイルの存在だけで正常とせず、VersionとSchema構造を確認する。
+
+DBはRelease Directory外に配置し、`/var/lib/home-digital-signage/signage.db`は候補Pathとして扱う。具体Path・Provisioning CLI名・実装詳細は未決定である。Directory作成・Permission・実機Deploy手順はIssue #12と連携する。
+
+### 12.4 Schema VersionとMigration
+
+SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。
+
+- 既知Version間で、互換性検証済みかつ明示的に許可された個別Migrationだけを自動実行する。
+- DDLとVersion更新は同一Transactionで行う。失敗時はRollbackして原因を分類し、Commit結果不明時はDB状態を再確認してから判断する。
+- 未知・新しすぎるVersion、Schema不整合はBLOCKEDとする。一時的なSQL障害はRecovery対象として分類する。
+- 旧Releaseとの読出し・書込み互換性を確認できないMigrationは自動実行しない。
+- 自動Downgrade MigrationはMVPでは実装しない。非互換MigrationはBackup・Deploy・Rollback手順と連携して別途管理する。
+
+自動適用の可否はDDLの種類だけで決めず、個別Migrationの検証結果で判断する。初期MVPでは汎用Migration Frameworkを過剰に構築せず、必要最小限の仕組みとする。具体DDL・Index・Migration内容・Snapshot世代管理の詳細はPR-B / B-2で設計する。既存の2世代保持・世代別Rowの暫定方針は変更しない。
+
+### 12.5 Lifecycleの技術的制約と後続工程
+
+ConnectionはBackendStoreが所有し、起動・終了順序と工程ごとの責務は[Architecture 16.8](architecture.md#168-sqlite初期化とbackend-lifecycle)に従う。PR-AのShutdown契約を維持するが、better-sqlite3の同期APIを長時間実行するとEvent LoopやShutdown Timerをブロックし得る点を考慮する。
+
+B-1では初期化時の障害分類までを定義する。継続的なRecovery・再試行・復旧後の再検証はPR-E、Schedulerと終了順序はPR-C、実機設定・受入試験はIssue #12・#13へ引き継ぐ。
 
 ---
 
@@ -758,7 +796,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
-- 正式SQLite DDL・Index・Migration、Generation採番。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
+- 正式SQLite DDL・Index・個別Migration・Generation採番（Version管理と適用条件は12.4で定義済み）、Provisioning CLI、DBの具体Path、503時のJSON Error Schema。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
 - Cache不正時の物理削除。
 - Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH-01〜33は23.8に個別定義済み。Recovery・競合制御は未実装・未検証。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
@@ -1666,7 +1704,7 @@ SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個�
 | SCH-22 | Taskが例外終了 | inFlightを解除し、適切な次回判定または復旧処理へ移行 |
 | SCH-23 | 保存済みnextAttemptAtが未来 | Startup直後も取得しない |
 | SCH-24 | 既存Acquisition Control Stateが欠損・不正 | 5分の保守的待機を適用 |
-| SCH-25 | 新規DBで取得制御記録が存在しない | 正常な初回起動として扱い、通常Schedulerで判定 |
+| SCH-25 | 明示的ProvisioningとSchema検証を済ませた新規DBで取得制御記録が存在しない | 正常な初回起動として扱い、通常Schedulerで判定。DB欠損を自動新規作成する意味ではない |
 | SCH-26 | 再起動時にPublished Stateが期限切れ | DataをMaskし、取得条件を再評価 |
 | SCH-27 | Tx-A成功後、Tx-P失敗 | Provider取得成功と公開失敗を区別し、不要な即時再取得を防止 |
 

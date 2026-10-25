@@ -1427,7 +1427,8 @@ Domain固有Validation、Data変換、Cache採用、Freshness、Published State�
 
 SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。
 Published StateのDataとMetadataは1 JSON Snapshotとして保存し、不完全なSnapshotを公開しない。最新・直前の2世代を保持する。
-SQLiteの共有Connectionは保存機構の方針であり、他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
+BackendStoreがConnectionの生成・利用可否・終了を所有し、Backend Process内で原則1つのSQLite Connectionを共有する。Published State・Backend Cache・Acquisition Control Stateの各Repositoryは共通Connectionを利用し、Repositoryごとの独立Connectionは原則採用しない。FastifyはStoreの公開Interfaceを利用し、SQLite内部の管理を直接行わない。具体的なType名・Interface・Module構成は実装時に決定する。
+共有Connectionは他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
 複数State間の厳密な同時点整合性は要求しない。State単位のAtomicityと、Tx-Q / Tx-A / Tx-P / Tx-Cの分離（16.4）を区別する。
 
 ### 16.3 Scheduler・取得制御
@@ -1493,7 +1494,7 @@ API Read・単なるDB復元ではpublishedAtを更新しない。表示用API�
 ### 16.6 Snapshot世代管理とRecovery
 
 最新・直前の2世代を保持し、世代別Row方式を暫定採用する。新Snapshot追加と古い世代削除は同一Transactionで行う。
-Generation採番・DDL・Migrationは未決定である。
+Generation採番・具体DDL・個別Migrationは未決定である。Schema Version管理・Migrationの適用条件は[技術スタック選定 12.4](technology-stack.md#124-schema-versionとmigration)に従う。
 
 1. SQLiteからState単位にJSON Parse・Schema・Semantic Validationを行う。
 2. 最新Snapshotが不正なら、直前世代をValidationして復元候補にする。
@@ -1531,3 +1532,40 @@ WAL肥大化は原因調査後に必要時手動対応し、定期強制TRUNCATE
 BackupはWALと整合する方法で取得し、作成後に整合性確認する。稼働中DB本体だけの単純コピーは採用しない。
 同一microSD内のBackupや2世代Snapshotは物理故障対策ではなく、MVPでmicroSD物理故障からの自動Recoveryを保証しない。
 Backup実行時刻・Path・Scheduler・再試行・復元コマンド、Lock / Checkpoint異常の詳細運用は未決定である。
+
+
+### 16.8 SQLite初期化とBackend Lifecycle
+
+PR-B / B-1の設計方針として、**障害分類型Degraded Start**を採用する。16.7のL1〜L4とHEALTHY / DEGRADED / RECOVERING / BLOCKEDを維持し、一時的なDB障害だけでProcessを無条件終了させない。安全にHTTP Serverを稼働できる場合はDB利用不能状態で起動し、通常Schedulerを保留する。DB破損・Schema非互換はBLOCKEDとし、自動削除・無条件再初期化・根拠のない修復は行わない。OS・Storageの致命的障害でProcess継続を無条件に保証しない。
+
+初回DB作成は管理者による明示的なProvisioningに分離する。通常起動でDB欠損を初回起動と判断せず、Schema VersionとSchema実態を検証する。具体的な作成・Migration方針は[技術スタック選定 12.3〜12.4](technology-stack.md#123-初回db-provisioningと通常起動)に従う。
+
+#### 起動順序
+
+1. Config検証。
+2. Logger生成。
+3. Fastify構築・必要なLifecycle Hookの登録。
+4. SQLite Store初期化・Schema検証・必要なPublished State復元。
+5. Published State API Route登録。
+6. Fastify Listen。
+7. 既存のShutdown Signal Handler登録。
+
+RouteはDB正常・異常のどちらでもListen前に登録する。安全にHTTPを起動できるDB障害では、DB利用不能としてRouteを登録してListenを継続する。DB正常時は保存Published StateのValidation・復元後にAPI提供を開始し、外部API初回取得を待たない。Config不正・Fastify構築失敗・Listen失敗等は既存の起動失敗処理を維持する。DB全体利用不能時の503と疎通確認の境界は[技術スタック選定 10.9](technology-stack.md#109-database全体利用不能時のapi応答)に従う。
+
+#### 終了と所有権の引継ぎ
+
+PR-Aの`installShutdown()`と`app.close()`を継続利用し、SQLite専用のSIGINT / SIGTERM Handlerは追加しない。Fastifyの`onClose`からStoreをCloseし、二重Closeにも安全にする。Connection取得後、Lifecycle Hookへの所有権引継ぎ前に起動失敗した場合もConnectionを確実にCloseする。PR-Aの10秒Shutdown Timeoutと終了コードの契約は維持する。
+
+PR-CでSchedulerを導入する際は、Scheduler停止後にDBをCloseする。同期DB処理がShutdownを妨げる制約は[技術スタック選定 12.5](technology-stack.md#125-lifecycleの技術的制約と後続工程)に従う。
+
+#### 工程の責務
+
+| 工程 | 担当範囲 |
+|---|---|
+| PR-B | SQLite初期化・接続・終了、Version確認、Provisioning、許可済みMigration、DB障害の初期分類、Published State APIの503、StoreとFastify Lifecycleの接続 |
+| PR-C | Scheduler導入、Scheduler停止とDB Closeの順序 |
+| PR-E | 継続的なDB Recovery、Single-flight、定期復旧確認、復旧後のState再検証・API再開、Backup・Restore、DB破損時の詳細対応 |
+| Issue #12 | Pi上のDirectory・Permission・systemd・Deploy設定 |
+| Issue #13 | 実機再起動・電源断・長時間試験 |
+
+B-1は設計の確定であり、PR-B以降の実装・検証完了を意味しない。
