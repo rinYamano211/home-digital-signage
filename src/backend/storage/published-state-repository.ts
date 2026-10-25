@@ -38,6 +38,7 @@ interface Attempt {
   expected: StateImage;
   generation: number;
   snapshotJson: string;
+  failure?: SaveFailure;
 }
 interface Coordination {
   busy: boolean;
@@ -168,6 +169,7 @@ export class PublishedStateRepository {
       return { outcome: "saved", generation, snapshotJson, reconciled: false };
     } catch (error) {
       const problem = failure(error);
+      if (attempt) attempt.failure = problem;
       if (!this.rollback()) return this.unresolvedConnection();
       const result = attempt
         ? this.compare(stateKey, attempt, problem)
@@ -210,10 +212,14 @@ export class PublishedStateRepository {
       };
     this.coordination.busy = true;
     try {
-      return this.compare(stateKey, attempt, {
-        scope: "state",
-        reason: "write_not_saved",
-      });
+      return this.compare(
+        stateKey,
+        attempt,
+        attempt.failure ?? {
+          scope: "database",
+          reason: "write_not_saved",
+        },
+      );
     } finally {
       this.coordination.busy = false;
     }

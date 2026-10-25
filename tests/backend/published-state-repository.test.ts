@@ -391,9 +391,16 @@ test.each([true, false])(
       outcome: "saved",
       generation: 1,
     });
-    expect(repo.reconcile("schedule")).toMatchObject({
+    const reconciled = repo.reconcile("schedule");
+    expect(reconciled).toMatchObject({
       outcome: committed ? "saved" : "not_saved",
     });
+    if (!committed)
+      expect(reconciled).toMatchObject({
+        scope: "database",
+        layer: "L1",
+        reason: "temporary_sql",
+      });
     expect(counter(db)).toEqual({ last_generation: committed ? 3n : 2n });
   },
 );
