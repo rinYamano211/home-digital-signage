@@ -9,3 +9,8 @@
 /.github/workflows/*.yml text eol=lf
 /tests/*.ts text eol=lf
 /docs/development-quality.md text eol=lf
+/src/**/*.ts text eol=lf
+/tests/backend/**/*.ts text eol=lf
+/tsconfig.backend.json text eol=lf
+/config/backend.env.example text eol=lf
+/docs/backend-development.md text eol=lf

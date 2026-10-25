@@ -6,3 +6,7 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Local copies of operational config/credentials must not be committed.
+/config/backend.env
+/secrets/
