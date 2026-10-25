@@ -2797,3 +2797,33 @@ WindowsでService Account認証とreaderアクセス、events.listによる通�
 ### 文書の正本と後続Issueをつなぐ
 
 採用状態だけを変える場合も古い未決定記述との整合が必要になる。技術選定結果はtechnology-stack.mdを正本とし、ArchitectureのOwnershipやRecoveryを再設計せず参照を更新した。実装Issueへ具体値・受入条件・未検証を渡し、共通基盤やCIは既存機能Issueに無理に詰めず独立候補として整理する。文書化完了とIssue Closeの判断は別に扱う。
+
+
+---
+
+## B-3C Backend Cache Repository設計
+
+### Connection排他とState単位の未解決を分ける
+
+単一SQLite ConnectionではTx-PとTx-Cの重複を防ぐ共通ゲートが必要だが、あるStateの保存結果が不明なことと、Connection自体のTransaction状態が不明なことは異なる。前者は対象Stateの後続Tx-Cを止め、後者は全Repositoryを保護する。busy・connectionUnresolved・DB全体blockedを共有し、Attemptと証跡はRepository固有に残すことで、必要なFail Closedと障害の局所化を両立させる。
+
+### ReadEvidenceでTOCTOUを防ぎ、鮮度判断とは分離する
+
+Readで見たCache Rowを後で無条件に上書きすると、確認と利用の間に別更新が入る。証跡に対応するRow有無・JSONと現在RowをTx-C内で再確認することで、Read後の変更を検出する。ただし一致は候補が新しい証明ではなく、採用・新旧比較はApplicationが担当する。不正Cacheの元の順序が分からない場合も、正常なPublished Stateがあるだけで安全な置換と推測しない。
+
+### Commit例外と未保存を同一視しない
+
+Commit成功後に例外が通知される場合を考えると、無条件Retryは重複書込みや古いデータの再保存を招く。確定した候補JSONと保存前Rowを保持し、Transaction解決後に現在DBと照合する。saved・not_saved・unknownを区別し、判定不能ならRead-only照合を優先する。同一JSONのunchangedは保存実行を意味せず、その場合も証跡を消費する。
+
+### ValidationとTTLを分離する
+
+構造・意味が正常であることと、時間的に利用可能なことは別である。RepositoryはParse・Schema・Semanticの結果を返し、共通Cache Moduleが期限を評価する。期限切れをinvalidと混同せず、不正・期限切れを公開用Fallbackに使わない。Cache更新やFallbackで元のdataUpdatedAt・expiresAtを延長しない。これらは設計上の判断であり、B-3C実装・テストの成功記録ではない。
+
+
+### B-3C設計レビュー：証跡・Validation・結果不明時のRead
+
+- Cacheの証跡はConnection・State・Rowの同一性を示す不透明トークンであり、Domainデータの鮮度や正当性を保証しない。入力拒否と保存試行開始を区別し、試行開始後は結果にかかわらず使い捨てる。
+- Repositoryの共通構造・Version・日時・直列化検証と、ApplicationのDomain Validation・採用判断は別責務である。共通検証済みJSONを一度確定し、保存とCommit照合で再利用する。
+- Commit結果不明のCacheをReadできると未確定データがFallbackへ混入するため、対象StateのReadもpendingとして保留する。Read-only照合で保存済み・未保存が確定してから再開する。
+- State単位の保留とConnection全体のTransaction未解決を区別し、正常な別Stateへの不要な波及を防ぐ。再起動をまたぐ復旧は後続工程とする。
+- 今回は設計修正のみ。C-01〜C-32は未検証で、B-3Cの実装・テストは未着手。
