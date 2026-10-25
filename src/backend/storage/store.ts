@@ -4,6 +4,7 @@ import { storagePaths, validateDatabaseFiles } from "./paths.js";
 import { migrate } from "./migrations.js";
 import { SchemaError } from "./errors.js";
 import { PublishedStateRepository } from "./published-state-repository.js";
+import { BackendCacheRepository } from "./backend-cache-repository.js";
 
 export function configureDatabase(db: Database.Database) {
   db.pragma("journal_mode = WAL");
@@ -18,8 +19,10 @@ export function configureDatabase(db: Database.Database) {
 }
 export class BackendStore {
   readonly publishedStates: PublishedStateRepository;
+  readonly cache: BackendCacheRepository;
   private constructor(private readonly db: Database.Database) {
     this.publishedStates = new PublishedStateRepository(db);
+    this.cache = new BackendCacheRepository(db);
   }
   static open(lock: ExclusiveLock): BackendStore {
     lock.assertHeld();

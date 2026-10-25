@@ -99,6 +99,13 @@ export function checkSnapshot<T>(
   } catch {
     return { kind: "invalid", stage: "json_parse", reason: "invalid_json" };
   }
+  return checkValue(parsed, validator);
+}
+/** Reuse the synchronous Schema/Semantic pipeline for an already parsed value. */
+export function checkValue<T>(
+  parsed: unknown,
+  validator: SnapshotValidator<T>,
+): Checked<T> {
   const schema = run("schema", () => validator.schema(parsed));
   if (schema.kind !== "valid") return schema;
   return run("semantic", () => validator.semantic(schema.value));

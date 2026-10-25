@@ -19,6 +19,10 @@ export type {
 } from "./published-state-read.js";
 import { classifyDatabaseError, SchemaError } from "./errors.js";
 import { validateSchema } from "./schema.js";
+import {
+  connectionCoordination,
+  type ConnectionCoordination,
+} from "./connection-coordination.js";
 
 export const STATE_KEYS = Object.freeze([
   "currentWeather",
@@ -59,21 +63,18 @@ interface Attempt {
   failure?: SaveFailure;
 }
 interface EvidenceRecord {
-  coordination: Coordination;
+  coordination: ConnectionCoordination;
   connection: Database.Database;
   stateKey: StateKey;
   image: StateImage;
   source: "previous";
   consumed: boolean;
 }
-interface Coordination {
-  busy: boolean;
-  connectionUnresolved: boolean;
-  blocked?: SaveFailure;
-  pending: Map<StateKey, Attempt>;
-}
-// One gate per Connection, including when multiple Repository consumers wrap it.
-const coordinators = new WeakMap<Database.Database, Coordination>();
+// Tx-P attempts are shared only among Published State Repository consumers.
+const publishedAttempts = new WeakMap<
+  Database.Database,
+  Map<StateKey, Attempt>
+>();
 // Module-private: no record or registry is exposed through Repository properties.
 const readEvidenceRecords = new WeakMap<ReadEvidence, EvidenceRecord>();
 class StateIntegrityError extends Error {
@@ -125,21 +126,19 @@ function key(value: string): value is StateKey {
  * snapshot content is validated only by read() with Application-owned validators.
  */
 export class PublishedStateRepository {
-  private readonly coordination: Coordination;
+  private readonly coordination: ConnectionCoordination;
+  private readonly pending: Map<StateKey, Attempt>;
   constructor(
     private readonly db: Database.Database,
     private readonly logger: Pick<Logger, "warn" | "error"> = createLogger(),
   ) {
-    let coordination = coordinators.get(db);
-    if (!coordination) {
-      coordination = {
-        busy: false,
-        connectionUnresolved: false,
-        pending: new Map(),
-      };
-      coordinators.set(db, coordination);
+    this.coordination = connectionCoordination(db);
+    let pending = publishedAttempts.get(db);
+    if (!pending) {
+      pending = new Map();
+      publishedAttempts.set(db, pending);
     }
-    this.coordination = coordination;
+    this.pending = pending;
   }
   save(stateKey: string, snapshotJson: string): SaveResult {
     return this.saveTransaction(stateKey, snapshotJson);
@@ -232,7 +231,7 @@ export class PublishedStateRepository {
         ].slice(0, 2),
       };
       attempt = { before, expected, generation, snapshotJson };
-      this.coordination.pending.set(stateKey, attempt);
+      this.pending.set(stateKey, attempt);
       this.db
         .prepare(
           "INSERT INTO state_generation_counters (state_key,last_generation) VALUES (?,?) ON CONFLICT(state_key) DO UPDATE SET last_generation=excluded.last_generation",
@@ -250,7 +249,7 @@ export class PublishedStateRepository {
         .run(stateKey, stateKey);
       this.db.exec("COMMIT");
       if (!this.transactionResolved()) return this.unresolvedConnection();
-      this.coordination.pending.delete(stateKey);
+      this.pending.delete(stateKey);
       return { outcome: "saved", generation, snapshotJson, reconciled: false };
     } catch (error) {
       const problem = failure(error);
@@ -282,7 +281,7 @@ export class PublishedStateRepository {
       };
     if (this.coordination.blocked)
       return this.readFailure(this.coordination.blocked);
-    if (this.coordination.pending.has(stateKey))
+    if (this.pending.has(stateKey))
       return { outcome: "isolated", reason: "unresolved_save" };
     // Keep the shared gate through validation to reject Validator DB reentry.
     // The actual SQLite Read Transaction ends BEFORE any Validator is called.
@@ -452,7 +451,7 @@ export class PublishedStateRepository {
         scope: "database",
         reason: "connection_busy",
       };
-    const attempt = this.coordination.pending.get(stateKey);
+    const attempt = this.pending.get(stateKey);
     if (!attempt)
       return {
         outcome: "not_saved",
@@ -476,7 +475,7 @@ export class PublishedStateRepository {
   private refusal(stateKey: StateKey): SaveResult | undefined {
     if (this.coordination.connectionUnresolved)
       return this.unresolvedConnection();
-    if (this.coordination.pending.has(stateKey))
+    if (this.pending.has(stateKey))
       return { outcome: "unknown", scope: "state", reason: "unresolved_save" };
     if (this.coordination.busy)
       return {
@@ -548,7 +547,7 @@ export class PublishedStateRepository {
       const actual = this.readImage(stateKey);
       if (!this.transactionResolved()) return this.unresolvedConnection();
       if (same(actual, attempt.expected)) {
-        this.coordination.pending.delete(stateKey);
+        this.pending.delete(stateKey);
         return {
           outcome: "saved",
           generation: attempt.generation,
@@ -557,7 +556,7 @@ export class PublishedStateRepository {
         };
       }
       if (same(actual, attempt.before)) {
-        this.coordination.pending.delete(stateKey);
+        this.pending.delete(stateKey);
         return { outcome: "not_saved", ...problem };
       }
       return {
