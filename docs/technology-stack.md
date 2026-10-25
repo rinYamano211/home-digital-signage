@@ -692,12 +692,17 @@ DB欠損時は既存DB消失・Mount異常・権限異常等を考慮し、無�
 
 DBはRelease Directory外に配置し、`/var/lib/home-digital-signage/signage.db`は候補Pathとして扱う。具体Path・Provisioning CLI名・実装詳細は未決定である。Directory作成・Permission・実機Deploy手順はIssue #12と連携する。
 
+Provisioningの同時実行防止、Provisioning中の通常Backend起動との競合、DB存在確認から新規作成までの競合、および排他的DB作成・既存DB保護の具体方式は、PR-B / B-2の未決定・検討事項とする。Lock方式・CLI構成・実装APIは今回確定しない。
+
 ### 12.4 Schema VersionとMigration
 
 SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。
 
 - 既知Version間で、互換性検証済みかつ明示的に許可された個別Migrationだけを自動実行する。
-- DDLとVersion更新は同一Transactionで行う。失敗時はRollbackして原因を分類し、Commit結果不明時はDB状態を再確認してから判断する。
+- DDLとVersion更新は同一Transactionで行う。DDL失敗・Rollback成功時は、DBのVersionとSchema実態を再検証し、失敗原因を分類する。
+- Rollback失敗時は、DBの整合性を確認できるまでDB利用機能を停止し、正常扱いにしない。
+- Commit結果不明時はVersionとSchema実態の両方を照合し、Migrationが適用済みか未適用かを確認する。Rollback失敗・Commit結果不明時は、根拠なくMigrationを再実行しない。
+- Migration定義・SQL自体の不正は自動再試行せず、BLOCKEDとして手動確認を要求する。
 - 未知・新しすぎるVersion、Schema不整合はBLOCKEDとする。一時的なSQL障害はRecovery対象として分類する。
 - 旧Releaseとの読出し・書込み互換性を確認できないMigrationは自動実行しない。
 - 自動Downgrade MigrationはMVPでは実装しない。非互換MigrationはBackup・Deploy・Rollback手順と連携して別途管理する。
