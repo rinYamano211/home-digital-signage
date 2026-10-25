@@ -1048,6 +1048,165 @@ interface ConditionalSaveRequest {
 SCH-07は保存失敗・結果不明、SCH-11は最新不正時Fallback、SCH-12は正常な別Stateの継続という既存観点の具体化として扱い、別の矛盾する条件を追加しない。Domain固有の新旧比較・Scheduler・Pendingの完成をB-3Bだけで保証しない。Quota Guardの保存構造・具体SQL、Cache・TTL・Fallback、継続Recovery・Backupは後続工程に維持する。
 
 
+
+### 12.11 B-3C Backend Cache Repository設計
+
+B-3Cは設計レビュー完了・実装未着手とする。B-3B-1 / B-3B-2はPR #31 / #33で実装済みであり、Published StateのInterface・Generation・最大2世代・条件付き保存を変更しない。CacheEntryはArchitecture 16.5の既存構造、Cache固有schemaVersion: 1、backend_cache Tableを維持し、専用Generation / Revisionを追加しない。外部ProviderのRaw Responseを一律保存せず、Published State単位で保存する。
+
+#### 責務とRead契約
+
+Application / 各Backend ServiceはDomain Schema・Semantic Validation定義、TTL設定、Cache採用・新旧比較・Fallback可否、Published State再生成、Tx-P成功結果とTx-C候補の対応確認を担当する。共通Cache Moduleは共通CacheEntry構造・Version、期限判定、Repository Read結果を用いた利用可否判断、不正と期限切れの区別を担当する。RepositoryはSQLite Read・条件付きSave、JSON Parse・Validator実行、既存5 State Keyの検証、証跡・DB状態確認、Tx-C・照合・障害分類を担当する。Module / Repositoryの独立Class・ファイル分割は今回固定しない。
+
+```ts
+type CacheEntry<T> = {
+  schemaVersion: 1;
+  data: T;
+  dataUpdatedAt: string;
+  expiresAt: string;
+};
+
+type CacheReadResult<T> =
+  | {
+      outcome: "found";
+      entry: CacheEntry<T>;
+      evidence: CacheReadEvidence;
+    }
+  | {
+      outcome: "invalid";
+      stage: "json_parse" | "schema" | "semantic";
+      reason: string;
+      evidence: CacheReadEvidence;
+    }
+  | { outcome: "empty"; evidence: CacheReadEvidence }
+  | {
+      outcome: "validator_error";
+      stage: "schema" | "semantic";
+      reason: string;
+    }
+  | {
+      outcome: "database_error";
+      layer: "L1" | "L2" | "L3" | "L4";
+      reason: string;
+    };
+```
+
+JSON Parse → Cache共通Schema・Domain Schema → Semantic Validation → 共通Cache ModuleでTTL判定、の順とする。Repository Readにexpiredを追加せず、TTL切れだけでinvalidにしない。Validator例外は通常Validation失敗と分離し、validator_error / database_errorでは証跡を発行しない。invalidの証跡はDB Row同一性の確認専用であり、Fallback利用の根拠ではない。不正Cache・期限切れCacheは公開用Fallbackに使わない。
+
+dataUpdatedAt・expiresAtは元の値を保持し、Cache更新・FallbackによってTTLを延長しない。APIの期限Mask・Metadata保持・publishedAt更新条件は既存契約に従う。
+
+#### 条件付き保存とunchanged
+
+```ts
+type CacheAdoptionDecision =
+  | { outcome: "adopt" }
+  | { outcome: "reject" }
+  | { outcome: "unknown" };
+
+interface CacheConditionalSaveRequest<T> {
+  stateKey: StateKey;
+  entry: CacheEntry<T>;
+  evidence: CacheReadEvidence;
+  adoption: CacheAdoptionDecision;
+}
+
+type CacheSaveResult =
+  | { outcome: "saved"; reconciled: boolean }
+  | { outcome: "unchanged" }
+  | {
+      outcome: "not_saved";
+      scope: "input" | "state" | "database";
+      reason: string;
+      layer?: "L1" | "L2" | "L3" | "L4";
+    }
+  | {
+      outcome: "unknown";
+      scope: "state" | "database";
+      reason: string;
+    };
+```
+
+概念Interfaceであり、具体Type名・Reasonは実装時に既存コードと整合させられるが、結果の意味上の分類を統合・削除しない。通常更新の無条件Blind Saveは設けない。
+
+保存には、正常候補、Applicationのadopt判断、有効なCacheReadEvidence、Tx-C内でRead時Rowと現在Rowが一致、同一Stateに未解決Tx-Cなし、共有Connectionの正常な利用可能性をすべて要求する。reject / unknownでは採用しない。証跡の偽造・別State / Connection流用・消費済み再利用を拒否する。証跡はDB状態一致を確認するもので、Domainの鮮度を保証しない。
+
+| ケース | 保存条件 |
+|---|---|
+| 初回 | Read時・Tx-C時ともRowが存在しない場合のみ |
+| 不正Cache置換 | 正常候補で、Applicationが信頼できる情報から置換の安全性を確認できる場合のみ。不正Cacheの元の取得順序が不明なら、正常なPublished Stateがあるだけで新しいと推測しない |
+| 通常更新 | Domain固有の採用条件を満たし、Read時のRow有無・保存済みJSONと現在Rowが一致する場合のみ |
+
+dataUpdatedAtだけを普遍的な新旧条件にしない。比較不能はFail Closed、Read後のRow変更は保存拒否とする。Read後確認だけで保存せず、書込み前のTx-C内再確認でTOCTOUを防ぐ。
+
+adopt・有効証跡・Read時と現在Row一致を確認し、保存予定JSONと現在JSONが完全一致するときだけ書込みを省略してunchangedを返す。unchangedは「今回保存した」ではなく「同じ内容が既に保存されている」を意味し、証跡はこの場合も消費する。
+
+#### Tx-C Atomic保存とCommit照合
+
+Cache Rowの保存はTx-CとしてAtomicに行い、Tx-P・Tx-A・Tx-Qと統合しない。保存試行ごとにState Key、保存前Rowの有無・保存前JSON・保存予定JSONをRepository内部に保持する。保存予定JSONは一度確定し、照合時に再生成しない。
+
+Commit例外だけで未保存と判断せず、Transaction状態確認 → 必要時Rollback → 解決済み確認 → 保存前・保存予定・現在状態の照合を行う。成功・未保存の確定には、Transaction解決、保存前後を区別可能、対象Stateへの別書込み排除、DB照合結果の一貫性を要求する。
+
+| 照合結果 | 扱い |
+|---|---|
+| 一意に保存済みと判定可能 | saved（照合で確定した場合はreconciledを示す） |
+| 一意に未保存と判定可能 | not_saved |
+| 不一致・照合不能等で判定不能 | unknownを維持し、自動再書込みしない |
+
+unknown時は同一Stateの後続Tx-Cを止め、Read-only reconcile()で再照合する。Connection自体が未解決なら全Repositoryの通常DB操作を停止する。Process Crash・外部DB変更をまたぐ操作単位の完全識別はMVPで保証しない。
+
+Tx-P成功確定後にTx-Cへ進むが、Tx-C失敗でCommit済みPublished StateをRollbackしない。Tx-CはPublished State Generationを変更せず、Tx-P成功結果とTx-C候補の対応確認はApplication / PR-D側が所有する。Cache証跡はPublished Stateの採用条件・鮮度を保証せず、Cache由来のPublished State公開も既存の条件付き保存契約に従う。
+
+#### 共有Connection排他・障害分類・Delete
+
+既存Published State RepositoryのWeakMapを共通内部Coordinationへ抽出する最小変更案を基本とする。共通化対象はConnection単位のbusy・connectionUnresolved・DB全体blockedとし、Tx-P / Tx-Cの未解決Attemptと各ReadEvidenceはRepository固有に管理する。
+
+同じConnectionでTransactionを重複させず、ValidatorからのDB再入を拒否する。BackendStoreが唯一のConnection所有者であることと、Tx-P / Tx-Cの独立性を維持する。State固有異常とDB全体障害は既存L1〜L4・scopeに基づいて区別し、Layer番号だけで影響範囲を決めない。Connection正常時はState単位Tx-C未解決を正常な別Stateへ無条件に波及させず、Connection未解決なら全Repositoryを保護する。
+
+B-3C必須Interfaceにdelete()は含めない。不正Cacheの物理削除は未決定であり、無条件DeleteはRead後の新規更新を削除し得る。将来導入時は証跡を用いた条件付きDeleteを検討するが、今回は確定しない。
+
+#### B-3Cテスト受入条件
+
+以下は設計上の32観点であり、実施結果ではない。Vitest・実SQLite統合・Fault Injection・既存回帰テストを想定するが、32個の独立テスト関数を要求しない。
+
+| ID | 分類 | 条件・期待結果 |
+|---|---|---|
+| C-01 | Read・Validation | Row未存在 → empty＋証跡 |
+| C-02 | Read・Validation | 正常Cache → found＋検証済みEntry＋証跡 |
+| C-03 | Read・Validation | JSON構文不正 → invalid(json_parse) |
+| C-04 | Read・Validation | Schema不正・Version不一致 → invalid(schema) |
+| C-05 | Read・Validation | Semantic不正 → invalid(semantic) |
+| C-06 | Read・Validation | Validator例外 → validator_error、証跡なし |
+| C-07 | Read・Validation | DB Read失敗 → database_error、証跡なし |
+| C-08 | 条件付き保存・競合 | 初回保存成功 |
+| C-09 | 条件付き保存・競合 | 初回Read後の他処理によるRow作成を検出 |
+| C-10 | 条件付き保存・競合 | 採用条件を満たす不正Cache置換 |
+| C-11 | 条件付き保存・競合 | 不正Cacheの新旧比較不能時は保存拒否 |
+| C-12 | 条件付き保存・競合 | 新しい候補を条件付き更新 |
+| C-13 | 条件付き保存・競合 | 古い候補の保存拒否 |
+| C-14 | 条件付き保存・競合 | 新旧比較不能時の保存拒否 |
+| C-15 | 条件付き保存・競合 | Read後のCache Row変更を検出 |
+| C-16 | 条件付き保存・競合 | 不正・流用・消費済み証跡を拒否 |
+| C-17 | Commit・照合 | 通常Commit成功 |
+| C-18 | Commit・照合 | 同一JSONはunchanged、証跡を消費 |
+| C-19 | Commit・照合 | Tx-C途中失敗でRollback・旧Cache維持 |
+| C-20 | Commit・照合 | Commit成功後の例外通知を照合 |
+| C-21 | Commit・照合 | Commit未成立を照合 |
+| C-22 | Commit・照合 | 判定不能はunknown |
+| C-23 | Commit・照合 | reconcile()はRead-only、再書込みなし |
+| C-24 | 共有Connection・障害 | Tx-P中のTx-C重複開始を防止 |
+| C-25 | 共有Connection・障害 | Tx-C中のTx-P重複開始を防止 |
+| C-26 | 共有Connection・障害 | ValidatorからのDB再入を拒否 |
+| C-27 | 共有Connection・障害 | State単位Tx-C未解決を局所化 |
+| C-28 | 共有Connection・障害 | Connection未解決時は全Repository停止 |
+| C-29 | 共有Connection・障害 | State固有異常とDB全体障害を区別 |
+| C-30 | TTL・回帰 | RepositoryはTTLを判定せず、Cache Moduleで期限判定 |
+| C-31 | TTL・回帰 | Tx-C失敗でもPublished State維持 |
+| C-32 | TTL・回帰 | 既存B-3Bの全テスト契約を維持 |
+
+#### 実装への引継ぎ
+
+Domain固有の取得順序・新旧比較、再起動をまたぐ同値・順序識別、Scheduler / Acquisition Control、全Txオーケストレーション、Pendingとの対応、CacheからのPublished State再公開、継続Recovery・Backup、不正Cache物理削除、Pi実機検証は後続工程とする。これらをB-3Cの実装完了条件へ拡大しない。
+
+
 ---
 
 ## 13. Backup方式
