@@ -857,7 +857,7 @@ Commit例外だけでRollback確定と判断しない。例外後はSQLite Trans
 
 照合用にState Key、保存前Counter、候補Generation、保存予定Snapshot JSON、保存前Snapshotの世代構成・内容を保持し、照合時点のCounter・Snapshotと比較する。候補確定後のSnapshot JSONは保持した同じ内容を使用し、照合時に再生成しない。
 
-- Counterが候補Generationと一致し、該当Snapshot JSONも一致し、最大2世代保持等の期待する保存後状態に矛盾がなければ成功とする。
+- 成功判定は、SQLite Transactionが未完了・状態不明ではなく解決済みであり、DB照合結果が一貫していることを前提とする。Counterが候補Generationと一致し、該当Snapshot JSONが保存予定内容と一致することに加え、保存前Snapshotの世代構成・内容を基準に、今回のTx-PによるINSERT・DELETE後に期待される保持・削除結果を照合する。保存後の世代構成が最新＋直前の最大2世代保持と整合し、期待する保存後状態に矛盾がない場合だけ成功とする。Counter・候補Snapshotだけの部分一致では成功確定しない。
 - Counter・Snapshot構成・内容が保存前と一致し、未完了Transactionが存在しないことを確認できれば未保存とする。
 - 不一致・想定外Generation・DB照合不能は判定不能として保留し、自動再試行・公開しない。
 
@@ -887,7 +887,7 @@ Fallback中の新規Tx-Pは、次のすべてを満たす場合だけ許可す�
 6. 同一Stateに未解決のCommit結果不明操作がない。
 7. Tx-P内でCounter整合性を再検証できる。
 
-新旧比較不能なら自動保存を許可しない。Generation・publishedAtだけを取得順序の証拠としない。最大2世代保持により新規Tx-Pが唯一正常だった直前Snapshotを削除し得る。これは保存方針の制約として明記し、後述のテストで確認する。
+新旧比較不能なら自動保存を許可しない。不正な最新Snapshotから取得順序・鮮度比較に必要な情報を信頼できる形で取得できなければ、候補が新しいと推測しない。既存のState固有採用条件に基づいて新旧比較を検証できない場合は、新規Tx-Pの自動実行を保留する。Generation・publishedAtだけを取得順序の証拠としない。これは上記7条件の明確化であり、条件を満たすFallback中の保存を全面禁止するものではない。最大2世代保持により新規Tx-Pが唯一正常だった直前Snapshotを削除し得る。これは保存方針の制約として明記し、後述のテストで確認する。
 
 #### 実装PR分割とテスト受入条件
 
