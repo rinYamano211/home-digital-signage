@@ -736,7 +736,7 @@ BackendはCache由来という事実を提供するだけとし、
 Displayは内部Cacheの実装や直接参照に依存せず、Published State経由で事実を受け取る。
 
 Cache由来の識別はtechnology-stack.md第10章のdataSourceに従う。表示状態・エラー分類・具体UIは後続設計で決定する。
-Cache保存はSQLiteを正式採用し、Cache Entry・Validation・Transactionは第16章に従う。DDL等の詳細は未決定とする。
+Cache保存はSQLiteを正式採用し、Cache Entry・Validation・Transactionは第16章に従う。初期DDLはtechnology-stack.md 12.6に従い、実装・検証は未完了である。
 
 ### 8.7 Cache / Fallbackの基本フロー
 
@@ -1337,9 +1337,9 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 
 | 分野 | 選定・確認する事項 |
 |---|---|
-| Shared State / Data Contract | SQLite正式採用、HTTP Polling・共通API契約とState単位Atomicityは具体化済み。正式DDL・Index・Migration・Concurrent Access詳細は未決定（第16章） |
+| Shared State / Data Contract | SQLite正式採用、HTTP Polling・共通API契約とState単位Atomicityは具体化済み。初期DDL・Index方針・Generation・Migration方式はB-2で具体化済み。個別Migration・排他API等は未決定（第16章・technology-stack.md第12章） |
 | 更新制御 | 複数Stateの厳密な時点整合性・Atomic取得更新をMVPで要求しない前提での実現方式。Concurrent Request / 更新競合への対策、Freshness比較・退行防止の実現責務とMechanismをStore技術と合わせて決定する |
-| Cache | SQLite正式採用、Cache Entry・Validation・Transactionは第16章。正式DDL・Provider依存の期限評価は未決定。Timeout・Backoff合意値は16.3 |
+| Cache | SQLite正式採用、Cache Entry・Validation・Transactionは第16章。初期DDLはtechnology-stack.md 12.6で定義済み。Provider依存の期限評価の詳細は未決定。Timeout・Backoff合意値は16.3 |
 | Config / Secrets | 一般Configはsystemd EnvironmentFile、SecretはGit・Release外のアクセス制限付き専用ローカルファイル、起動時TypeBox検証を正式採用。Path・Permission具体値・更新／Rotation・Recovery詳細・Last Known Valid等の永続化は後続設計（技術選定24.2） |
 | Config変更 | 通知方式（Event / Watch / Callback / Polling等）、Runtime Apply / Retry、Migration Library / 実装方式、Secret切替・Connection Test。Config Revision / Optimistic Lock等はMVPでの必要性を確認し、単一変更元では具体的な競合制御実装を必須としない。不要であればFutureの複数変更元導入時に具体化する |
 | Process / Recovery | 原則1 Backend Process、systemd正式採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdogは未決定。Backoff・HTTP Timeoutの合意値は16.3 |
@@ -1425,7 +1425,7 @@ Domain固有Validation、Data変換、Cache採用、Freshness、Published State�
 | Frontend Component State | Display内で生成する派生State。BackendやStoreへ戻さない |
 | Display Runtime State | Displayの切替位置等。MVPではCrash前の表示位置復元を要求しない |
 
-SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。
+SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。初期Schemaはpublished_state_snapshots・backend_cache・acquisition_controlと、State単位の最終Generationを保持する内部管理Table state_generation_countersの4 Tableを正式採用する。これは将来の永続データを網羅するものではなく、Provider単位のQuota履歴の保存先は未決定である。
 Published StateのDataとMetadataは1 JSON Snapshotとして保存し、不完全なSnapshotを公開しない。最新・直前の2世代を保持する。
 BackendStoreがConnectionの生成・利用可否・終了を所有し、Backend Process内で原則1つのSQLite Connectionを共有する。Published State・Backend Cache・Acquisition Control Stateの各Repositoryは共通Connectionを利用し、Repositoryごとの独立Connectionは原則採用しない。FastifyはStoreの公開Interfaceを利用し、SQLite内部の管理を直接行わない。具体的なType名・Interface・Module構成は実装時に決定する。
 共有Connectionは他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
@@ -1462,7 +1462,7 @@ State SchedulerとProvider Quotaは分離し、Tomorrow.ioは送信前Tx-Q Commi
 |---|---|
 | Tx-Q | Tomorrow.io Quota消費予定をHTTP送信前に保存。Commit失敗なら送信しない |
 | Tx-A | HTTP取得・Validation後にControl State保存。失敗ならTx-Pへ進まない |
-| Tx-P | Tx-A成功後にPublished StateのData＋Metadata保存。Commit後だけ公開。失敗は旧Snapshotを維持 |
+| Tx-P | Tx-A成功後にPublished StateのData＋Metadata保存。Snapshot追加・Generation採番とCounter更新・古い世代削除を同一Transactionで実施。Commit後だけ公開。失敗は旧Snapshotを維持 |
 | Tx-C | Tx-P成功後にCache更新。失敗してもCommit済みPublished State公開を取り消さない |
 
 SQL保存失敗と外部取得失敗を区別する。複数State生成時のDomain部分成功は維持し、不正Stateは失敗・Fallback、正常Stateは更新対象とする。
@@ -1493,15 +1493,16 @@ API Read・単なるDB復元ではpublishedAtを更新しない。表示用API�
 
 ### 16.6 Snapshot世代管理とRecovery
 
-最新・直前の2世代を保持し、世代別Row方式を暫定採用する。新Snapshot追加と古い世代削除は同一Transactionで行う。
-Generation採番・具体DDL・個別Migrationは未決定である。Schema Version管理・Migrationの適用条件は[技術スタック選定 12.4](technology-stack.md#124-schema-versionとmigration)に従う。
+最新1世代＋直前1世代＝合計2世代保持と、世代別Row方式を正式採用する。Snapshot追加・Counter更新・保持数超過分の削除は同一Transactionで行う。
+GenerationはState単位の正の整数で、保存Transaction内で採番し、最終採番値を永続化する。最新SnapshotはState内のGeneration最大Rowである。Snapshotが0件でもCounterを保持し、欠損・不整合時に無条件再生成・リセットしない。INTEGER上限では安全側で採番を停止する。Generationは保存・公開順序であり、外部Dataの鮮度・取得結果の新旧ではない。P-04 / P-05の比較をGenerationだけで代替しない。
+具体DDL・Index・Counter不変条件はtechnology-stack.md 12.6〜12.8、Schema Version管理・Migrationの適用条件は[技術スタック選定 12.4](technology-stack.md#124-schema-versionとmigration)に従う。
 
 1. SQLiteからState単位にJSON Parse・Schema・Semantic Validationを行う。
 2. 最新Snapshotが不正なら、直前世代をValidationして復元候補にする。
 3. 最新Snapshotが正常だが期限切れの場合は、期限切れだけを理由に直前世代へ戻さない。
 4. 直前世代も不正なら、そのStateを不採用・隔離しログへ記録する。他の正常Stateは独立して復元できるようにする。
 
-復元したSnapshotのFreshness・publishedAtを勝手に更新しない。2世代保持はDatabase全体破損・microSD故障への対策ではない。
+復元だけではpublishedAt・dataUpdatedAt・expiresAtを変更しない。2世代保持はDatabase全体破損・microSD故障への対策ではない。
 正常なAcquisition Control Stateでは保存nextAttemptAtを尊重する。既存Stateの不正・欠損ではmin(acquisitionPeriod, 5分)待機し、現行5 Stateでは5分とする。真の新規Stateは通常初回判定を許可する。Quota履歴不正は5分経過だけではFail Closedを解除しない。
 
 Lifecycleでは復元後に外部取得待ちなしでAPI提供を開始し、期限切れDataをMaskする。再起動だけではMetadataを更新しない。

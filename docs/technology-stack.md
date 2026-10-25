@@ -662,8 +662,10 @@ SQLite・better-sqlite3は正式採用とする（Pi性能・ARM64互換性は�
 | published_state_snapshots | 最新・直前のPublished State Snapshot |
 | backend_cache | Published State単位のBackend Cache |
 | acquisition_control | Backendの取得制御用永続状態 |
+| state_generation_counters | State単位の最終Generation（内部管理） |
 
-Published Stateの**最新と直前の2世代保持**と、**世代ごとに別Rowで保存する方式**は、いずれも暫定採用とする。具体DDL・Index・Generation採番・個別Migrationは未決定である。Schema Version管理とMigrationの適用条件は12.4で定義する。
+初期Schemaは上記4 Tableを正式採用する。最初の3 Tableは既存の論理State、4つ目はGeneration用の内部管理である。将来の全永続データを網羅するものではない。Tomorrow.ioのProvider単位Quota履歴はTx-Qに従って別途具体化し、acquisition_controlへ組み込むか専用Tableを追加するかは未決定とする。
+Published Stateは**最新1世代＋直前1世代＝合計2世代**と世代別Row方式を正式採用する。DataとMetadataを1 JSONで一体保存し、State単位に管理する。初期DDL・Index・Generationは12.6〜12.8、VersionとMigration方式は12.4に従う。
 State単位のAtomicityを確保し、複数State間の厳密なAtomicityは必須としない。Tx-Q / Tx-A / Tx-P / Tx-C分離とState単位の部分成功はArchitecture 16.4に従う。
 
 ### 12.2 SQLite設定・注意点
@@ -692,13 +694,15 @@ DB欠損時は既存DB消失・Mount異常・権限異常等を考慮し、無�
 
 DBはRelease Directory外に配置し、`/var/lib/home-digital-signage/signage.db`は候補Pathとして扱う。具体Path・Provisioning CLI名・実装詳細は未決定である。Directory作成・Permission・実機Deploy手順はIssue #12と連携する。
 
-Provisioningの同時実行防止、Provisioning中の通常Backend起動との競合、DB存在確認から新規作成までの競合、および排他的DB作成・既存DB保護の具体方式は、PR-B / B-2の未決定・検討事項とする。Lock方式・CLI構成・実装APIは今回確定しない。
+**OSレベルの排他Lock＋SQLite Transaction**を正式な設計方針とする。Provisioning同士・通常Backend起動との競合を防ぎ、Migrationも同一Lock規約に従う。Lock取得後にDBの存在・Version・Schemaを再確認し、DB作成には既存ファイルを上書きできない排他的作成方式を用いる。単なるLockファイルの存在確認は採用せず、Process異常終了時にLockが適切に解放される方式を選ぶ。不完全なDBが残っても自動削除・再作成しない。
+
+OS Lockは協調するProcess間の排他であり、DBファイルの排他的作成とは別の保証である。初期化時だけのLockで稼働中Backendとの競合まで防げるとはしない。Linux・Node.jsでのLock実装、取得・解放API、保持範囲、稼働中DB利用保護、排他的DB作成・配置方法、CLI名・配置、DB Path・Directory・Permission、Lock取得失敗・Timeout・異常終了時の扱いは実装前に検証・具体化する。
 
 ### 12.4 Schema VersionとMigration
 
-SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。
+初期MVP Schema Versionは**1**とし、SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。
 
-- 既知Version間で、互換性検証済みかつ明示的に許可された個別Migrationだけを自動実行する。
+- 明示的に登録された個別MigrationのAllowlist方式を正式採用する。既知Version間で旧Releaseとの読出し・書込み互換性を検証済みのMigrationのみ、通常Backend起動時の自動適用を許可する。適用前後にVersionとSchema実態を検証する。
 - DDLとVersion更新は同一Transactionで行う。DDL失敗・Rollback成功時は、DBのVersionとSchema実態を再検証し、失敗原因を分類する。
 - Rollback失敗時は、DBの整合性を確認できるまでDB利用機能を停止し、正常扱いにしない。
 - Commit結果不明時はVersionとSchema実態の両方を照合し、Migrationが適用済みか未適用かを確認する。Rollback失敗・Commit結果不明時は、根拠なくMigrationを再実行しない。
@@ -707,13 +711,75 @@ SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIや
 - 旧Releaseとの読出し・書込み互換性を確認できないMigrationは自動実行しない。
 - 自動Downgrade MigrationはMVPでは実装しない。非互換MigrationはBackup・Deploy・Rollback手順と連携して別途管理する。
 
-自動適用の可否はDDLの種類だけで決めず、個別Migrationの検証結果で判断する。初期MVPでは汎用Migration Frameworkを過剰に構築せず、必要最小限の仕組みとする。具体DDL・Index・Migration内容・Snapshot世代管理の詳細はPR-B / B-2で設計する。既存の2世代保持・世代別Rowの暫定方針は変更しない。
+自動適用の可否はDDLの種類だけで決めず、個別Migrationの検証結果で判断する。汎用Migration Frameworkは導入しない。現時点では初期Version 1のみを具体化し、架空のv1→v2 Migrationは作成しない。継続的なRecoveryの詳細実装はPR-Eへ引き継ぐ。
 
 ### 12.5 Lifecycleの技術的制約と後続工程
 
 ConnectionはBackendStoreが所有し、起動・終了順序と工程ごとの責務は[Architecture 16.8](architecture.md#168-sqlite初期化とbackend-lifecycle)に従う。PR-AのShutdown契約を維持するが、better-sqlite3の同期APIを長時間実行するとEvent LoopやShutdown Timerをブロックし得る点を考慮する。
 
 B-1では初期化時の障害分類までを定義する。継続的なRecovery・再試行・復旧後の再検証はPR-E、Schedulerと終了順序はPR-C、実機設定・受入試験はIssue #12・#13へ引き継ぐ。
+
+
+### 12.6 初期DDL
+
+以下をB-2で確定した初期Schema設計とする。SQLite上で実装・検証済みという意味ではない。
+
+```sql
+CREATE TABLE published_state_snapshots (
+    state_key TEXT NOT NULL CHECK (length(state_key) > 0),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    snapshot_json TEXT NOT NULL,
+    PRIMARY KEY (state_key, generation)
+);
+
+CREATE TABLE backend_cache (
+    state_key TEXT PRIMARY KEY NOT NULL
+        CHECK (length(state_key) > 0),
+    cache_json TEXT NOT NULL
+);
+
+CREATE TABLE acquisition_control (
+    state_key TEXT PRIMARY KEY NOT NULL
+        CHECK (length(state_key) > 0),
+    control_json TEXT NOT NULL
+);
+
+CREATE TABLE state_generation_counters (
+    state_key TEXT PRIMARY KEY NOT NULL
+        CHECK (length(state_key) > 0),
+    last_generation INTEGER NOT NULL
+        CHECK (last_generation >= 0)
+);
+```
+
+state_keyは空文字列禁止、Generationは正の整数、最終採番値は0以上、各JSONはNULL禁止とする。State識別子の許可リストは原則アプリケーション側で検証し、JSON構造はTypeBox Schema ValidationとSemantic Validationで検証する。JSON内のMetadataは第10章の既存契約を維持する。`json_valid()`等の追加SQLite制約は実行環境の互換性確認前に必須化しない。DDLの制約に加え、整数性・範囲を含むアプリケーション側Validationとの整合は実装時に検証する。
+
+### 12.7 Indexと想定Query
+
+MVPは主キーに対応するIndexを基本とし、追加の明示的Indexは原則設けない。State単位の最新・直前Snapshot取得、古い世代削除、Cache・Acquisition Control・最終Generation取得を想定する。
+
+```sql
+SELECT generation, snapshot_json
+FROM published_state_snapshots
+WHERE state_key = ?
+ORDER BY generation DESC
+LIMIT 2;
+```
+
+実装時にSQLite Query PlanでIndexの利用を検証する。
+
+### 12.8 GenerationとCounterの不変条件
+
+GenerationはState単位の正の整数で、新しい公開Snapshotほど大きくする。Stateごとの最終採番値を永続化し、Snapshotが0件でも保持する。新Snapshotの保存Transaction内で採番し、Snapshot追加・Counter更新・保持数超過分の削除を同一Transactionで行う。最新SnapshotはState内のGeneration最大Rowである。
+
+- Snapshotが存在するStateにはCounterが存在する。
+- `last_generation >= MAX(generation)`。古いSnapshot削除等によりCounterが最大Generationより大きい場合は許容する。
+- Counter欠損、保存済みGenerationより小さいCounterは不整合であり、無条件に再作成・リセットしない。
+- SQLite INTEGER上限では安全側で採番を停止する。
+
+Counter整合性異常とSnapshot JSONのState単位Validation失敗を区別する。既存L1〜L4に従い、DB全体の破損・Schema非互換はBLOCKED、State固有JSON不正は対象State隔離とする。Counter異常をDB全体BLOCKEDとするかState単位隔離とするかの具体境界は実装前の検証・詳細設計事項とする。
+
+GenerationはSnapshotの保存・公開順序であり、外部Dataの鮮度や取得結果の新旧を示さない。永続取得識別子・同値時処理・Pending P-04 / P-05の比較は23.5〜23.6に従い、Generation単独では古い結果の上書きを防げない。
 
 ---
 
@@ -772,7 +838,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 | 設計方針：CurrentWeather | 4項目Domain Data・State全体の採用／不採用・取得時鮮度と公開TTLの分離（第19章）。Provider・取得周期・未来許容は暫定 |
 | 設計方針：Schedule Step 5 | Schedule Domain Data・全ページ取得と正規化・JST日付制御・Cache条件（第18章）。未確定詳細は18.6に区別 |
 | 正式採用 | Backend主要技術・Build / Deploy、Config / Secrets方式、開発品質 / PR検証CI、Pino / persistent journald・OS標準監視、SQLite Backup API（第24章） |
-| 暫定採用：Snapshot世代管理 | Published Stateの最新＋直前の2世代保持、世代ごとに別Rowで保存する方式（12.1・Architecture 16.6） |
+| 正式採用：Snapshot世代管理 | 最新1世代＋直前1世代＝合計2世代、世代別Row、State単位Generation Counter（12.1・12.8・Architecture 16.6） |
 | 暫定採用：Backend実行・取得制御 | 1 Backend Process内の複数非同期Task、State単位の独立Scheduler、即時Retryなし・有界指数Backoff（Architecture 16.1・16.3） |
 | 暫定採用：Transaction | Tx-Q / Tx-A / Tx-P / Tx-Cの分離、複数State生成時の部分成功（Architecture 16.4・第23章） |
 | 暫定採用：検証・Recovery | State単位のApplication Data検証・隔離、Control State不正・欠損時の保守的待機、Database利用不能時は正常稼働扱いにしない方針（Architecture 16.6・16.7） |
@@ -801,7 +867,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
 - Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
-- 正式SQLite DDL・Index・個別Migration・Generation採番（Version管理と適用条件は12.4で定義済み）、Provisioning CLI、DBの具体Path、503時のJSON Error Schema。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
+- 個別Migration・OS Lock実装と保持範囲・稼働中DB保護・排他的DB作成方法、Provisioning CLI、DBの具体Path・Permission、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理・Commit結果不明時照合方法は未決定（23.5）。
 - Cache不正時の物理削除。
 - Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH-01〜33は23.8に個別定義済み。Recovery・競合制御は未実装・未検証。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
@@ -1636,7 +1702,7 @@ Tx-A成功・Tx-P失敗時、Stateごと最大1件をメモリ保持する。永
 
 P-04・P-05は既存条件を維持する。publishedAtは既存契約どおりSnapshot生成時刻であり、取得順序の比較に単独使用しない。
 dataUpdatedAtは取得Dataの鮮度比較に利用できるが、再起動・同時刻取得を含む厳密な順序比較は未決定である。Process内取得順序識別子だけでは再起動をまたぐ比較を保証できない。
-永続取得識別子、Generation採番、比較同値時の扱い、Commit結果不明時の照合方法はSQLite DDL・実装詳細設計で確定する。安全に比較条件を検証できない場合、自動再公開を行わず古いPendingによる上書きを防ぐ。
+Generation採番は12.8で定義するが、保存・公開順序であり取得順序の識別子ではない。永続取得識別子、比較同値時の扱い、P-04 / P-05とCommit結果不明時の具体照合方法は引き続き未決定である。安全に比較条件を検証できない場合、自動再公開を行わず古いPendingによる上書きを防ぐ。
 
 SQLite復旧 → Published / Control State復元検証 → Pending検証 → Tx-P保存 → Commit後公開 → Tx-C Cache更新 → 通常Scheduler再開の順とする。同一StateのPending処理と新規HTTPは直列化する。
 
@@ -1767,7 +1833,7 @@ Vitest Fake Timer、HTTP Mock（Timeout / 429 / 500 / Validation）、SQLite統�
 | 未検証 | Pi 5 2GBの性能・ARM64互換性・Native Build負荷、実装・障害復旧・長期運用・CI動作 |
 
 Open-Meteoの正式採用後も、将来の商用利用時は利用条件を再確認する。Tomorrow.ioの既存疎通成功は、将来の利用条件・降雨品質を保証しない。
-Snapshot2世代保持・世代別Row、State単位Scheduler、Tx-Q / Tx-A / Tx-P / Tx-C、Pending、Recovery、WAL / NORMAL・Backup APIは既存詳細設計に従い、具体DDL・SQL・Migration・Module構成は今回追加決定しない。
+Snapshot2世代保持・世代別Row、State単位Scheduler、Tx-Q / Tx-A / Tx-P / Tx-C、Pending、Recovery、WAL / NORMAL・Backup APIは既存詳細設計に従い、初期DDL・Index・Generation・Migration方式は第12章で具体化済みであり、Quota等の具体SQL・個別Migration・Module構成は未決定である。
 
 ### 24.2 Config / Secrets
 
