@@ -15,10 +15,12 @@
     "test": "vitest run",
     "check": "npm run lint && npm run format:check && npm run typecheck && npm test",
     "build:backend": "tsc -p tsconfig.backend.json",
-    "start:backend": "node dist/backend/main.js"
+    "start:backend": "sh scripts/with-backend-lock.sh backend",
+    "provision:backend": "sh scripts/with-backend-lock.sh provision"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.19.2",
     "eslint": "10.13.0",
     "prettier": "3.9.10",
@@ -28,6 +30,7 @@
   },
   "dependencies": {
     "@sinclair/typebox": "0.34.52",
+    "better-sqlite3": "13.0.3",
     "fastify": "5.12.7",
     "pino": "10.4.0"
   }

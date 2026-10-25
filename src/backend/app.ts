@@ -1,13 +1,19 @@
-import Fastify, { LogController } from "fastify";
+import Fastify, {
+  LogController,
+  type FastifyInstance,
+  type RawServerDefault,
+  type RawRequestDefaultExpression,
+  type RawReplyDefaultExpression,
+} from "fastify";
 import type { Logger } from "pino";
 
-export function buildApp(logger: Logger) {
+export function buildApp(logger: Logger, routes = true) {
   const app = Fastify({
     loggerInstance: logger,
     logController: new LogController({ disableRequestLogging: true }),
   });
   // Connectivity only: not a Health/Readiness or Published State contract.
-  app.get("/ping", async () => ({ message: "pong" }));
+  if (routes) registerRoutes(app);
   app.setNotFoundHandler((_request, reply) =>
     reply.code(404).send({ message: "Not found" }),
   );
@@ -16,4 +22,15 @@ export function buildApp(logger: Logger) {
     void reply.code(500).send({ message: "Request failed" });
   });
   return app;
+}
+
+export function registerRoutes(
+  app: FastifyInstance<
+    RawServerDefault,
+    RawRequestDefaultExpression,
+    RawReplyDefaultExpression,
+    Logger
+  >,
+) {
+  app.get("/ping", async () => ({ message: "pong" }));
 }

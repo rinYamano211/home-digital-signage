@@ -4,6 +4,7 @@ import { loadConfig } from "../../src/backend/config/loader.js";
 describe("backend config", () => {
   test("defaults and unrelated OS environment", () => {
     expect(loadConfig({ PATH: "anything", HOME: "/tmp" })).toEqual({
+      dataDirectory: "/var/lib/home-digital-signage",
       host: "127.0.0.1",
       port: 3000,
       logLevel: "info",

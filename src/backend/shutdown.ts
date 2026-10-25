@@ -15,7 +15,7 @@ export function installShutdown(
     signals.off("SIGTERM", onSignal);
     signals.off("SIGINT", onSignal);
   };
-  const shutdown = (): Promise<void> => {
+  const shutdown = (exitCode: 0 | 1 = 0): Promise<void> => {
     if (pending) return pending;
     pending = new Promise<void>((resolve) => {
       let completed = false;
@@ -37,7 +37,11 @@ export function installShutdown(
       Promise.resolve()
         .then(() => app.close())
         .then(
-          () => complete(0, "shutdown_complete"),
+          () =>
+            complete(
+              exitCode,
+              exitCode === 0 ? "shutdown_complete" : "startup_failed",
+            ),
           () => complete(1, "shutdown_failed"),
         );
     });
@@ -48,5 +52,11 @@ export function installShutdown(
   }
   signals.on("SIGTERM", onSignal);
   signals.on("SIGINT", onSignal);
-  return { shutdown, dispose };
+  return {
+    shutdown,
+    dispose,
+    get requested() {
+      return pending !== undefined;
+    },
+  };
 }

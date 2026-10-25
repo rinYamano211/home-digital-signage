@@ -1,0 +1,42 @@
+import Database from "better-sqlite3";
+import type { ExclusiveLock } from "./lock.js";
+import { storagePaths, validateDatabaseFiles } from "./paths.js";
+import { migrate } from "./migrations.js";
+import { SchemaError } from "./errors.js";
+
+export function configureDatabase(db: Database.Database) {
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
+  db.pragma("wal_autocheckpoint = 1000");
+  if (
+    db.pragma("journal_mode", { simple: true }) !== "wal" ||
+    db.pragma("synchronous", { simple: true }) !== 1 ||
+    db.pragma("wal_autocheckpoint", { simple: true }) !== 1000
+  )
+    throw new SchemaError();
+}
+export class BackendStore {
+  private constructor(private readonly db: Database.Database) {}
+  static open(lock: ExclusiveLock): BackendStore {
+    lock.assertHeld();
+    validateDatabaseFiles(lock.directory);
+    const db = new Database(storagePaths(lock.directory).database, {
+      fileMustExist: true,
+      timeout: 5000,
+    });
+    try {
+      // Validate before changing persistent journal mode. Never auto-create tables.
+      if (db.pragma("quick_check", { simple: true }) !== "ok")
+        throw new SchemaError();
+      migrate(db);
+      configureDatabase(db);
+      return new BackendStore(db);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+  close() {
+    if (this.db.open) this.db.close();
+  }
+}
