@@ -1,4 +1,22 @@
 import type Database from "better-sqlite3";
+import type { Logger } from "pino";
+import { createLogger } from "../logging/logger.js";
+import {
+  checkSnapshot,
+  type SnapshotValidator,
+  type ReadResult,
+  type ReadEvidence,
+  type ConditionalSaveRequest,
+} from "./published-state-read.js";
+export type {
+  SnapshotValidator,
+  ValidationResult,
+  ValidationStage,
+  ReadResult,
+  ReadEvidence,
+  ConditionalSaveRequest,
+  AdoptionDecision,
+} from "./published-state-read.js";
 import { classifyDatabaseError, SchemaError } from "./errors.js";
 import { validateSchema } from "./schema.js";
 
@@ -40,6 +58,14 @@ interface Attempt {
   snapshotJson: string;
   failure?: SaveFailure;
 }
+interface EvidenceRecord {
+  coordination: Coordination;
+  connection: Database.Database;
+  stateKey: StateKey;
+  image: StateImage;
+  source: "previous";
+  consumed: boolean;
+}
 interface Coordination {
   busy: boolean;
   connectionUnresolved: boolean;
@@ -48,11 +74,14 @@ interface Coordination {
 }
 // One gate per Connection, including when multiple Repository consumers wrap it.
 const coordinators = new WeakMap<Database.Database, Coordination>();
+// Module-private: no record or registry is exposed through Repository properties.
+const readEvidenceRecords = new WeakMap<ReadEvidence, EvidenceRecord>();
 class StateIntegrityError extends Error {
   constructor(readonly reason: string) {
     super("State counter integrity failure");
   }
 }
+class StaleEvidenceError extends Error {}
 const maximum = BigInt(Number.MAX_SAFE_INTEGER);
 function integer(value: unknown, minimum: bigint): number {
   // safeIntegers(true) preserves SQLite INTEGER before any JS number conversion.
@@ -72,6 +101,8 @@ function same(a: StateImage, b: StateImage) {
   );
 }
 function failure(error: unknown): SaveFailure {
+  if (error instanceof StaleEvidenceError)
+    return { scope: "state", reason: "stale_read_evidence" };
   if (error instanceof StateIntegrityError)
     return { scope: "state", reason: error.reason, layer: "L3" };
   const code = (error as { code?: string })?.code;
@@ -91,11 +122,14 @@ function key(value: string): value is StateKey {
 /** Borrowed Connection only: BackendStore remains its sole owner/closer.
  * Application must validate Schema/Semantics/adoption before save. The Repository
  * only checks the key and serialized candidate syntax, outside Tx-P. Existing
- * snapshot JSON is opaque here; Read/Fallback validation belongs to B-3B-2.
+ * snapshot content is validated only by read() with Application-owned validators.
  */
 export class PublishedStateRepository {
   private readonly coordination: Coordination;
-  constructor(private readonly db: Database.Database) {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly logger: Pick<Logger, "warn" | "error"> = createLogger(),
+  ) {
     let coordination = coordinators.get(db);
     if (!coordination) {
       coordination = {
@@ -108,6 +142,48 @@ export class PublishedStateRepository {
     this.coordination = coordination;
   }
   save(stateKey: string, snapshotJson: string): SaveResult {
+    return this.saveTransaction(stateKey, snapshotJson);
+  }
+  saveConditionally(request: ConditionalSaveRequest): SaveResult {
+    const record = readEvidenceRecords.get(request.evidence);
+    if (
+      !record ||
+      record.source !== "previous" ||
+      record.connection !== this.db ||
+      record.coordination !== this.coordination ||
+      record.stateKey !== request.stateKey ||
+      !this.db.open
+    )
+      return {
+        outcome: "not_saved",
+        scope: "input",
+        reason: "invalid_read_evidence",
+      };
+    if (record.consumed)
+      return {
+        outcome: "not_saved",
+        scope: "input",
+        reason: "consumed_read_evidence",
+      };
+    if (request.adoption?.outcome !== "newer")
+      return {
+        outcome: "not_saved",
+        scope: "state",
+        reason: "adoption_not_newer",
+      };
+    // Every attempted conditional Tx-P consumes its token, including failures.
+    record.consumed = true;
+    return this.saveTransaction(
+      request.stateKey,
+      request.snapshotJson,
+      record.image,
+    );
+  }
+  private saveTransaction(
+    stateKey: string,
+    snapshotJson: string,
+    evidenceImage?: StateImage,
+  ): SaveResult {
     if (!key(stateKey))
       return {
         outcome: "not_saved",
@@ -134,7 +210,16 @@ export class PublishedStateRepository {
       if (!this.transactionResolved()) return this.unresolvedConnection();
       this.db.exec("BEGIN IMMEDIATE");
       validateSchema(this.db);
-      const before = this.readImage(stateKey);
+      let before: StateImage;
+      try {
+        before = this.readImage(stateKey);
+      } catch (error) {
+        if (evidenceImage && error instanceof StateIntegrityError)
+          throw new StaleEvidenceError();
+        throw error;
+      }
+      if (evidenceImage && !same(before, evidenceImage))
+        throw new StaleEvidenceError();
       const previous = before.counter ?? 0;
       if (previous === Number.MAX_SAFE_INTEGER)
         throw new StateIntegrityError("generation_exhausted");
@@ -183,6 +268,150 @@ export class PublishedStateRepository {
       return result;
     } finally {
       this.coordination.busy = false;
+    }
+  }
+  read<T>(stateKey: string, validator: SnapshotValidator<T>): ReadResult<T> {
+    if (!key(stateKey))
+      return { outcome: "isolated", reason: "unsupported_state" };
+    if (this.coordination.connectionUnresolved) return this.unresolvedRead();
+    if (this.coordination.busy)
+      return {
+        outcome: "database_error",
+        layer: "L1",
+        reason: "connection_busy",
+      };
+    if (this.coordination.blocked)
+      return this.readFailure(this.coordination.blocked);
+    if (this.coordination.pending.has(stateKey))
+      return { outcome: "isolated", reason: "unresolved_save" };
+    // Keep the shared gate through validation to reject Validator DB reentry.
+    // The actual SQLite Read Transaction ends BEFORE any Validator is called.
+    this.coordination.busy = true;
+    try {
+      let image: StateImage;
+      try {
+        if (!this.transactionResolved()) return this.unresolvedRead();
+        this.db.exec("BEGIN");
+        validateSchema(this.db);
+        image = this.readImage(stateKey);
+        this.db.exec("COMMIT");
+        if (!this.transactionResolved()) return this.unresolvedRead();
+      } catch (error) {
+        if (!this.rollback()) return this.unresolvedRead();
+        return this.readFailure(failure(error));
+      }
+      const [latest, previous] = image.snapshots;
+      if (!latest)
+        return {
+          outcome: "empty",
+          kind: image.counter === null ? "new" : "counter_only",
+        };
+      const latestCheck = checkSnapshot(latest.json, validator);
+      this.logValidation(stateKey, latest.generation, latestCheck);
+      if (latestCheck.kind === "error")
+        return {
+          outcome: "validator_error",
+          stage: latestCheck.stage,
+          reason: latestCheck.reason,
+        };
+      if (latestCheck.kind === "valid")
+        return {
+          outcome: "latest",
+          generation: latest.generation,
+          snapshot: latestCheck.value,
+        };
+      if (!previous)
+        return { outcome: "isolated", reason: "no_valid_snapshot" };
+      const previousCheck = checkSnapshot(previous.json, validator);
+      this.logValidation(stateKey, previous.generation, previousCheck);
+      if (previousCheck.kind === "error")
+        return {
+          outcome: "validator_error",
+          stage: previousCheck.stage,
+          reason: previousCheck.reason,
+        };
+      if (previousCheck.kind === "invalid")
+        return { outcome: "isolated", reason: "no_valid_snapshot" };
+      try {
+        if (!this.db.open || !this.transactionResolved())
+          return this.unresolvedRead();
+      } catch {
+        return this.unresolvedRead();
+      }
+      const evidence = Object.freeze(Object.create(null)) as ReadEvidence;
+      readEvidenceRecords.set(evidence, {
+        coordination: this.coordination,
+        connection: this.db,
+        stateKey,
+        image,
+        source: "previous",
+        consumed: false,
+      });
+      return {
+        outcome: "previous",
+        generation: previous.generation,
+        snapshot: previousCheck.value,
+        latestInvalid: {
+          generation: latest.generation,
+          stage: latestCheck.stage,
+          reason: latestCheck.reason,
+        },
+        evidence,
+      };
+    } finally {
+      this.coordination.busy = false;
+    }
+  }
+  private unresolvedRead(): ReadResult<never> {
+    this.unresolvedConnection();
+    return {
+      outcome: "database_error",
+      layer: "L4",
+      reason: "transaction_unresolved",
+    };
+  }
+  private readFailure(problem: SaveFailure): ReadResult<never> {
+    if (problem.scope === "state")
+      return { outcome: "isolated", reason: problem.reason };
+    if (problem.layer === "L3" || problem.layer === "L4")
+      this.coordination.blocked = problem;
+    return {
+      outcome: "database_error",
+      layer: problem.layer ?? "L4",
+      reason: problem.reason,
+    };
+  }
+  private logValidation(
+    stateKey: StateKey,
+    generation: number,
+    result: ReturnType<typeof checkSnapshot>,
+  ) {
+    if (result.kind === "valid") return;
+    try {
+      // No raw exception messages, Validator reasons or Snapshot contents in logs.
+      if (result.kind === "error")
+        this.logger.error(
+          {
+            event: "snapshot_validator_error",
+            stateKey,
+            generation,
+            stage: result.stage,
+            exceptionType: result.exceptionType,
+          },
+          "Snapshot Validator failed",
+        );
+      else
+        this.logger.warn(
+          {
+            event: "snapshot_validation_failed",
+            stateKey,
+            generation,
+            stage: result.stage,
+          },
+          "Snapshot validation failed",
+        );
+    } catch {
+      /* Logging failure must not change validation/fallback decisions. */
     }
   }
   /** Explicit read-only reconciliation; never re-executes Tx-P or retries a write.
