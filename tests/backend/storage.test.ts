@@ -181,3 +181,38 @@ test("schema filter excludes only SQLite's literal reserved prefix", () => {
   db.exec("CREATE TABLE sqliteXunexpected (id INTEGER)");
   expect(() => validateSchema(db)).toThrow(SchemaError);
 });
+
+test.each(["version unreadable", "schema invalid", "version unexpected"])(
+  "ambiguous commit with %s never succeeds or replays",
+  (fault) => {
+    const db = database();
+    const entry = fixture(db);
+    const apply = vi.spyOn(entry, "apply");
+    const exec = db.exec.bind(db);
+    const pragma = db.pragma.bind(db);
+    let committed = false;
+    vi.spyOn(db, "exec").mockImplementation((sql) => {
+      const result = exec(sql);
+      if (sql === "COMMIT") {
+        committed = true;
+        throw new Error("unknown commit");
+      }
+      return result;
+    });
+    vi.spyOn(db, "pragma").mockImplementation((sql, options) => {
+      if (committed && sql === "user_version") {
+        if (fault === "version unreadable")
+          throw new Error("cannot read version");
+        if (fault === "version unexpected") return 999;
+      }
+      return pragma(sql, options);
+    });
+    const validate = entry.validateAfter;
+    entry.validateAfter = (connection) => {
+      if (committed && fault === "schema invalid") throw new SchemaError();
+      validate(connection);
+    };
+    expect(() => migrate(db, [entry], 102)).toThrow(SchemaError);
+    expect(apply).toHaveBeenCalledTimes(1);
+  },
+);

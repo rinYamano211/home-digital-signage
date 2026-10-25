@@ -321,7 +321,7 @@ linux.each(["SIGTERM", "SIGINT"] as const)(
     await provision(dir);
     const job = harness(
       dir,
-      `import {startBackend} from ${moduleUrl("main")}; import {BackendStore} from ${moduleUrl("storage/store")}; import fs from 'node:fs'; import {setTimeout as delay} from 'node:timers/promises'; await startBackend(process.env,undefined,{initializeStore:async(lock)=>{const store=BackendStore.open(lock);const close=store.close.bind(store);store.close=()=>{close();fs.writeFileSync(process.env.SIGNAGE_DATA_DIR+'/closed','');};fs.writeFileSync(process.env.SIGNAGE_DATA_DIR+'/acquired','');while(!fs.existsSync(process.env.SIGNAGE_DATA_DIR+'/continue'))await delay(10);return store;}});`,
+      `import {startBackend} from ${moduleUrl("main")}; import {BackendStore} from ${moduleUrl("storage/store")}; import fs from 'node:fs'; import {setTimeout as delay} from 'node:timers/promises'; await startBackend(process.env,undefined,{initializeStore:async(lock)=>{const store=BackendStore.open(lock);const close=store.close.bind(store);store.close=()=>{close();fs.appendFileSync(process.env.SIGNAGE_DATA_DIR+'/closed','1');};fs.writeFileSync(process.env.SIGNAGE_DATA_DIR+'/acquired','');while(!fs.existsSync(process.env.SIGNAGE_DATA_DIR+'/continue'))await delay(10);return store;}});`,
     );
     await expect
       .poll(
@@ -339,7 +339,7 @@ linux.each(["SIGTERM", "SIGINT"] as const)(
     await new Promise((r) => setTimeout(r, 100));
     await writeFile(join(dir, "continue"), "");
     expect(await job.done).toBe(0);
-    expect(await readFile(join(dir, "closed"), "utf8")).toBe("");
+    expect(await readFile(join(dir, "closed"), "utf8")).toBe("1");
     expect(job.output()).not.toContain("startup_complete");
     expect(await probe(dir)).toBe(0);
   },
@@ -391,5 +391,97 @@ linux.each(["SIGTERM", "SIGINT"] as const)(
     expect(job.output()).not.toContain("unexpected_store_open");
     expect(job.output()).not.toContain("startup_complete");
     expect(await probe(dir)).toBe(0);
+  },
+);
+
+linux.each(["SIGTERM", "SIGINT"] as const)(
+  "%s queued during synchronous SQLite failure stops before routes/listen",
+  async (signal) => {
+    const dir = await directory();
+    const job = harness(
+      dir,
+      `import Database from 'better-sqlite3';import {startBackend} from ${moduleUrl("main")};await startBackend(process.env,undefined,{initializeStore(){const db=new Database(':memory:');process.kill(process.pid,${JSON.stringify(signal)});try{db.prepare('WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<500000) SELECT sum(x) FROM n').get();}finally{db.close();console.log('sync_sql_closed');}throw Object.assign(new Error('missing'),{code:'ENOENT'});}});`,
+    );
+    expect(await job.done, job.output()).toBe(0);
+    expect(job.output()).toContain("sync_sql_closed");
+    expect(job.output()).toContain("shutdown_complete");
+    expect(job.output()).not.toContain("database_status");
+    expect(job.output()).not.toContain("startup_complete");
+    expect(await probe(dir)).toBe(0);
+  },
+);
+linux(
+  "PR-A 10 second deadline forces exit and releases lock during stalled handoff",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const job = harness(
+      dir,
+      `import {startBackend} from ${moduleUrl("main")};import {BackendStore} from ${moduleUrl("storage/store")};await startBackend(process.env,undefined,{initializeStore:async(lock)=>{BackendStore.open(lock);console.log('handoff_stalled');setInterval(()=>{},1000);await new Promise(()=>{});}});`,
+    );
+    await expect
+      .poll(job.output, { timeout: 5000 })
+      .toContain("handoff_stalled");
+    const began = performance.now();
+    job.child.kill("SIGTERM");
+    expect(await job.done, job.output()).toBe(1);
+    expect(performance.now() - began).toBeGreaterThanOrEqual(9500);
+    expect(job.output()).toContain("shutdown_timeout");
+    expect(job.output()).not.toContain("startup_complete");
+    expect(await probe(dir)).toBe(0);
+  },
+  20000,
+);
+linux(
+  "SQLite-created DB/WAL/SHM are private during provisioning and backend lifetime",
+  async () => {
+    const dir = await directory();
+    const job = harness(
+      dir,
+      `import Database from 'better-sqlite3';import fs from 'node:fs';import {provision} from ${moduleUrl("storage/provision")};import {ExclusiveLock} from ${moduleUrl("storage/lock")};const close=Database.prototype.close;Database.prototype.close=function(){for(const suffix of ['','-wal','-shm']){const stat=fs.lstatSync(process.env.SIGNAGE_DATA_DIR+'/signage.db'+suffix);if((stat.mode&4095)!==384||stat.uid!==process.getuid()||!stat.isFile())throw new Error('unsafe sidecar');}console.log('sidecars_checked');return close.call(this);};provision(ExclusiveLock.inherited(process.env.SIGNAGE_DATA_DIR));`,
+    );
+    expect(await job.done, job.output()).toBe(0);
+    expect(job.output()).toContain("sidecars_checked");
+    await backend(dir);
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const stat = await lstat(join(dir, "signage.db" + suffix));
+      expect(stat.mode & 0o7777).toBe(0o600);
+      expect(stat.uid).toBe(process.getuid!());
+      expect(stat.isSymbolicLink()).toBe(false);
+    }
+  },
+);
+linux(
+  "symlink substituted between preflight and FD open is refused without target changes",
+  async () => {
+    const dir = await directory();
+    const bin = await directory();
+    const target = join(dir, "sentinel");
+    await writeFile(target, "untouched", { mode: 0o600 });
+    // A PATH shim changes the file after the real second preflight: no production fault hook.
+    const shim = `#!/bin/sh
+case "$1" in
+  */storage/paths.js)
+    "${process.execPath}" "$@" || exit $?
+    if [ -f "$2/backend.lock" ]; then
+      mv "$2/backend.lock" "$2/original.lock"
+      ln -s "$2/sentinel" "$2/backend.lock"
+    fi
+    ;;
+  *) exec "${process.execPath}" "$@" ;;
+esac
+`;
+    await writeFile(join(bin, "node"), shim, { mode: 0o700 });
+    const job = command(dir, "provision", {
+      PATH: bin + ":" + process.env.PATH,
+    });
+    expect(await job.done, job.output()).toBe(74);
+    expect(await readFile(target, "utf8")).toBe("untouched");
+    await expect(lstat(join(dir, "signage.db"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect((await lstat(join(dir, "backend.lock"))).isSymbolicLink()).toBe(
+      true,
+    );
   },
 );

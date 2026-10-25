@@ -79,16 +79,21 @@ export async function startBackend(
       if (!shutdown.requested) {
         let acquired: BackendStore | undefined;
         try {
-          acquired = await (options.initializeStore ?? BackendStore.open)(lock);
-          // Yield after synchronous SQLite work so queued signals precede Listen.
+          try {
+            acquired = await (options.initializeStore ?? BackendStore.open)(
+              lock,
+            );
+          } catch (error) {
+            status = classifyDatabaseError(error);
+          }
+          // Both success and recoverable failure must drain pending OS signals.
+          // Synchronous SQLite cannot be interrupted by JS signal/timer callbacks.
           await yieldToSignals();
-          if (!shutdown.requested) {
+          if (!shutdown.requested && acquired) {
             ownedStore = acquired; // Atomic ownership handoff: no await here.
             acquired = undefined;
             status = { state: "HEALTHY" };
           }
-        } catch (error) {
-          status = classifyDatabaseError(error);
         } finally {
           acquired?.close();
         }

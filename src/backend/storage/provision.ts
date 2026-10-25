@@ -20,6 +20,7 @@ export function provision(lock: ExclusiveLock) {
     configureDatabase(db);
     initializeSchema(db);
     validateSchema(db);
+    validateDatabaseFiles(lock.directory);
   } finally {
     db?.close();
   }

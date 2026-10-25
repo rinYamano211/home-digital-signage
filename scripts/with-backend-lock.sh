@@ -17,7 +17,12 @@ if [ ! -e "$dir/backend.lock" ]; then
   (set -C; : > "$dir/backend.lock") 2>/dev/null || :
 fi
 node "$root/dist/backend/storage/paths.js" "$dir" || exit 74
-exec 9>>"$dir/backend.lock"
+# POSIX shell cannot request O_NOFOLLOW. Read-only open prevents writes to a
+# substituted target; validate the actual FD before flock and again in Backend.
+# Trusted 0700 directory/ancestors remain mandatory. Same-UID/root replacement
+# (including FIFO substitution before open) is outside this advisory boundary.
+exec 9<"$dir/backend.lock"
+node "$root/dist/backend/storage/lock.js" "$dir" || exit 74
 if flock -x -w 2 -E 73 9; then
   exec node "$root/dist/backend/$entry"
 else

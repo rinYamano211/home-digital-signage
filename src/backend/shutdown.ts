@@ -29,6 +29,10 @@ export function installShutdown(
         finish(code);
         resolve();
       };
+      // PR-A deadline starts when JS handles the shutdown request. A synchronous
+      // SQLite call blocks both signal delivery and this timer; this is not a
+      // wall-clock interrupt of native code. Once runnable, timeout exits 1
+      // (safe-side forced stop), even if graceful Connection close is unfinished.
       // Keep the deadline alive while closing, then always clear it.
       const timer = setTimeout(
         () => complete(1, "shutdown_timeout"),

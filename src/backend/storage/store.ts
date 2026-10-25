@@ -30,6 +30,7 @@ export class BackendStore {
         throw new SchemaError();
       migrate(db);
       configureDatabase(db);
+      validateDatabaseFiles(lock.directory);
       return new BackendStore(db);
     } catch (error) {
       db.close();
