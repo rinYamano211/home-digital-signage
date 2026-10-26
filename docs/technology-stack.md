@@ -2170,7 +2170,7 @@ Commit結果不明なら12.10の条件でDB照合し、未保存確認等の結�
 ### 23.7 Control State復元
 
 正常nextAttemptAtはStartup / Recovery後も尊重する。既存StateのControl State不正・欠損ではmin(acquisitionPeriod, 5分)の保守的待機を採用する。現行5 Stateでは5分となる。
-真の新規Stateは通常Schedulerで初回取得を許可する。Quota履歴不正は5分経過だけでは解除せず、保存Backoff・Quota無視の強制取得をしない。
+真の新規Stateは通常Schedulerで初回取得を許可する。欠損・不正の待機はメモリ上で単調増加時計を用い、待機後に再Readする。欠損継続と不正継続を区別し、不正Rowを5分経過だけで修復・上書きしない。初回Authorization・新規性判定・再起動の詳細は[23.10](#pr-c-c2-acquisition-control)に従う。Quota履歴不正は5分経過だけでは解除せず、保存Backoff・Quota無視の強制取得をしない。
 
 ### 23.8 Scheduler異常系テスト観点
 
@@ -2260,6 +2260,8 @@ SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個�
 
 Vitest Fake Timer、HTTP Mock（Timeout / 429 / 500 / Validation）、SQLite統合Commit / Rollback、固定Quota履歴の境界値、Startup / Recovery再起動相当テスト、Pi実機Process Crash・systemd復旧・72時間試験を予定する。
 
+<a id="pr-c-c1-scheduler"></a>
+
 ### 23.9 PR-C / C-1：Scheduler・Acquisition Coordinator設計
 
 C-1の責務分離・論理Interfaceは設計確定とする。実装・受入検証は未実施であり、PR-C全体の実装完了を意味しない。23.2〜23.8の取得周期・Backoff・Quota・Transaction・Recovery契約は維持する。
@@ -2323,7 +2325,7 @@ scopeとreasonの組み合わせは任意ではない。共有SQLite Connection�
 
 想定済みHTTP失敗・Quota不足はCoordinatorが分類して返す。SchedulerはrunOnce()のRejectも捕捉し、inFlightを必ず解除する。即時Retryせず、影響範囲不明なら通常Scheduler全体を保留する。Commit結果不明は既存の照合・Fail Closedに従い、安全性が確認できるまで再実行しない。
 
-global停止時はTimer取消しに加え、実行中の別Stateも新たなProvider送信へ進まない共通停止ゲートを必要とする。ゲートの具体Interface・実装方式はC-2 / C-3で検討する。既に送信したHTTPの取消しやQuota消費取消しを意味しない。
+global停止時はTimer取消しに加え、実行中の別Stateも新たなProvider送信へ進まない共通停止ゲートを必要とする。停止理由別のTx-A可否は[23.10](#pr-c-c2-acquisition-control)で定め、Provider送信開始との競合を防ぐ具体Permit方式・InterfaceはC-3で検討する。Boolean確認だけで競合防止済みとは扱わない。既に送信したHTTPの取消しやQuota消費取消しを意味しない。
 
 #### recheckAt・Timer・時計変更
 
@@ -2338,7 +2340,7 @@ recheckAtはSchedulerの次回判定時刻であり、永続Control Stateのnext
 
 #### Shutdown・Lifecycle
 
-既存PR-AのinstallShutdown()とFastify Lifecycleを継続利用し、Scheduler専用SIGTERM / SIGINT Handlerは追加しない。Shutdown開始後は新規TaskとTimer再予約を禁止する。stop()は冪等で、新規Task禁止、Timer取消し、実行中Taskの終了待機を担う。Task終了前に通常のSQLite Closeを行わず、Close所有権はBackendStoreと既存Lifecycleに従う。
+既存PR-AのinstallShutdown()とFastify Lifecycleを継続利用し、Scheduler専用SIGTERM / SIGINT Handlerは追加しない。Shutdown開始後は新規Task・新規HTTP送信とTimer再予約を禁止する。開始前から進行中のTaskのTx-Aは、DB正常かつ既存Lifecycleの終了待機内なら終了処理として許可可能である。初回Authorizationの失効・Shutdown中の発行に関する要確認事項は[23.10](#pr-c-c2-acquisition-control)に従う。stop()は冪等で、新規Task禁止、Timer取消し、実行中Taskの終了待機を担う。Task終了前に通常のSQLite Closeを行わず、Close所有権はBackendStoreと既存Lifecycleに従う。
 
 既存Shutdown全体の10秒制限を維持し、Scheduler専用に追加の10秒待機枠やTask全体Timeoutを設けない。期限内にTaskが完了しなければ正常終了を断念し、既存の異常終了経路へ移る。HTTP Timeout 10秒は個々のHTTPの制限であり、Shutdown全体制限やTask全体の停止保証とは別である。
 
@@ -2348,11 +2350,10 @@ better-sqlite3の同期処理はEvent Loopとアプリ内Timerをブロックし
 
 成功時のnextAttemptAt＝取得開始＋周期、失敗時の指数Backoff、Quota抑止時のControl State維持を変更しない。Tomorrow.ioの送信前Tx-Q Commit・Provider同時最大1件・Quota履歴不正時Fail Closedを維持する。Tx-Q → HTTP / Validation → Tx-A → Tx-P → Tx-Cの順序、HTTP Timeout 10秒・Task全体Timeoutなしも変更しない。
 
-| 後続工程 | 未確定・実装対象 |
+| 工程 | 設計状況・未確定／実装対象 |
 |---|---|
-| C-2 | Acquisition Control Repositoryの具体SQL・保存Interface |
-| C-3 | Quota Guardの具体Interface・Tx-Q実装 |
-| C-2 / C-3 | 共通停止ゲートの具体Interface・実装方式。global停止後の新規送信禁止を満たす |
+| C-2 | Acquisition Control Repository・Tx-A・Backoffの設計は23.10に確定。要確認事項を残し、実装・受入検証は未着手 |
+| C-3 | Quota Guardの具体Interface・Tx-Q実装、Provider送信とGlobal停止の競合を防ぐPermit方式。停止理由別Tx-A可否は23.10を参照 |
 | PR-D | Tx-P / Tx-Cを含む公開処理の連携、Pending Publication |
 | PR-E | 継続DB Recovery、安全確認後のScheduler再開Interface |
 | Issue #12 / #13 | systemdの具体停止猶予・OS停止制御・実機検証 |
@@ -2373,8 +2374,8 @@ C1-01〜C1-29は設計上の受入条件であり、実装・テストは未実�
 | C1-08 | scheduledをHTTP成功と誤認せず、周期・Backoff・Quota待機を維持 | SCH-02・03・14・15・19・23 |
 | C1-09 | suspended / stateでは対象Timerのみ停止し、安全確認前に要求で再開しない | SCH-07・12の局所化 |
 | C1-10 | SQLite利用不能・Schema非互換では通常Scheduler全体を停止・保留 | SCH-09・13。再開はPR-E |
-| C1-11 | Shutdown開始後は新規Task・Timer再予約を禁止し、予約を取り消す | Lifecycle追加観点。SCH-21・22に関連 |
-| C1-12 | stop()は実行中Taskの終了を待ち、待機中も新規Taskを起動しない | SCH-05に関連するLifecycle追加観点 |
+| C1-11 | Shutdown開始後は新規Task・HTTP送信・Timer再予約を禁止し、予約を取り消す | Lifecycle追加観点。SCH-21・22に関連 |
+| C1-12 | stop()は実行中Taskの終了を待ち、新規Taskを起動しない。既存TaskのTx-Aは23.10の停止理由・DB正常・終了待機内の条件で判定 | SCH-05に関連するLifecycle追加観点 |
 | C1-13 | stop()を二重に要求しても停止・待機が冪等で不正な再予約を起こさない | Lifecycle追加観点 |
 | C1-14 | Task終了待機後に既存所有権でDB Close。通常経路で早期Closeしない | 12.5・Architecture 16.8の追加具体化 |
 | C1-15 | Task未終了でShutdown全体10秒を超えたら既存異常終了経路。追加10秒枠なし | 既存Shutdown契約。同期処理制約・実機確認は別 |
@@ -2391,9 +2392,178 @@ C1-01〜C1-29は設計上の受入条件であり、実装・テストは未実�
 | C1-26 | 想定外例外で即時Retryせず、範囲不明なら全体保留 | SCH-22・28 |
 | C1-27 | 取消し・再予約後の古いTimer Callbackを無効化 | SCH-20・21の具体化 |
 | C1-28 | 長時間Timerを安全な範囲で分割し、途中で状態・時刻を再評価 | SCH-03・15・20に関連 |
-| C1-29 | global停止後、実行中の別Stateも新たなProvider送信へ進まない | SCH-09・13・16・17。ゲート具体化はC-2 / C-3 |
+| C1-29 | global停止後、実行中の別Stateも新たなProvider送信へ進まない | SCH-09・13・16・17。Tx-A可否は23.10、送信PermitはC-3 |
 
 SCH-04・06〜08・11・17・18・24〜32等のValidation・Transaction・復元・Pending・Quotaの詳細は既存正本と後続工程で検証し、Schedulerへ責務を移さない。C1の対応表はSCHの観点を削除・置換せず、C1の受入条件確定をテスト成功とは扱わない。
+
+
+<a id="pr-c-c2-acquisition-control"></a>
+
+### 23.10 PR-C / C-2：Acquisition Control Repository・Tx-A・Backoff設計
+
+C-2の以下の設計方針は確定、実装・受入検証は未着手とする。Shutdown中の初回Authorizationについては本節末尾の要確認事項を残す。C-1のScheduler / Coordinator分離、PR-Bの保存・Read Evidence・Commit照合、BackendStoreの単一Connection所有権を変更しない。
+
+#### 保存構造・責務・論理Interface
+
+既存12.6のacquisition_control（state_key主キー、control_json NOT NULL）と12.7のIndex方針を維持する。物理カラム・専用Versionカラム・新規永続Tableを追加せず、JSONの論理構造は次の2項目とする。
+
+```typescript
+type AcquisitionControlState = {
+  consecutiveFailures: number;
+  nextAttemptAt: string;
+};
+
+interface AcquisitionControlRepository {
+  read(stateKey: StateKey): ControlReadResult;
+  saveConditionally(request: ControlSaveRequest): ControlSaveResult;
+}
+
+type ControlSaveRequest =
+  | {
+      mode: "update";
+      stateKey: StateKey;
+      evidence: ControlReadEvidence;
+      nextState: AcquisitionControlState;
+    }
+  | {
+      mode: "initialize";
+      stateKey: StateKey;
+      evidence: ControlReadEvidence;
+      authorization: InitialControlSaveAuthorization;
+      nextState: AcquisitionControlState;
+    };
+```
+
+StateKeyは既存型を使う。上記は論理Interfaceであり、型名・結果の具体表現・照合操作の公開名は実装時に既存コードと整合させる。ControlReadEvidenceとInitialControlSaveAuthorizationは不透明な型であり、Applicationから内部記録を参照・偽造できない。保存・照合結果の意味論を統合・省略しない。
+
+RepositoryはState Key Allowlist、JSON Parse → Schema → Semantic Validation、保存値の整合性を検証する。consecutiveFailuresの非負整数性、nextAttemptAtの有効なUTC日時等を確認し、既存UTC / ISO 8601・RFC3339契約に従う。nextAttemptAtは保存済み取得制約であり、Read時に過去というだけでは不正ではない。C-1の「予約時点より未来」というrecheckAt条件を流用しない。
+
+Coordinator / Applicationが取得試行の識別・直列化、HTTP結果の分類、Backoff計算、新規性・待機完了の判定、初回保存許可管理を担当する。RepositoryはHTTP・Backoff計算を実行せず、HTTP・候補Validation・Backoff計算・保存予定JSONの確定をTransaction外で行う。Tx-A内では保存前Rowの再照合とAtomic保存を担う。
+
+| Read結果の意味 | 返す情報・証跡 |
+|---|---|
+| 正常Row | 検証済みControl Stateと有効なControlReadEvidence |
+| 欠損Row | Row不存在を示すControlReadEvidence。欠損だけでは新規Stateと判定しない |
+| 不正Row | 不正の理由。通常保存用Evidence・初回Authorizationを発行しない |
+| DB障害 | 既存分類に従う障害。正常・欠損・不正Rowと混同せずEvidenceなし |
+| 同一Stateの未解決Tx-A | 通常Read・Evidence発行を保留。保存結果を確定できるまで正常Row等として返さない |
+
+#### ControlReadEvidenceとAtomic保存
+
+Read時のRow存在有無と、存在する場合の保存済みcontrol_jsonの正確な文字列を内部レジストリへ記録する。Evidenceは同一Process・同一Repository・同一Connection世代・同一Stateだけで有効とする。時間経過だけでは失効しないが、対象取得試行の終了、Connection再生成、Process再起動で失効する。初回Authorizationとの対応を含め、取得試行との関係を内部で管理する。別Repositoryへの流用は許可しない。これはCacheの同一Connection上の別インスタンス利用契約とは異なるControl固有の制約であり、PR-Bの契約は変更しない。
+
+候補の事前検証・保存予定JSON確定・Evidenceと必要なAuthorizationの検証を経て、保存試行開始時（BEGINを試みる前）にEvidenceを消費する。初回はAuthorizationもともに消費する。試行開始後はBEGIN失敗・Rollback・成功・unchanged・unknownのいずれでも再利用しない。入力の事前拒否と保存試行開始は区別し、未開始なら消費せず、別途の失効条件は常に適用する。
+
+同一Stateの取得・保存を直列化する。Tx-AはBEGIN IMMEDIATEで開始し、保存前Rowを再ReadしてEvidenceのRow有無・正確なJSONと一致した場合だけINSERTまたはUPDATEする。既存の共有Connection排他と未解決Transaction保護に従い、Repositoryが新Connectionを所有・Closeする設計にしない。
+
+MVPは単一Writerと管理されたDBアクセスを前提とする。Row一致だけでは外部Processの直接変更や、同じJSONへ戻るABAを完全検出できない。専用Revision・操作ID・永続Tableを追加して解決済みとせず、EvidenceをDomainの鮮度や外部取得順序の証明として扱わない。
+
+#### 初回保存Authorization
+
+InitialControlSaveAuthorizationはApplication層の初回保存許可管理責務が発行する。独立Processや新規永続Tableは追加しない。初回保存にはRow不存在の有効Evidenceと、同一State・同一取得試行に紐づく有効Authorizationの両方を要求する。HTTP送信の許可とは別であり、Authorizationを根拠にHTTPを送信しない。
+
+HTTP結果確定後、Tx-A直前に以下すべてを満たす場合に発行する。
+
+- State KeyがAllowlistに存在し、真の新規State、または既存Stateの保守的待機完了を確認できる。
+- HTTP結果が取得制御上の成功・失敗に分類済みで、保存予定Control Stateが正常。
+- 保存直前の再ReadでRow不存在を確認し、そのEvidenceを使用する。
+- DB・Connectionが正常、同一Stateに未解決Tx-Aがなく、停止ゲートが当該Tx-Aを禁止していない。
+
+AuthorizationはEvidence、State、Connection世代、取得試行へ拘束し、Evidenceとともに保存試行時に消費する。試行終了、Global停止による新規Tx-A禁止、Shutdown、Connection変更、Process再起動で失効する。偽造・別試行や別Stateへの流用・消費済み再利用を拒否する。
+
+initializeはINSERTのみで、既存RowをUPSERTで上書きしない。保存直前Read後にRowが出現した場合もTx-A内照合・INSERT競合で保存拒否とする。updateは既存の正常RowとEvidence一致を必要とし、欠損Rowを自動作成したり不正Rowを上書きしたりしない。
+
+#### 既存Stateの欠損・不正と保守的待機
+
+真の新規Stateと既存StateのControl Row欠損を、Row不存在だけで区別しない。Application / Coordinatorが新規性を確認し、確認できない場合は新規Stateとして無条件に初回取得・保存を許可しない。識別根拠の具体的な供給方法は要確認事項として残す。
+
+既存Stateの欠損・不正ではmin(acquisitionPeriod, 5分)の保守的待機をメモリ管理する。現行5 Stateでは5分であり、待機中はHTTP送信・Control Rowの自動修復を行わない。待機時間は単調増加時計で測り、Process再起動後は保存状態を再Readして、必要なら待機を最初から開始する。待機完了はRowの正常性やQuotaの成立を保証しない。
+
+待機終了後は再Readする。正常Rowなら保存済み取得制約を尊重し、欠損継続なら他の取得条件を満たした後の初回保存経路へ進める。不正継続なら対象Stateだけを保留し、自動削除・上書き・通常保存用Evidence発行・初回Authorization発行をしない。不正Rowの修復はPR-Eへ引き継ぐ。Quota履歴の不正・未確認は5分経過で解除しない。
+
+#### Tx-Aの保存・Commit照合
+
+1. HTTP結果・Validationを確定する。
+2. 成功・失敗に応じてControl Stateを計算する。
+3. 候補を検証し、保存予定JSONを一度確定する。
+4. Evidence・必要なAuthorizationと失効・停止条件を検証する。
+5. 保存試行を開始し、トークンを消費してBEGIN IMMEDIATEを試みる。
+6. 保存前Rowを再Readし、Evidenceと再照合する。
+7. initializeならINSERT、updateならUPDATEする。
+8. Commitする。
+9. 保存結果を分類する。
+
+| 保存結果 | 意味・制約 |
+|---|---|
+| saved | 保存成功が確定 |
+| unchanged | 既存Rowと保存予定値が同一で、Evidence・保存条件を確認し、安全に書込み省略できる。証跡は消費する |
+| not_saved | 未保存が確定。保存拒否・失敗と、外部HTTP失敗を区別する |
+| unknown | 保存済み・未保存を確定できない。再保存・後続公開へ進まない |
+
+初回INSERTの未実行をunchangedとしない。Commit例外だけで失敗確定とはせず、Transaction状態確認 → 必要なRollback試行 → 解決確認 → 保存前Row・確定済み保存予定JSON・保存後RowのRead-only照合を行う。JSONを照合時に再生成しない。Transaction解決済み、競合書込み排除、保存前後の区別可能性、照合結果の一貫性を満たす場合だけsaved / not_savedを確定し、JSON一致だけでCommit成功と断定しない。
+
+unknownでは同一Stateの後続Tx-A、通常Read・Evidence発行を保留し、Tx-Pへ進まない。無条件再保存・HTTP即時再送を行わず、保持したAttemptの保存前後情報でRead-only照合する。結果確定後の再評価も保存済みControl Stateを尊重し、新たな保存には有効な証跡・必要な許可を要求する。Transaction状態未解決なら共有Connection全体を保護する。正常Connection上のState単位保留を正常な他Stateへ無条件に波及させない。既存L1〜L4と原因・scopeに従い、Layer番号だけで全体障害へ昇格させない。
+
+PR-BのTx-P / Tx-C・Read Evidence・照合成功条件は変更しない。Tx-Aの照合は保存再実行を伴わず、再起動や外部Writerをまたぐ完全な操作識別を保証しない。Tx-A成功後の公開連携・PendingはPR-D、継続RecoveryはPR-Eが担当する。
+
+#### nextAttemptAt・Backoff
+
+23.3の計算契約を維持する。成功時はHTTP取得開始＋周期、失敗時は失敗処理完了＋指数Backoff（1、2、4、8、16、30分、以後30分上限）、Jitterなし。HTTP 429は通常Backoffと有効Retry-Afterの遅い方とし、30分超でも尊重する。不正・欠損Retry-Afterは通常Backoffに従う。
+
+Quotaによる送信抑止ではControl Stateを更新しない。Tx-A成功後にTx-Pが失敗しても取得成功記録を維持し、Provider失敗として加算しない。Tx-A保存失敗を理由にHTTPを即時再送しない。Coordinatorが判定・計算し、SchedulerはrecheckAtによる次回判定予約だけを担う。
+
+#### Global停止ゲート・Shutdown
+
+| 停止理由・状況 | 新規取得・Provider送信 | Tx-Aの扱い |
+|---|---|---|
+| Shutdown開始 | 禁止 | 開始前から進行中のTaskは、DB正常かつ既存Lifecycleの終了待機内なら終了処理として許可可能。ただし初回Authorizationの扱いは下記要確認 |
+| DB利用不能・Transaction未解決・Schema非互換・共有DB整合性不明 | Global停止後の新規送信禁止 | 新規Tx-A禁止。未解決Transactionは既存の安全側処理に従う |
+| State固有の不正Control Row | 対象Stateを保留、正常な他Stateは継続可能 | 対象Stateの保存禁止・自動修復なし |
+
+停止ゲートは停止理由を区別してTx-A実行可否を制御する。Shutdownで新規取得を禁止することと、進行中Taskの終了処理を許可可能なことを混同しない。C-1のstop()・Task終了待機・DB Close順序・Shutdown全体10秒の内側で扱い、追加猶予やTask全体Timeoutを設けない。
+
+Global停止確定後は新たなProvider送信を開始しない。送信開始との競合を防ぐ具体Permit方式・InterfaceはC-3へ残し、単純なBoolean確認で競合防止が完成したとはしない。Tx-Q Commit後に送信を中止しても、Quota履歴を取り消さない。PR-Bの共有Connection CoordinationはDB利用保護であり、それだけでProvider送信Permitが実装済みとは扱わない。
+
+#### C-2受入条件と既存観点の対応
+
+以下は設計上の受入条件であり、実装・テストは未実施。既存SCH・C1の具体化・結合観点を含み、ID数を独立テスト関数の数や重複実装義務として扱わない。PR-Bの既存回帰も維持する。
+
+| ID | 条件・期待結果 | 関連する既存観点 |
+|---|---|---|
+| C2-01 | 正常RowをParse・Schema・Semantic検証し、過去の正常nextAttemptAtをrecheckAt違反と誤認しない | SCH-23、C1-01・19 |
+| C2-02 | Row欠損だけで真の新規Stateと断定せず、既存State欠損と区別 | SCH-24・25、C1-01 |
+| C2-03 | 偽造Evidenceを拒否しDBを変更しない | PR-B証跡観点のControl固有具体化 |
+| C2-04 | 別Process・Repository・Connection世代・StateへのEvidence流用を拒否 | PR-B証跡観点。Controlは同一Repository限定 |
+| C2-05 | Evidenceは時間経過だけで失効しないが、試行終了・Connection変更・再起動で失効 | SCH-23・29、取得試行との結合 |
+| C2-06 | 保存試行開始時にEvidenceを消費し、BEGIN失敗・Rollback・unknown・unchanged後も再利用不可 | PR-B使い捨て観点 |
+| C2-07 | 初回AuthorizationはHTTP分類後・Tx-A直前に全発行条件が成立した場合だけ発行 | SCH-24・25、初回許可追加観点 |
+| C2-08 | Authorizationの偽造・別State／試行／Evidence流用、消費済み再利用を拒否 | 初回許可追加観点 |
+| C2-09 | 試行終了・Tx-A禁止Global停止・Shutdown・Connection変更・再起動でAuthorization失効 | C1-11〜15・22。Shutdown中の再発行は要確認 |
+| C2-10 | 初回保存は不存在Evidenceと対応Authorizationの両方必須。保存試行時に同時消費 | SCH-25 |
+| C2-11 | 既存State欠損・不正で単調増加時計による保守的待機。待機中送信・修復なし。再起動で必要なら待機再開始 | SCH-24、C1-01・24 |
+| C2-12 | 待機後に再Readし、正常・欠損継続・不正継続を別経路で扱う | SCH-24・25 |
+| C2-13 | 不正Row継続はState単位保留、Evidence・Authorizationなし、正常な他Stateは継続 | SCH-12・33、C1-21 |
+| C2-14 | 初回INSERT前に他Row作成を検出・拒否し、UPSERTで上書きしない | Atomic保存競合観点 |
+| C2-15 | updateでRead後のRow不一致・消失を検出し保存拒否 | Atomic保存競合観点 |
+| C2-16 | BEGIN IMMEDIATE内のTx-A Atomicity・失敗時Rollback・旧値維持。HTTP・計算はTransaction外 | SCH-06・28 |
+| C2-17 | 同一既存値の安全な書込み省略のみunchanged、初回INSERT未実行は該当しない | PR-B unchangedとの役割比較 |
+| C2-18 | Commit後の例外を保存前／予定／保存後とTransaction状態から照合し、二重保存なし | SCH-06・28、Commit照合追加観点 |
+| C2-19 | JSON一致だけでは成功確定せず、区別不能・照合不能はunknown | Commit照合追加観点 |
+| C2-20 | unknown Stateの後続Tx-A・通常Read・Evidence発行・Tx-Pを禁止。照合はRead-only | SCH-06・28、C1-09 |
+| C2-21 | ConnectionのTransaction未解決は共有DB全体保留。正常ConnectionのState固有保留は局所化 | SCH-09・13・33、C1-21・22 |
+| C2-22 | 成功時の周期計算、失敗Backoff・上限・Jitterなし・429 Retry-Afterを維持 | SCH-01〜03・23、C1-08 |
+| C2-23 | Quota抑止でControl更新なし、履歴不正は5分で解除せず、Tx-Q後送信中止でも履歴維持 | SCH-16〜19・29 |
+| C2-24 | Tx-A失敗・unknownでTx-Pへ進まず即時HTTP再送なし。Tx-P失敗で取得成功・Backoffを改変しない | SCH-06・27・28 |
+| C2-25 | Shutdown中の新規HTTPは禁止、既存TaskのTx-Aは停止理由・DB正常・終了待機内の条件で判定。DB Close順序維持 | C1-11〜15・29 |
+| C2-26 | Global停止後に新規Provider送信なし。停止理由別Tx-A禁止とPermit競合対策を区別 | C1-22・29、SCH-09・13・17。具体PermitはC-3 |
+
+#### 要確認事項・後続工程
+
+- Shutdownで既発行Authorizationは失効する。一方、進行中TaskのTx-Aは条件付き許可可能である。Shutdown中にinitialize用Authorizationを新規発行・再発行して初回INSERTを許可できるかは、本合意だけでは明示されていない。許可を推測せず保留し、レビューで確認する。通常updateの終了処理許可と同一視しない。
+- 真の新規Stateであることの具体的な識別根拠・Applicationからの供給方法は、Control Row不存在だけに依存せず実装前に確認する。専用永続Tableを追加したり、既存Snapshot / Counter契約を変更したりしない。
+- C-3：Quota Guard・Tx-Qの具体Interfaceと、Provider送信開始に対する停止ゲートのPermit・競合対策。C-2で定めた停止理由別Tx-A可否を接続する。
+- PR-D：Tx-A確定後のTx-P / Tx-C連携、Pending・採用候補対応。PR-E：不正Control Row修復、継続Recovery、再起動時再評価、安全なScheduler再開。
+- 単一Writer前提、外部Writer・ABA・再起動をまたぐ完全操作識別の限界を維持する。具体SQL・トークン管理・照合の実装検証は未実施であり、既存DDL・Schema Versionを変更しない。
 
 
 ---
