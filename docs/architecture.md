@@ -1467,9 +1467,9 @@ recheckAtは次回判定時刻であり永続nextAttemptAtとは別とする。�
 
 Acquisition Control Repositoryは既存acquisition_controlのRow・JSON、Allowlist・Schema・Semantic Validation、Read EvidenceとTx-A保存を担当する。Coordinator / ApplicationはHTTP結果分類・Backoff計算、同一Stateの取得／保存の直列化、新規性・待機完了判定と初回保存Authorizationを管理する。Schedulerへ保存・HTTP判断を移さない。
 
-既存StateのControl Row欠損・不正ではメモリ上の単調増加時計でmin(acquisitionPeriod, 5分)待機し、再起動時は再Readして必要なら待機を最初から行う。待機中は送信・自動修復をせず、完了後も再Readする。欠損継続は他の取得条件を確認した初回保存経路、不正継続は対象State保留とし、自動削除・上書き・保存用Evidence・Authorization発行をしない。新規StateをRow不存在だけで判定せず、Quota履歴不正も5分で解除しない。
+既存StateのControl Row欠損・不正ではメモリ上の単調増加時計でmin(acquisitionPeriod, 5分)待機し、再起動時は再Readして必要なら待機を最初から行う。待機中は送信・自動修復をせず、完了後も再Readする。欠損継続は他の取得条件を確認した初回保存経路、不正継続は対象State保留とし、自動削除・上書き・保存用Evidence・Authorization発行をしない。Application / CoordinatorはAllowlist・Control不存在・Published State / Snapshot / Generation Counter等の過去記録不在・初期化／Migration／Recovery中でないこと・DB／Schema／Connection正常・判断情報の正常な参照を確認し、初回取得と判断できる場合のみ新規Stateとして扱う。これらのRow不存在だけでは過去データ消失がないと厳密に証明できず、新規性不明なら既存State欠損と同じ保守的待機へ進む。待機後も再Read・取得条件・Authorizationが必要で、不正Rowはこの初回保存経路に含めない。Repositoryに新規性判定を移さず、Schemaも変更しない。Quota履歴不正も5分で解除しない。
 
-初回保存には不存在EvidenceとApplication発行の同一State・取得試行用Authorizationを要求し、HTTP結果確定後・Tx-A直前の全条件成立時のみ発行する。初回INSERTと正常既存RowのUPDATEを分け、UPSERTで既存Rowを上書きしない。トークンは同一Process・Repository・Connection世代・State／取得試行へ拘束し、保存試行時に消費する。時間経過だけでEvidenceを失効させず、Connection変更・再起動・試行終了等の失効を管理する。CacheやPublished Stateの証跡契約を変更しない。詳細・初回許可の条件・要確認事項・未実施受入条件は[技術スタック選定 23.10](technology-stack.md#pr-c-c2-acquisition-control)を正本とする。
+初回保存には不存在EvidenceとApplication発行の同一State・取得試行用Authorizationを要求し、HTTP結果確定後・Tx-A直前の全条件成立時のみ発行する。初回INSERTと正常既存RowのUPDATEを分け、UPSERTで既存Rowを上書きしない。トークンは同一Process・Repository・Connection世代・State／取得試行へ拘束し、保存試行時に消費する。時間経過だけでEvidenceを失効させず、Connection変更・再起動・試行終了等の失効を管理する。CacheやPublished Stateの証跡契約を変更しない。Shutdown開始で既発行Authorizationを失効させ、その後の新規発行・再発行・初回INSERTを禁止する。詳細・初回許可の条件・未実施受入条件は[技術スタック選定 23.10](technology-stack.md#pr-c-c2-acquisition-control)を正本とする。
 
 ### 16.4 Validation・Transaction分離・公開
 
@@ -1487,7 +1487,7 @@ SQL保存失敗と外部取得失敗を区別する。複数State生成時のDom
 各Transaction内の更新は原子的だが、独立Transactionをまたぐ一括Rollbackや複数Stateの厳密同時点整合性は要求しない。Tx-A成功・Tx-P失敗の再公開は16.6に従う。
 Scheduleの認証・Domain設計はtechnology-stack.md第17・18章に従い、Ownership・API契約は維持する。
 
-C-2のTx-AはHTTP・Validation・Backoff計算・保存予定JSON確定をTransaction外で行い、Evidenceと必要なAuthorizationを検証・消費してBEGIN IMMEDIATEで保存する。Tx-A内で保存前RowをEvidenceと再照合し、一致時だけINSERT / UPDATEする。saved / unchanged / not_saved / unknownを区別し、初回INSERT未実行をunchangedとしない。Commit例外はTransaction解決・保存前／予定／保存後の一貫したRead-only照合で判定し、JSON一致だけで成功としない。unknown時は同一Stateの後続Tx-A・通常Read・Evidence発行とTx-P移行を禁止し、ConnectionのTransaction未解決なら共有DB全体を保護する。既存Tx-P / Tx-Cの契約を変更せず、単一Writer前提でも外部変更・ABAの完全検出を保証しない。
+C-2のTx-AはHTTP・Validation・Backoff計算・保存予定JSON確定をTransaction外で行い、Evidenceと必要なAuthorizationを検証・消費してBEGIN IMMEDIATEで保存する。Tx-A内で保存前RowをEvidenceと再照合し、一致時だけINSERT / UPDATEする。saved / unchanged / not_saved / unknownを区別し、初回INSERT未実行をunchangedとしない。savedはCommit直接成功、またはTransaction解決・対象Stateへの競合書込み排除・保存前後の区別可能性・一貫した照合により今回の反映を一意に確認できる場合に限る。not_savedは今回の未Commit TransactionのRollback成功等で非反映を確定できる場合とし、それ以外はunknownとする。Commit例外後はTransaction状態確認と必要なRollbackを行い、未解決Connectionで新Transactionを開始しない。照合は保存前Row・確定済み予定JSON・保存後Rowを使うRead-only処理とし、JSONの再生成・無条件再INSERT／再UPDATEはしない。同じJSONへの別書込み・ABA・外部Writer・再起動の限界があり、JSON一致だけで今回のCommit成功を断定しない。unknown時は同一Stateの後続Tx-A・通常Read・Evidence発行とTx-P移行を禁止し、ConnectionのTransaction未解決なら共有DB全体を保護する。既存Tx-P / Tx-Cの契約を変更せず、単一Writer前提でも外部変更・ABAの完全検出を保証しない。
 
 ### 16.5 Backend CacheとFallback
 
@@ -1633,7 +1633,7 @@ Store所有権のLifecycle Hookへの引継ぎ前は起動処理が取得済みC
 
 終了順序はHTTP受付停止 → SQLite Connection Close → Node.js Process終了 → 最終Lock FD CloseによるEX解放とする。正常終了・SIGTERMは既存Shutdown経路に従う。SIGKILLはHookを実行できないためOSのFD Closeにより解放され、別ProcessがFDを保持して残らない構成を要求する。起動途中の失敗もConnectionとFDを後始末する。
 
-PR-CでSchedulerを導入する際は、既存installShutdown()とFastify Lifecycleを継続利用し、専用Signal Handlerは追加しない。Shutdown開始後は新規Task・新規HTTP送信・Timer再予約を禁止し、冪等なstop()でTimer取消し・実行中Task終了待機を行った後、既存BackendStoreの所有権に従って通常DB Closeを行う。Shutdown前から進行中のTaskのTx-AはDB正常かつ既存Lifecycleの終了待機内なら終了処理として許可可能とする。DB利用不能・Transaction未解決・Schema非互換・共有DB整合性不明では新規Tx-Aを禁止する。初回AuthorizationのShutdown時失効と、その後の初回保存許可の要確認事項は[技術スタック選定 23.10](technology-stack.md#pr-c-c2-acquisition-control)に従う。既存Shutdown全体10秒制限はSchedulerに追加の10秒枠を与えず、期限内に終了しなければ既存異常終了経路へ移る。Scheduler独自のTask全体Timeoutは設けない。同期DB処理がShutdownを妨げる制約は[技術スタック選定 12.5](technology-stack.md#125-lifecycleの技術的制約と後続工程)に従う。
+PR-CでSchedulerを導入する際は、既存installShutdown()とFastify Lifecycleを継続利用し、専用Signal Handlerは追加しない。Shutdown開始後は新規Task・新規HTTP送信・Timer再予約を禁止し、冪等なstop()でTimer取消し・実行中Task終了待機を行った後、既存BackendStoreの所有権に従って通常DB Closeを行う。Shutdown前から進行中の取得試行の正常既存Control Rowへの通常UPDATEのみ、DB・Connection・Transaction正常、有効Evidenceあり、Global停止理由にDB安全性の問題なし、PR-Aの既存終了待機内、既存Lifecycleの終了処理という全条件で許可可能とする。DB利用不能・Transaction未解決・Schema非互換・共有DB整合性不明では新規Tx-Aを禁止する。初回AuthorizationはShutdown開始で失効し、新規発行・再発行・初回INSERTは禁止する。中止した初回保存のHTTP結果を理由に即時再送せず、再起動後にState分類・必要な5分待機・Quota等を再評価する。詳細は[技術スタック選定 23.10](technology-stack.md#pr-c-c2-acquisition-control)に従う。既存Shutdown全体10秒制限はSchedulerに追加の10秒枠を与えず、期限内に終了しなければ既存異常終了経路へ移る。Scheduler独自のTask全体Timeoutは設けない。同期DB処理がShutdownを妨げる制約は[技術スタック選定 12.5](technology-stack.md#125-lifecycleの技術的制約と後続工程)に従う。
 
 #### 工程の責務
 
