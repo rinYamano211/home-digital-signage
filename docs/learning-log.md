@@ -2827,3 +2827,13 @@ Commit成功後に例外が通知される場合を考えると、無条件Retry
 - Commit結果不明のCacheをReadできると未確定データがFallbackへ混入するため、対象StateのReadもpendingとして保留する。Read-only照合で保存済み・未保存が確定してから再開する。
 - State単位の保留とConnection全体のTransaction未解決を区別し、正常な別Stateへの不要な波及を防ぐ。再起動をまたぐ復旧は後続工程とする。
 - 今回は設計修正のみ。C-01〜C-32は未検証で、B-3Cの実装・テストは未着手。
+
+---
+
+## PR-C / C-1：Schedulerと取得判定の責務分離
+
+- Timerを管理するState Schedulerと、保存状態・周期・Backoff・Quotaから1回の取得可否を判定するAcquisition Coordinatorを分ける。runOnce()やscheduledはHTTP成功を意味しない。
+- recheckAtは次回判定時刻、nextAttemptAtはHTTP開始可能な最早時刻である。遅延Timer・Promise解決遅延・時計補正を考慮し、予定時刻を実時刻の代用にせず、不正な予約を即時Retryで救済しない。
+- State固有停止と共有基盤停止を分ける。全体停止はTimer取消しだけでは足りず、既に走る別Stateの新たなProvider送信も防ぐ必要がある。停止ゲートの具体化はC-2 / C-3へ引き継ぐ。
+- Scheduler stop()の待機は既存Shutdown全体10秒の内側であり、追加の猶予枠ではない。同期SQLiteでEvent Loopが塞がる制約を残し、OS側の制御は実機運用工程で確認する。
+- C1-01〜C1-29は既存SCH観点を具体化・補完する未実施の受入条件。設計確定を実装・テスト完了と混同しない。

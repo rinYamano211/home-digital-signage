@@ -1453,6 +1453,16 @@ type AcquisitionControlState = {
 State SchedulerとProvider Quotaは分離し、Tomorrow.ioは送信前Tx-Q Commit、同時最大1件、永続履歴を確認不能ならFail Closedとする。Quota解除見込みは各ローリング窓の最早解除時刻の最大値を使い、次回発火時に再評価する。安全上限は暫定値を維持する。
 詳細・採用状態・SQL未決定の区別は[技術スタック選定 第23章](technology-stack.md#23-backend-schedulersqlite-recoverypending-publication)に従う。
 
+#### PR-C / C-1の責務分離
+
+State SchedulerはState単位のTimer最大1個、予約・取消し・再予約、inFlight、再判定要求の集約、Lifecycleと停止待機を担当する。Acquisition CoordinatorのrunOnce()は保存済みState・Control State・実際の現在時刻を再評価し、周期・Backoff・Provider制約・Quotaを確認して必要処理を調整し、次回判定時刻または停止方針を返す。必ずHTTPを1回実行する意味ではない。SchedulerはHTTP結果・Backoff計算・Quota履歴・SQLite Transactionの詳細を解釈しない。
+
+結果はscheduled、suspended / blockedとstate / globalの範囲を区別する。scheduledはHTTP成功を意味しない。State固有異常は局所化するが、共有DB障害や影響範囲不明では全体を安全側に保留する。global停止時には実行中の別Stateからの新たなProvider送信も防ぐ共通停止ゲートが必要であり、具体方式はC-2 / C-3で検討する。Commit結果不明時の既存照合・Fail Closed契約は変更しない。
+
+recheckAtは次回判定時刻であり永続nextAttemptAtとは別とする。予約判断時の現在より未来の厳密なUTC RFC3339日時だけを許可し、不正・過去・現在は原則対象Stateをblocked相当で保留してログに記録する。Promise解決遅延も含め、独自の時刻加算や即時Retryで救済しない。発火時は実時刻で再評価し、長時間Timerは安全な範囲で分割する。requestRecheck()は取得制約を迂回せず、inFlight中は集約し、古いCallbackは世代識別子等で無効化する。suspended・blockedの再開契約はPR-Eへ引き継ぐ。
+
+時計進行時の即時前倒しは保証せず、巻戻り時もnextAttemptAt・Quota履歴を維持する。時計変更専用監視はMVPに追加しない。論理Interface、scope / reasonの意味的制約、Timer・Reject・Shutdown契約、未実施のC1-01〜C1-29とSCH対応は[技術スタック選定 23.9](technology-stack.md#239-pr-c--c-1scheduleracquisition-coordinator設計)を正本とする。C-1は設計確定であり、PR-C実装完了ではない。
+
 ### 16.4 Validation・Transaction分離・公開
 
 従来のCache・Published State・Control Stateの単一Transaction案を分離する。Cache更新失敗で公開を妨げない8.5の原則に合わせ、失敗の影響を局所化するためである。
@@ -1612,7 +1622,7 @@ Store所有権のLifecycle Hookへの引継ぎ前は起動処理が取得済みC
 
 終了順序はHTTP受付停止 → SQLite Connection Close → Node.js Process終了 → 最終Lock FD CloseによるEX解放とする。正常終了・SIGTERMは既存Shutdown経路に従う。SIGKILLはHookを実行できないためOSのFD Closeにより解放され、別ProcessがFDを保持して残らない構成を要求する。起動途中の失敗もConnectionとFDを後始末する。
 
-PR-CでSchedulerを導入する際は、Scheduler停止後にDBをCloseする。同期DB処理がShutdownを妨げる制約は[技術スタック選定 12.5](technology-stack.md#125-lifecycleの技術的制約と後続工程)に従う。
+PR-CでSchedulerを導入する際は、既存installShutdown()とFastify Lifecycleを継続利用し、専用Signal Handlerは追加しない。Shutdown開始後は新規Task・Timer再予約を禁止し、冪等なstop()でTimer取消し・実行中Task終了待機を行った後、既存BackendStoreの所有権に従って通常DB Closeを行う。既存Shutdown全体10秒制限はSchedulerに追加の10秒枠を与えず、期限内に終了しなければ既存異常終了経路へ移る。Scheduler独自のTask全体Timeoutは設けない。同期DB処理がShutdownを妨げる制約は[技術スタック選定 12.5](technology-stack.md#125-lifecycleの技術的制約と後続工程)に従う。
 
 #### 工程の責務
 

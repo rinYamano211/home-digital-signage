@@ -2260,6 +2260,142 @@ SCH-01〜SCH-33の33件をMVPの正式なテスト観点として扱う。33個�
 
 Vitest Fake Timer、HTTP Mock（Timeout / 429 / 500 / Validation）、SQLite統合Commit / Rollback、固定Quota履歴の境界値、Startup / Recovery再起動相当テスト、Pi実機Process Crash・systemd復旧・72時間試験を予定する。
 
+### 23.9 PR-C / C-1：Scheduler・Acquisition Coordinator設計
+
+C-1の責務分離・論理Interfaceは設計確定とする。実装・受入検証は未実施であり、PR-C全体の実装完了を意味しない。23.2〜23.8の取得周期・Backoff・Quota・Transaction・Recovery契約は維持する。
+
+#### 責務と公開Interface
+
+| 対象 | 責務 |
+|---|---|
+| State Scheduler | State単位のsetTimeout、Timer予約・取消し・再予約、inFlightによる重複防止、再判定要求の集約、Lifecycle管理、Shutdown時の新規Task禁止・実行中Task終了待機 |
+| Acquisition Coordinator | runOnce()による1回の取得判定サイクル、保存済みState・Control State・実際の現在時刻の再評価、取得周期・Backoff・Provider制約・Quotaの確認、必要な取得処理の調整、次回判定時刻または停止方針の返却。Acquisition Control・Quota Guard・後続公開処理へ委譲する |
+
+SchedulerはHTTP結果、Backoff計算、Quota履歴、SQLite Transactionの詳細を解釈しない。runOnce()はHTTPを必ず1回実行するメソッドではなく、送信しない場合を含む取得判定サイクルである。5 Stateの論理的独立性を維持する。
+
+```typescript
+type RunOnceResult =
+  | {
+      kind: "scheduled";
+      recheckAt: string;
+    }
+  | {
+      kind: "suspended";
+      scope: "state" | "global";
+      reason: "database_unavailable" | "storage_unresolved";
+    }
+  | {
+      kind: "blocked";
+      scope: "state" | "global";
+      reason:
+        | "invalid_recheck_at"
+        | "integrity_error"
+        | "schema_incompatible"
+        | "unexpected_error";
+    };
+
+interface AcquisitionCoordinator {
+  runOnce(stateKey: StateKey): Promise<RunOnceResult>;
+}
+
+interface StateScheduler {
+  start(): void;
+  requestRecheck(stateKey: StateKey): void;
+  stop(): Promise<void>;
+}
+```
+
+StateKeyは既存の型を使う。型名・具体的なエラー表現は実装時に既存コードと整合させられるが、結果の意味論・責務境界は変更しない。
+
+#### 判定結果と障害範囲
+
+| 結果 | 意味 | Schedulerの動作 |
+|---|---|---|
+| scheduled | 通常Schedulerを継続可能 | recheckAtを予約時に検証し、Timerを予約 |
+| suspended / state | State単位の一時保留 | 該当Stateの通常Timerを停止 |
+| suspended / global | 共有基盤の一時障害 | 全Stateの通常Timerを停止 |
+| blocked / state | State固有の安全性・契約違反 | 該当Stateを停止 |
+| blocked / global | 共通基盤の安全性を確認できない | 全Stateを停止 |
+
+scheduledはHTTP成功を意味せず、取得周期未到達、Quota不足、HTTP失敗後のBackoffも含む。suspendedはRecovery等による安全な再開の可能性がある状態、blockedは安全確認なしに自動再開しない状態である。単なるTimer停止と既存Database Healthの分類を同一視せず、障害原因・scope・Transaction状態に従う。
+
+scopeとreasonの組み合わせは任意ではない。共有SQLite Connection利用不能はglobal / database_unavailable、DB全体のSchema非互換はglobal / schema_incompatibleとする。storage_unresolvedは既存照合契約で対象Stateだけの未解決と確認できる場合にstate、ConnectionのTransaction状態も未解決ならglobalとする。integrity_errorはState固有と確認できる場合だけstateとし、DB全体の破損等はglobalで停止する。不正recheckAtは原則state / invalid_recheck_atとして扱う。予期しない例外の影響範囲を特定できない場合はglobal / unexpected_error相当で安全側に保留し、State固有と推測して継続しない。
+
+想定済みHTTP失敗・Quota不足はCoordinatorが分類して返す。SchedulerはrunOnce()のRejectも捕捉し、inFlightを必ず解除する。即時Retryせず、影響範囲不明なら通常Scheduler全体を保留する。Commit結果不明は既存の照合・Fail Closedに従い、安全性が確認できるまで再実行しない。
+
+global停止時はTimer取消しに加え、実行中の別Stateも新たなProvider送信へ進まない共通停止ゲートを必要とする。ゲートの具体Interface・実装方式はC-2 / C-3で検討する。既に送信したHTTPの取消しやQuota消費取消しを意味しない。
+
+#### recheckAt・Timer・時計変更
+
+recheckAtはSchedulerの次回判定時刻であり、永続Control StateのnextAttemptAt（HTTP開始可能な最早時刻）とは別である。UTCを明示したRFC3339形式の実在する日時として厳密に検証し、Timer予約判断時点の実際の現在時刻より未来であることを要求する。不正文字列・過去・現在の時刻は契約違反として予約せず、原則該当Stateのみblocked相当で保留して調査可能なログを残す。Promise解決が遅れて予約時には過去になった場合も拒否する。Schedulerが独自に1秒・5秒を加算して救済したり、無条件に即時Retryしたりしない。
+
+- StateごとのTimerは最大1個とし、inFlightでTask重複を防ぐ。発火時にはCoordinatorが保存状態と実際の現在時刻を再評価し、Timer予定時刻を現在時刻の代用にしない。
+- Task終了後にinFlightを解除し、scheduledなら検証した次回判定を予約する。suspended・blockedでは通常Timerを予約しない。
+- requestRecheck()は既存Timerの前倒し判定を要求できるが、取得制約を迂回する要求ではない。inFlight中は要求を集約して重複Taskを起動せず、終了後の判定に反映する。suspended・blockedの安全確認やRecovery再開契約を迂回しない。
+- 取消し・再予約前の古いCallbackは世代識別子等で無効化する。Timerの安全な待機範囲を超える長時間待機は分割して途中で再評価する。これは取得制約の無視やHTTP送信許可を意味しない。
+- 時計が進んでもTimerの即時前倒しは保証しない。発火時に現在時刻で再評価し、取得周期・Backoff・Quotaを維持する。
+- 時計が戻りnextAttemptAt未到達なら取得せず、Quota履歴を消去しない。現在時刻に基づき次回判定を予約する。MVPでは時計変更専用の監視機構を追加しない。
+
+#### Shutdown・Lifecycle
+
+既存PR-AのinstallShutdown()とFastify Lifecycleを継続利用し、Scheduler専用SIGTERM / SIGINT Handlerは追加しない。Shutdown開始後は新規TaskとTimer再予約を禁止する。stop()は冪等で、新規Task禁止、Timer取消し、実行中Taskの終了待機を担う。Task終了前に通常のSQLite Closeを行わず、Close所有権はBackendStoreと既存Lifecycleに従う。
+
+既存Shutdown全体の10秒制限を維持し、Scheduler専用に追加の10秒待機枠やTask全体Timeoutを設けない。期限内にTaskが完了しなければ正常終了を断念し、既存の異常終了経路へ移る。HTTP Timeout 10秒は個々のHTTPの制限であり、Shutdown全体制限やTask全体の停止保証とは別である。
+
+better-sqlite3の同期処理はEvent Loopとアプリ内Timerをブロックし得る。既存Shutdown制限はJSが終了要求を処理した時点からであり、同期処理を強制中断する保証ではない。[12.5](#125-lifecycleの技術的制約と後続工程)と[Architecture 16.8](architecture.md#168-sqlite初期化とbackend-lifecycle)を維持し、OS / systemdの停止制御・実機検証はIssue #12・#13へ引き継ぐ。
+
+#### 既存契約と未確定事項
+
+成功時のnextAttemptAt＝取得開始＋周期、失敗時の指数Backoff、Quota抑止時のControl State維持を変更しない。Tomorrow.ioの送信前Tx-Q Commit・Provider同時最大1件・Quota履歴不正時Fail Closedを維持する。Tx-Q → HTTP / Validation → Tx-A → Tx-P → Tx-Cの順序、HTTP Timeout 10秒・Task全体Timeoutなしも変更しない。
+
+| 後続工程 | 未確定・実装対象 |
+|---|---|
+| C-2 | Acquisition Control Repositoryの具体SQL・保存Interface |
+| C-3 | Quota Guardの具体Interface・Tx-Q実装 |
+| C-2 / C-3 | 共通停止ゲートの具体Interface・実装方式。global停止後の新規送信禁止を満たす |
+| PR-D | Tx-P / Tx-Cを含む公開処理の連携、Pending Publication |
+| PR-E | 継続DB Recovery、安全確認後のScheduler再開Interface |
+| Issue #12 / #13 | systemdの具体停止猶予・OS停止制御・実機検証 |
+
+#### C-1受入条件とSCHとの対応
+
+C1-01〜C1-29は設計上の受入条件であり、実装・テストは未実施。SCH-01〜SCH-33は23.8の既存観点を維持する。以下の対応は同じ契約の具体化・関連範囲を示し、C1とSCHを重複した独立テスト実装義務として数えない。C1のScheduler単体観点と、C-2 / C-3・PR-D / PR-Eの結合観点を区別し、後続機構を今回検証済みとしない。
+
+| ID | 条件・期待結果 | 既存SCHとの対応・補足 |
+|---|---|---|
+| C1-01 | Startupで通常判定を使用し、保存済みnextAttemptAt・Control Stateを尊重。強制取得しない | SCH-23〜26 |
+| C1-02 | 5 Stateを独立に判定し、正常StateのTimerを維持 | SCH-12・33 |
+| C1-03 | 予約・再予約・取消しを通じてStateごとの有効Timerは最大1個 | SCH-20・21の具体化 |
+| C1-04 | 遅延Timerは予定時刻でなく実際の現在時刻・保存状態を再評価 | SCH-20 |
+| C1-05 | Taskが周期を超えてもState単位inFlightで重複起動しない | SCH-05・21 |
+| C1-06 | inFlight中のrequestRecheckを集約し、重複Taskなしで終了後の判定に反映 | SCH-21 |
+| C1-07 | Task終了時にinFlightを解除し、結果に従って次回予約または停止 | SCH-22 |
+| C1-08 | scheduledをHTTP成功と誤認せず、周期・Backoff・Quota待機を維持 | SCH-02・03・14・15・19・23 |
+| C1-09 | suspended / stateでは対象Timerのみ停止し、安全確認前に要求で再開しない | SCH-07・12の局所化 |
+| C1-10 | SQLite利用不能・Schema非互換では通常Scheduler全体を停止・保留 | SCH-09・13。再開はPR-E |
+| C1-11 | Shutdown開始後は新規Task・Timer再予約を禁止し、予約を取り消す | Lifecycle追加観点。SCH-21・22に関連 |
+| C1-12 | stop()は実行中Taskの終了を待ち、待機中も新規Taskを起動しない | SCH-05に関連するLifecycle追加観点 |
+| C1-13 | stop()を二重に要求しても停止・待機が冪等で不正な再予約を起こさない | Lifecycle追加観点 |
+| C1-14 | Task終了待機後に既存所有権でDB Close。通常経路で早期Closeしない | 12.5・Architecture 16.8の追加具体化 |
+| C1-15 | Task未終了でShutdown全体10秒を超えたら既存異常終了経路。追加10秒枠なし | 既存Shutdown契約。同期処理制約・実機確認は別 |
+| C1-16 | HTTP Timeout 10秒とTask全体Timeoutなしを区別し、長時間Taskも重複しない | SCH-01・05 |
+| C1-17 | installShutdown()・Fastify Lifecycleを利用し、専用Signal Handlerを増設しない | Architecture 16.8の追加具体化 |
+| C1-18 | suspended / blockedで通常Timerを作らず、Recoveryの安全な再開を迂回しない | SCH-09・10・30。再開InterfaceはPR-E |
+| C1-19 | 過去・現在のrecheckAtを拒否し、時刻加算救済・即時Retryなし | SCH-20・22の具体化 |
+| C1-20 | 不正な時刻文字列を厳密検証で拒否し、ログを残してTimerを作らない | SCH-22に関連するInterface追加観点 |
+| C1-21 | 不正recheckAt等のState固有異常で他Stateの正常取得・Timerを止めない | SCH-12・33 |
+| C1-22 | 共有DB障害時は全Stateを保留し、安全確認まで再実行しない | SCH-07・09・13・28 |
+| C1-23 | 時計進行後も即時前倒しを仮定せず、発火時に現在時刻と取得制約を再評価 | SCH-20・23、QuotaはSCH-14〜19 |
+| C1-24 | 時計巻戻り後もnextAttemptAt・Backoff・Quota履歴を尊重し、消去・強制取得なし | SCH-23・29の時計変更時具体化 |
+| C1-25 | runOnce Rejectを捕捉し、inFlightを必ず解除 | SCH-22 |
+| C1-26 | 想定外例外で即時Retryせず、範囲不明なら全体保留 | SCH-22・28 |
+| C1-27 | 取消し・再予約後の古いTimer Callbackを無効化 | SCH-20・21の具体化 |
+| C1-28 | 長時間Timerを安全な範囲で分割し、途中で状態・時刻を再評価 | SCH-03・15・20に関連 |
+| C1-29 | global停止後、実行中の別Stateも新たなProvider送信へ進まない | SCH-09・13・16・17。ゲート具体化はC-2 / C-3 |
+
+SCH-04・06〜08・11・17・18・24〜32等のValidation・Transaction・復元・Pending・Quotaの詳細は既存正本と後続工程で検証し、Schedulerへ責務を移さない。C1の対応表はSCHの観点を削除・置換せず、C1の受入条件確定をテスト成功とは扱わない。
+
+
 ---
 
 ## 24. Issue #4最終反映：採用結果・検証状態・後続引継ぎ
