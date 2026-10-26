@@ -2837,3 +2837,14 @@ Commit成功後に例外が通知される場合を考えると、無条件Retry
 - State固有停止と共有基盤停止を分ける。全体停止はTimer取消しだけでは足りず、既に走る別Stateの新たなProvider送信も防ぐ必要がある。停止ゲートの具体化はC-2 / C-3へ引き継ぐ。
 - Scheduler stop()の待機は既存Shutdown全体10秒の内側であり、追加の猶予枠ではない。同期SQLiteでEvent Loopが塞がる制約を残し、OS側の制御は実機運用工程で確認する。
 - C1-01〜C1-29は既存SCH観点を具体化・補完する未実施の受入条件。設計確定を実装・テスト完了と混同しない。
+
+---
+
+## PR-C / C-2：取得制御のEvidence・初回許可・Atomicity
+
+- RowのRead Evidenceは確認時のRow有無・正確なJSONを拘束するが、初回保存を許可する証明ではない。Application / CoordinatorがAllowlist・Controlと既存Snapshot／Counter等・State構成・DB正常性から新規性を判断する。Rowがすべてなくても過去データ非消失を厳密に証明できない場合があり、不明なら欠損相当の保守的待機へ進む。初回Authorizationは別に要求し、HTTP送信許可とも区別する。
+- EvidenceとAuthorizationは内部レジストリで管理し、保存試行開始時に消費する。BEGIN IMMEDIATE内で再Read・一致確認して保存することで確認と更新をAtomicにするが、単一Writer前提でも外部変更・ABAの完全検出にはならない。
+- Commit例外と未保存は同じではない。Commit直接成功、またはTransaction解決・競合排除・保存前後区別を伴う一意な反映確認でsaved、非反映確定でnot_saved、それ以外はunknownとする。予定JSON一致だけでは同じ値への別書込み・ABAを識別できず、外部Writer・再起動も限界となる。確定JSONを再利用してRead-only照合し、後続Tx-A・Read・Tx-PのFail ClosedとConnection全体停止を区別する。
+- 既存Stateの欠損・不正は単調増加時計で保守的に待ち、待機後も再Readする。時間経過は正常性の証明や不正Row修復の許可ではない。
+- Shutdown時は初回Authorizationを失効させ、新規発行・再発行・初回INSERTを禁止する。開始済み試行の正常既存RowへのUPDATEだけを、DB・Transaction正常、有効Evidence、DB安全性の停止なし、既存Lifecycleの終了待機内という全条件で許可可能とする。未保存のHTTP結果を理由に即時再送しない。
+- C-2の文書化とC-1整合修正のみ。C2受入条件は未実施、実装は未着手。Provider送信Permitの競合防止方式はC-3、継続Recovery・不正Row修復はPR-Eへ引き継ぐ。
