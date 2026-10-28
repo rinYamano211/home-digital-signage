@@ -1018,6 +1018,8 @@ OS / RTCが明確に利用不能を示す場合は、その時刻を通常の時
 同期完了を基本画面起動の条件とせず、利用可能な時刻が得られれば利用者操作なしで通常表示へ移行する。
 利用可否の具体的な取得・判定方法はIssue #4、未同期状態の具体的UIはIssue #5で扱う。
 
+Provider送信用Clock Trustは、上記の表示用時刻の利用可否とは別にQuota窓の安全性を確認する。RTC時刻が時計・日付表示に使用可能でも、それだけで送信を許可しない。Clock TrustとHistory Trustは独立評価し、履歴の内部整合性・Timestamp信頼性・完全性が不明ならFail Closedとする。RTCだけで送信可能な具体条件やOS同期確認の実装方法は今回確定せず、既存のOffline表示・RTC利用方針を変更しない。詳細は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-clock-history-trust)に従う。
+
 ### 10.3 Timezone
 
 日本国内での利用を前提とし、ApplicationのTimezoneはJST（Asia/Tokyo）固定とする。
@@ -1461,7 +1463,7 @@ State SchedulerはState単位のTimer最大1個、予約・取消し・再予約
 
 recheckAtは次回判定時刻であり永続nextAttemptAtとは別とする。予約判断時の現在より未来の厳密なUTC RFC3339日時だけを許可し、不正・過去・現在は原則対象Stateをblocked相当で保留してログに記録する。Promise解決遅延も含め、独自の時刻加算や即時Retryで救済しない。発火時は実時刻で再評価し、長時間Timerは安全な範囲で分割する。requestRecheck()は取得制約を迂回せず、inFlight中は集約し、古いCallbackは世代識別子等で無効化する。suspended・blockedの再開契約はPR-Eへ引き継ぐ。
 
-時計進行時の即時前倒しは保証せず、巻戻り時もnextAttemptAt・Quota履歴を維持する。時計変更専用監視はMVPに追加しない。論理Interface、scope / reasonの意味的制約、Timer・Reject・Shutdown契約、未実施のC1-01〜C1-29とSCH対応は[技術スタック選定 23.9](technology-stack.md#pr-c-c1-scheduler)を正本とする。C-1は設計確定であり、PR-C実装完了ではない。
+時計進行時の即時前倒しは保証せず、巻戻り時もnextAttemptAt・Quota履歴を維持する。時計変更専用監視はMVPに追加しない。これはSchedulerの時計変更イベント発行・専用再スケジュールを目的とする監視の方針である。C-3 Quota Guardの時計監視はProvider送信安全性の別責務で、新規Tx-Q・HTTPを抑止してもC-2のnextAttemptAt・consecutiveFailuresを更新せず、Scheduler全体を再設計しない。論理Interface、scope / reasonの意味的制約、Timer・Reject・Shutdown契約、未実施のC1-01〜C1-29とSCH対応は[技術スタック選定 23.9](technology-stack.md#pr-c-c1-scheduler)を正本とする。C-1は設計確定であり、PR-C実装完了ではない。
 
 #### PR-C / C-2の取得制御保存
 
@@ -1470,6 +1472,10 @@ Acquisition Control Repositoryは既存acquisition_controlのRow・JSON、Allowl
 既存StateのControl Row欠損・不正ではメモリ上の単調増加時計でmin(acquisitionPeriod, 5分)待機し、再起動時は再Readして必要なら待機を最初から行う。待機中は送信・自動修復をせず、完了後も再Readする。欠損継続は他の取得条件を確認した初回保存経路、不正継続は対象State保留とし、自動削除・上書き・保存用Evidence・Authorization発行をしない。Application / CoordinatorはAllowlist・Control不存在・Published State / Snapshot / Generation Counter等の過去記録不在・初期化／Migration／Recovery中でないこと・DB／Schema／Connection正常・判断情報の正常な参照を確認し、初回取得と判断できる場合のみ新規Stateとして扱う。これらのRow不存在だけでは過去データ消失がないと厳密に証明できず、新規性不明なら既存State欠損と同じ保守的待機へ進む。待機後も再Read・取得条件・Authorizationが必要で、不正Rowはこの初回保存経路に含めない。Repositoryに新規性判定を移さず、Schemaも変更しない。Quota履歴不正も5分で解除しない。
 
 初回保存には不存在EvidenceとApplication発行の同一State・取得試行用Authorizationを要求し、HTTP結果確定後・Tx-A直前の全条件成立時のみ発行する。初回INSERTと正常既存RowのUPDATEを分け、UPSERTで既存Rowを上書きしない。トークンは同一Process・Repository・Connection世代・State／取得試行へ拘束し、保存試行時に消費する。時間経過だけでEvidenceを失効させず、Connection変更・再起動・試行終了等の失効を管理する。CacheやPublished Stateの証跡契約を変更しない。Shutdown開始で既発行Authorizationを失効させ、その後の新規発行・再発行・初回INSERTを禁止する。詳細・初回許可の条件・未実施受入条件は[技術スタック選定 23.10](technology-stack.md#pr-c-c2-acquisition-control)を正本とする。
+
+#### PR-C / C-3設計検討結果への参照
+
+Quota履歴・MetadataのSchema案、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。既存4 Table・Schema Version・C-1 / C-2契約を変更する実装指示ではない。F-01〜F-03・U-12、実機前の暫定値と保証境界を区別し、未確認事項を安全性成立とみなさない。
 
 ### 16.4 Validation・Transaction分離・公開
 
