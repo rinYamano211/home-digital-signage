@@ -2587,6 +2587,236 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 - 単一Writer前提、外部Writer・ABA・再起動をまたぐ完全操作識別の限界を維持する。具体SQL・トークン管理・照合の実装検証は未実施であり、既存DDL・Schema Versionを変更しない。
 
 
+<a id="pr-c-c3-quota-send-gate"></a>
+
+### 23.11 PR-C / C-3：Quota履歴・Tx-Q・Provider Send Gate・Startup / Recovery
+
+本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01〜F-03・U-12と下記整合確認事項は未解決のまま残す。C-1 / C-2の既存契約を変更しない。
+
+#### 採用状態・運用前提
+
+| 区分 | 内容 |
+|---|---|
+| 設計方針 | Provider MetadataとQuota履歴の分離、送信前Tx-Q Commit、Process内Permit、停止理由の独立管理、Clock Trust / History Trust、安全確認前の送信禁止 |
+| Schema設計案 | 下記2 Tableと検索Index候補。既存4 Table・user_version=1へ適用済みとはしない |
+| 暫定Backend安全上限 | Tomorrow.ioは400回 / ローリング24時間、20回 / ローリング60分、1回 / ローリング1秒。正式契約値ではない |
+| 実機前の暫定設定案 | 時計観測・同期確認の鮮度・安定観測・Quota窓の安全余裕。安全性の数学的保証ではない |
+| 運用前提 | 単一Backend Process・管理されたWriterとAPIキー利用・管理Provisioning / Restore。外部消費や過去履歴を確認できなければFail Closed |
+| 未確定 | F-01・F-02・F-03・U-12。C-1の時計監視範囲との関係等もレビュー対象 |
+
+<a id="pr-c-c3-01-history"></a>
+
+#### C-3/01：Quota履歴・Metadata
+
+Tomorrow.ioのQuota消費履歴をSQLiteへ永続保存し、Provider Metadataとは分離する。Providerごとに連続したSequenceを管理し、Tx-QのTimestampをUTC epoch millisecondsで保存する。MVPでは履歴を自動削除・自動圧縮せず、Quota窓の外へ出た履歴も自動GCしない。
+
+次は検討済みのSchema案である。既存12.6の初期DDLを置換・拡張する実装指示ではなく、具体Migration・Schema Version移行・適用時の検証は別途必要となる。
+
+```sql
+CREATE TABLE provider_quota_metadata (
+    provider_key TEXT PRIMARY KEY,
+    history_status TEXT NOT NULL
+        CHECK(history_status IN ('ACTIVE', 'SUSPENDED')),
+    initialized_at_ms INTEGER NOT NULL,
+    last_sequence INTEGER NOT NULL DEFAULT 0
+        CHECK(last_sequence >= 0)
+);
+
+CREATE TABLE provider_quota_consumptions (
+    provider_key TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    reserved_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (provider_key, sequence),
+    FOREIGN KEY (provider_key)
+        REFERENCES provider_quota_metadata(provider_key)
+);
+```
+
+provider_keyとreserved_at_msを使う検索Index（両項目の複合Index等）は検討対象とし、具体DDL・Query Planを採用済みとしない。履歴の連続性、Metadataのlast_sequenceとの整合、Timestamp、Providerとの対応を検証する。Metadata欠損・履歴不正・時刻信頼性不明では送信しない。history_statusがACTIVEであることだけを安全性の証明にしない。
+
+新規DBの空履歴はAPIキー未使用の証明ではない。APIキー変更には管理Provisioningが必要で、旧履歴を無条件に削除・初期化したり、新キーだから使用枠が確実に空いていると推測したりしない。初期ProvisioningでQuota安全性をどう証明するかはF-01の未確定事項であり、成立前はFail Closedを維持する。APIキーやSecretそのものを文書・ログに記録しない。
+
+<a id="pr-c-c3-02-tx-q"></a>
+
+#### C-3/02：Tx-Q
+
+HTTP送信前にQuota消費をSQLiteへCommitする。共有BackendStore ConnectionとBEGIN IMMEDIATEを使い、Provider単位のSequence採番・履歴追加・Metadata更新をAtomicに実行する。既存Tx-A・Tx-P・Tx-Cへ統合せず、HTTP・ValidationはTransaction外とする。
+
+| 結果 | 意味・送信可否 |
+|---|---|
+| saved | 当該Tx-QのCommit成功が確定。これだけで送信せず、C-3/03の最終Gate判定が必要 |
+| not_saved | 未保存が確定。HTTP送信禁止 |
+| unknown | 今回の保存結果を一意に確定できない。HTTP送信禁止、推測でsavedへ変換しない |
+| quota_blocked | 安全上限等により送信抑止。Provider取得失敗とは区別し、C-2のControl Stateを更新しない |
+
+Commit例外時はTransaction状態を確認し、必要なRollbackを試み、解決済みか確認する。未解決Connectionで別Transactionを開始しない。保存前Metadata / 履歴、確定した予定Sequence・Timestamp・保存予定内容、保存後Metadata / 履歴の証拠を使い、Read-onlyで照合する。予定内容を照合のために再生成しない。Transaction解決・競合書込み排除・保存前後の区別を含め、当該Tx-Qへの一意な帰属を確認できる場合だけ結果を確定し、単なるRow一致・Sequence一致を成功証明にしない。照合不能はunknownのままFail Closedとし、無条件再書込み・再送信をしない。
+
+HTTP失敗・Timeout・Abort・Gateでの送信中止など、実際に送信しなかった場合もCommit済みQuota履歴を取り消さない。Process再起動後は旧Attemptを再送しない。保存済み履歴を復元して通常判定を行い、旧Sequenceを送信権限として再利用しない。単一Writer・操作識別・外部変更に関する既存の照合限界を維持する。
+
+<a id="pr-c-c3-03-send-gate"></a>
+
+#### C-3/03：Provider Send Gate・Permit
+
+Providerの同時HTTP取得は最大1件とする。Tx-Q Commit成功後、HTTP開始直前にSend Gateで最終判定し、Process内のPermitを発行して即時消費する。永続Permit Tableは追加しない。
+
+最終判定からfetch()呼出しまでの同期区間にawaitを挟まない。attemptId、quotaSequence、connectionGeneration、sendEpoch、使用状態を検証し、停止条件・Trust・同時取得制限を満たす送信権限だけを使う。Permitの偽造・別Attempt / Sequence / Connection世代・失効済み権限・再利用を拒否する。具体的な型名・内部実装を本記録で追加確定しない。
+
+Global停止理由とProvider停止理由を独立管理し、一方の解除で他方の停止を解除しない。停止・Recoveryで旧送信権限を失効させ、解除後も旧Attempt・旧Permitを復活させない。Connection世代変更後は旧予約・旧検証結果を使い回さない。
+
+| 競合の確定順序 | 扱い |
+|---|---|
+| 停止確定 → fetch開始判定 | 新規fetch禁止。Tx-Q消費履歴は保持 |
+| fetch開始確定 → 停止 | 既開始Requestとして扱い、必要に応じAbortを要求する。消費履歴は保持 |
+
+保証するのはApplicationによるfetch()呼出し開始の順序であり、物理的なネットワーク送信時刻ではない。単純なBoolean確認をawaitの前後で行うだけで、停止競合対策が完成したとはしない。PR-Bの共有Connection CoordinationはDB利用の保護であり、Provider送信Permitを代替しない。
+
+Abort要求とRequestの実際の終了は別である。Abortを要求しただけでRequestが終了したと扱わず、Provider最大1件の制約を維持する。終了・結果分類とTx-Aの関係はC-3/04に従う。
+
+<a id="pr-c-c3-04-lifecycle"></a>
+
+#### C-3/04：Startup・Recovery・管理停止・Restore
+
+**Startup**
+
+Send Gateを閉じて開始する。DB・Schema・Transaction安全性、Provider Metadata・Quota履歴を検証し、管理停止状態を復元する。Clock Trust・History Trustを確認し、StateのAcquisition Controlを復元する。いずれかが未確認なら送信しない。強制HTTP取得はせず、C-1 / C-2の通常Scheduler・nextAttemptAt・Backoff・新規性判定・保守的待機を尊重する。
+
+**DB Recovery**
+
+23.1の前回確認完了から5秒間隔・Single-flight Recoveryを維持する。DB復旧後はProvider Metadata・履歴・Trust・管理停止を再検証する。Connection世代が変われば旧予約・旧検証結果・旧Permitは再利用しない。共有DB異常はGlobal保護、Provider固有の履歴異常はProvider保護と区別し、DB Recoveryだけで管理停止を解除しない。既存Pending処理と通常Scheduler再開順序は23.5〜23.6、継続Recoveryの実装責務はPR-Eに維持する。
+
+**管理停止・Resume**
+
+停止要求を受信した時点でProvider Gateを同期的に閉じ、既開始HTTPにAbortを要求する。SUSPENDEDのCommit成功を確認して初めて停止操作完了とする。Commit unknownではGateを閉じたまま保存前・予定・保存後とTransaction状態を照合し、未確定のまま停止成功とは報告しない。
+
+Commit未確認の停止要求について、Process Crash後の永続停止は保証しない。再起動は閉じたGateから検証するが、未Commitの停止意図が復元できたとはしない。
+
+Resumeは明示的な管理操作であり、ACTIVEのCommit成功を確認する。停止Commit unknownが未解決のままResumeで上書き・送信再開せず、安全側の照合を優先する。停止理由とTrustが解決していなければACTIVEだけでGateを開かない。Resume成功は即時HTTP取得を意味せず、通常Schedulerで全取得条件を再評価し、新たなAttemptで判定する。旧送信権限を復活させない。
+
+**管理Restore**
+
+通常DB RecoveryとRestoreを分離する。Restore中はBackendの自動再起動・新規送信を運用上禁止し、SQLite DB本体・WAL等の整合性を維持して復元する。Restore後はQuota履歴の完全性を再検証し、巻戻しを否定できなければ自動Resumeしない。管理外Restore・巻戻しの完全検出はMVP保証対象外とする。自動Restore機能は追加しない。
+
+<a id="pr-c-c3-clock-history-trust"></a>
+
+#### Clock Trust・History Trustと暫定設定
+
+Date.now()とprocess.hrtime.bigint()の経過差分を監視し、OSの時刻同期状態も確認する。壁時計が正常と見えることと、過去のQuota履歴が完全であることを区別する。History Trustは次の3要素をすべて評価し、確認できなければFail Closedとする。
+
+| 要素 | 確認する内容 |
+|---|---|
+| 内部整合性 | Provider Metadata、Sequence連続性、last_sequenceと履歴の対応等 |
+| Timestamp信頼性 | 履歴生成時の時刻をQuota判定に安全に使えるか |
+| 履歴完全性 | Restore巻戻し・未記録消費等による履歴欠落を否定できるか |
+
+時計異常の影響が不明な履歴を自動修復・自動削除しない。時計が回復してもHistory Trustが回復したとは限らず、安全性を証明できなければ送信禁止を維持する。
+
+| 項目 | 実機検証前の暫定設定案 |
+|---|---|
+| 時計観測周期 | 5秒 |
+| 時刻差分の異常閾値 | 1秒 |
+| 観測欠落の再検証閾値 | 15秒 |
+| OS同期確認の鮮度上限 | 15秒 |
+| 時計回復後の安定観測 | 60秒 |
+| Quota窓の安全余裕 | 各窓2秒 |
+
+これらは数学的な安全保証・実測保証値ではない。安定観測60秒や各窓2秒の余裕だけで、時刻異常履歴や初期Quota使用状況が安全だと判断しない。Tx-Q Timestampからfetch開始までの最大差と余裕の妥当性はF-02として実機検証する。OS同期確認の具体実装は今回固定しない。
+
+**C-1との整合確認事項**：23.9とArchitecture 16.3には「MVPでは時計変更専用の監視機構を追加しない」という記載がある。一方、今回のC-3には上記の時計監視が含まれる。Schedulerの時計変更監視とQuota送信安全性の監視を区別する意図か、既存記載の適用範囲の確認が必要である。既存C-1本文は変更せず、この差異をレビュー対象として残す。確認前に監視不要・送信安全性確認済みとは扱わない。
+
+<a id="pr-c-c3-http-tx-a"></a>
+
+#### HTTP・Abort・Tx-A連携
+
+Request LifecycleでHTTP成功・通常失敗・Timeout・制御Abortを区別し、結果分類を一度だけ確定する。Abort要求とRequest終了を混同せず、Timeoutと管理Abortが競合しても二重確定・二重Tx-A更新をしない。競合時の具体的な決着規則・実装方式は実装前の確認対象であり、今回独断で優先順位を固定しない。
+
+- 管理停止・Shutdown・DB保護による制御Abortは通常のProvider失敗とは区別する。制御AbortではconsecutiveFailures・nextAttemptAtを変更しない。
+- Timeout・HTTP 429・通信失敗は既存C-2のBackoff / Retry-Afterに従う。計算したBackoffはTx-A Commit成功後にのみ保存済みの制御として確定する。
+- HTTP取得全体（必要なResponse Body読込みを含む）に10秒Timeoutを適用する。Task全体Timeoutは追加せず、AbortはProvider処理やQuota消費の取消しを保証しない。
+- HTTP結果確定後もTx-Aの保存許可を確認する。これはC-2のEvidence・初回Authorization・停止理由別保存条件の確認であり、通常UPDATEに新しいAuthorization型を追加する決定ではない。Shutdown中の初回Authorization発行・再発行・INSERT禁止、開始済み試行の正常既存Row UPDATEの全条件を変更しない。
+- 管理停止中に確定したHTTP結果を保存できるかの最終詳細はF-03として未確定に残し、通常成功・失敗の結果を無条件にTx-Aへ流さない。制御AbortによるControl非更新方針とは区別する。
+- DB障害中にTx-A未実施となったHTTP結果は原則破棄し、Pending Publicationとして保持しない。Tx-A成功後・Tx-P失敗時だけ、23.5〜23.6の既存Pending契約を使う。
+
+C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照合・Tx-A unknownのFail Closedは維持する。C-3でTx-P / Tx-Cや公開用Metadataを変更しない。
+
+#### Tomorrow.io外部仕様の確認範囲
+
+400 / ローリング24時間、20 / ローリング60分、1 / ローリング1秒は既存の暫定Backend安全上限であり、Tomorrow.ioの契約上限や窓境界の正式仕様と同一ではない。
+
+[Tomorrow.io公式 Rate Limiting & Tokens](https://docs.tomorrow.io/reference/rate-limiting)を2026-10-28に確認した。公開ページにはプランに応じた時間・日単位の制限、超過時のHTTP 429、Rate Limit残数HeaderのEnterprise向け提供という一般説明がある。これは当該プロジェクトのプラン・キーでHeaderを取得できるという検証結果ではない。利用プラン・APIキー固有の正式上限、窓の境界方式、Header利用可否はU-12として外部確認待ちに残す。今回、実APIへのアクセスやQuota実測は行っていない。
+
+<a id="pr-c-c3-open-items"></a>
+
+#### 未確定事項・保証境界
+
+| ID | 項目 | 状態・確認先 |
+|---|---|---|
+| F-01 | 初期ProvisioningのQuota安全性証明 | 未確定。新規DBの空履歴・ACTIVEだけでは成立せず、Fail Closedを維持 |
+| F-02 | Tx-Q Timestampから送信開始までの最大差・安全余裕 | 実機検証が必要。各窓2秒の案を保証値にしない |
+| F-03 | 管理停止中に確定したHTTP結果のTx-A保存条件 | 最終詳細は未確定。C-2・制御Abort・Request終了の区別を維持 |
+| U-12 | Tomorrow.ioの実契約Quota値・窓定義・Header利用可否 | 利用プラン・APIキーに基づく外部確認待ち |
+
+追加確認対象は、C-1の時計監視なしとの適用範囲、およびTimeout / 管理Abort競合時の一度だけの分類を具体化する規則である。Provider固有停止はSend Gate内部の区分として記録し、C-1のRunOnceResultへ新しいscopeを追加しない。Schedulerとの具体接続は既存Interfaceの意味論に沿って実装前に確認する。
+
+以下はMVP保証対象外とする。
+
+- 管理外DB Restore・巻戻しの完全検出。
+- 未記録の外部SenderによるQuota消費の自動把握。
+- 複数Backend Process間の分散送信制御。
+- 複数APIキーの自動切替。
+- Quota履歴の自動GC・圧縮。
+- 自動Restore機能。
+
+既存コードのSchema検証は4 Table・user_version=1を前提にしており、本節のSchema案をそのまま追加すれば互換性は成立しない。将来のSchema / Migration・Provisioning設計が必要だが、今回は実装・Version変更・検証条件の緩和を行わない。F-01を空履歴の作成だけで解決済みとしない。継続DB Recovery・Backup / Restoreの実装責務はPR-E、公開・Pending連携はPR-D、OS運用・実機確認は既存Issue #12・#13へ維持する。
+
+<a id="pr-c-c3-acceptance"></a>
+
+#### C-3追加受入条件
+
+以下は未実施の設計受入条件である。SCH-01〜SCH-33、C1-01〜C1-29、C2-01〜C2-26を維持し、対応する既存観点の具体化・結合検証として再利用できる。独立テスト関数の重複実装義務や、C-3実装・実機試験成功を意味しない。未確定事項は未確定のまま送信しないことを確認し、未定義の成功経路を推測でテスト仕様化しない。
+
+| ID | 条件・期待結果 | 既存観点・追跡先 |
+|---|---|---|
+| QH-01 | Metadata欠損・不正、Provider対応不明で送信禁止 | SCH-16 |
+| QH-02 | Provider別Sequenceの欠落・重複・last_sequence不整合を検出しFail Closed | SCH-16 |
+| QH-03 | Timestamp信頼性・履歴完全性不明は、内部整合性が正常でも送信禁止 | SCH-16、CLK |
+| QH-04 | MVPで履歴を自動削除・圧縮しない。未送信・失敗分の消費も維持 | SCH-18 |
+| TQ-01 | BEGIN IMMEDIATE・共有Connectionで採番・履歴追加・Metadata更新がAtomic。途中失敗で部分保存しない | SCH-17、C2-16 |
+| TQ-02 | not_saved / unknownではHTTP送信なし、quota_blockedでBackoff更新なし | SCH-17・19 |
+| TQ-03 | Commit例外後はTransaction解決・保存前／予定／保存後の一意な帰属を照合。照合不能はunknownを維持 | SCH-17、C2-18〜21 |
+| TQ-04 | Commit成功後も最終Gateを通し、送信中止・Timeout・Abortで履歴取消しなし | SCH-18、C2-23 |
+| SG-01 | Provider同時取得最大1件。Abort要求だけでRequest終了とみなさない | SCH-05、Request Lifecycle |
+| SG-02 | 最終判定・Permit即時消費からfetch呼出しまでawaitなし | C1-29、C2-26 |
+| SG-03 | attemptId・quotaSequence・connectionGeneration・sendEpoch・使用状態の不一致／再利用を拒否 | C1-29 |
+| SG-04 | Tx-Q Commit成功後、fetch前に管理停止すると新規fetchなし、履歴は保持 | C1-29、TQ-04 |
+| SG-05 | fetch開始が停止より先なら既開始Requestとして扱う。保証は呼出し順序で物理送信時刻ではない | C1-29 |
+| SG-06 | Global / Provider停止を独立管理し、一方の解除で他方や旧送信権限を復活させない | C1-22・29 |
+| CLK-01 | 壁時計と単調増加時計の差、観測欠落、OS同期確認の古さを評価し、不明時送信禁止 | C1-23・24、整合確認事項 |
+| CLK-02 | 時計回復後もHistory Trust未回復ならFail Closed。履歴の自動修復・削除なし | SCH-16 |
+| CLK-03 | History Trustの内部整合性・Timestamp信頼性・完全性を別々に確認 | QH-03 |
+| CLK-04 | 暫定閾値・安定観測・各窓2秒だけで安全確定しない | F-01・F-02 |
+| REC-01 | Startupは閉じたGateからDB・Schema・Transaction・Provider・管理停止・Trust・Controlを復元し、強制HTTPなし | SCH-23〜26・29 |
+| REC-02 | DB Recoveryは既存5秒・Single-flight。復旧後にProvider安全性再検証 | SCH-09・10・30 |
+| REC-03 | DB Recovery後の旧Permit・旧Connection世代の予約／検証結果を拒否 | SG-03・06 |
+| REC-04 | Process再起動後に旧Attemptを再送せず、Quota履歴と保存済みControlを尊重 | SCH-18・29・31 |
+| REC-05 | 管理Restoreで巻戻りがある／否定不能なら自動Resumeなし。DB・WALの整合を確認 | F-01、PR-E・Issue #12 / #13 |
+| REC-06 | Global DB異常とProvider履歴異常を分け、DB復旧だけで管理停止を解除しない | SCH-09・13・16 |
+| ADM-01 | 停止要求で同期的にGateを閉じ、既開始HTTPへAbort要求。SUSPENDEDのCommit確認まで完了扱いしない | SG-04 |
+| ADM-02 | 管理停止Commit unknown後のResume要求でGateを開かず、照合を優先 | TQ-03の照合原則、F-03 |
+| ADM-03 | ACTIVEのCommit成功でも、他停止理由・Trust未確認なら送信なし。Resume成功で即時HTTPなし | SCH-23、SG-06 |
+| ADM-04 | 未Commit停止意図のProcess Crash後の永続保持を保証済みとしない | 保証境界 |
+| HTTP-01 | 必要なBody読込みを含むHTTP全体10秒Timeout。Task全体Timeoutとは区別 | SCH-01・05、C1-16 |
+| HTTP-02 | Timeoutと管理Abortが競合しても結果分類・Tx-A更新は一度だけ。具体決着規則は別途確認 | SCH-01・22、F-03 |
+| HTTP-03 | 管理停止・Shutdown・DB保護の制御Abortで失敗回数・nextAttemptAtを変更しない | C2-22〜25 |
+| HTTP-04 | Timeout・429・通信失敗はC-2 Backoff、更新確定はTx-A Commit成功後 | SCH-01〜03・06 |
+| HTTP-05 | DB障害中にHTTP成功してTx-A不能なら原則破棄。Tx-A未実施結果をPending保持しない | SCH-06・28、C2-24 |
+| HTTP-06 | Tx-A成功後のTx-P失敗だけ既存Pendingを使い、取得成功記録とQuotaを取消さない | SCH-27、C2-24 |
+| HTTP-07 | HTTP結果後もC-2保存許可を確認。管理停止中の結果はF-03を勝手に解決せず、Shutdown初回INSERTも禁止 | C2-09・25、F-03 |
+| KEY-01 | 新規DB空履歴をキー未使用証明とせず、Provisioning安全性未確認ならFail Closed | F-01 |
+| KEY-02 | APIキー変更後に旧履歴を無条件初期化せず、管理Provisioningを要求 | F-01・U-12 |
+| KEY-03 | 外部Senderの未記録消費・別キー自動切替・分散制御を保証済みとしない | MVP保証境界 |
+
+Quota窓の複数制限・最遅解除見込みとControl State非更新はSCH-14〜19を引き続き正本とする。正式Quota値・窓境界を取得できていない状態で、暫定Backend上限をProvider契約適合の実証結果としない。
+
 ---
 
 ## 24. Issue #4最終反映：採用結果・検証状態・後続引継ぎ

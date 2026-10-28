@@ -1471,6 +1471,10 @@ Acquisition Control Repositoryは既存acquisition_controlのRow・JSON、Allowl
 
 初回保存には不存在EvidenceとApplication発行の同一State・取得試行用Authorizationを要求し、HTTP結果確定後・Tx-A直前の全条件成立時のみ発行する。初回INSERTと正常既存RowのUPDATEを分け、UPSERTで既存Rowを上書きしない。トークンは同一Process・Repository・Connection世代・State／取得試行へ拘束し、保存試行時に消費する。時間経過だけでEvidenceを失効させず、Connection変更・再起動・試行終了等の失効を管理する。CacheやPublished Stateの証跡契約を変更しない。Shutdown開始で既発行Authorizationを失効させ、その後の新規発行・再発行・初回INSERTを禁止する。詳細・初回許可の条件・未実施受入条件は[技術スタック選定 23.10](technology-stack.md#pr-c-c2-acquisition-control)を正本とする。
 
+#### PR-C / C-3設計検討結果への参照
+
+Quota履歴・MetadataのSchema案、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。既存4 Table・Schema Version・C-1 / C-2契約を変更する実装指示ではない。F-01〜F-03・U-12、C-1の時計監視範囲との整合確認、実機前の暫定値と保証境界を区別し、未確認事項を安全性成立とみなさない。
+
 ### 16.4 Validation・Transaction分離・公開
 
 従来のCache・Published State・Control Stateの単一Transaction案を分離する。Cache更新失敗で公開を妨げない8.5の原則に合わせ、失敗の影響を局所化するためである。
