@@ -2336,7 +2336,7 @@ recheckAtはSchedulerの次回判定時刻であり、永続Control Stateのnext
 - requestRecheck()は既存Timerの前倒し判定を要求できるが、取得制約を迂回する要求ではない。inFlight中は要求を集約して重複Taskを起動せず、終了後の判定に反映する。suspended・blockedの安全確認やRecovery再開契約を迂回しない。
 - 取消し・再予約前の古いCallbackは世代識別子等で無効化する。Timerの安全な待機範囲を超える長時間待機は分割して途中で再評価する。これは取得制約の無視やHTTP送信許可を意味しない。
 - 時計が進んでもTimerの即時前倒しは保証しない。発火時に現在時刻で再評価し、取得周期・Backoff・Quotaを維持する。
-- 時計が戻りnextAttemptAt未到達なら取得せず、Quota履歴を消去しない。現在時刻に基づき次回判定を予約する。MVPでは時計変更専用の監視機構を追加しない。
+- 時計が戻りnextAttemptAt未到達なら取得せず、Quota履歴を消去しない。現在時刻に基づき次回判定を予約する。MVPでは時計変更専用の監視機構を追加しない。この方針はSchedulerの時計変更イベント発行・専用再スケジュール機構に適用する。Quota Guardの送信安全性確認用時計監視は23.11の別責務であり、Scheduler全体の再設計とはしない。
 
 #### Shutdown・Lifecycle
 
@@ -2591,7 +2591,7 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 
 ### 23.11 PR-C / C-3：Quota履歴・Tx-Q・Provider Send Gate・Startup / Recovery
 
-本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01〜F-03・U-12と下記整合確認事項は未解決のまま残す。C-1 / C-2の既存契約を変更しない。
+本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01〜F-03・U-12は未解決のまま残す。時計監視の責務・RTCとの境界・U-08の終端競合規則は下記の補足に従う。C-1 / C-2の既存契約を変更しない。
 
 #### 採用状態・運用前提
 
@@ -2602,7 +2602,7 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 | 暫定Backend安全上限 | Tomorrow.ioは400回 / ローリング24時間、20回 / ローリング60分、1回 / ローリング1秒。正式契約値ではない |
 | 実機前の暫定設定案 | 時計観測・同期確認の鮮度・安定観測・Quota窓の安全余裕。安全性の数学的保証ではない |
 | 運用前提 | 単一Backend Process・管理されたWriterとAPIキー利用・管理Provisioning / Restore。外部消費や過去履歴を確認できなければFail Closed |
-| 未確定 | F-01・F-02・F-03・U-12。C-1の時計監視範囲との関係等もレビュー対象 |
+| 未確定 | F-01・F-02・F-03・U-12。責務境界とU-08の競合規則の明文化は、これらの解決を意味しない |
 
 <a id="pr-c-c3-01-history"></a>
 
@@ -2700,7 +2700,11 @@ Resumeは明示的な管理操作であり、ACTIVEのCommit成功を確認す�
 
 #### Clock Trust・History Trustと暫定設定
 
-Date.now()とprocess.hrtime.bigint()の経過差分を監視し、OSの時刻同期状態も確認する。壁時計が正常と見えることと、過去のQuota履歴が完全であることを区別する。History Trustは次の3要素をすべて評価し、確認できなければFail Closedとする。
+Quota GuardはProvider送信の安全性を確認するため、Date.now()とprocess.hrtime.bigint()の経過差分、観測欠落、OS時刻情報の信頼性・同期確認の鮮度を評価する。時計異常時はProviderの新規Tx-Q・HTTP送信を抑止し、その異常だけでC-2のnextAttemptAt・consecutiveFailuresを更新しない。新しい監視Serviceを追加する決定ではない。
+
+表示用時刻の利用可否は[Architecture 10.2](architecture.md#102-時刻同期rtcと利用可否)に従う。OS / RTCの利用可能な時刻は時計・日付表示に使え、現在ネットワーク同期できないことだけを理由に表示用時刻を無効化しない。一方、Provider送信用Clock TrustにはQuota窓を安全に判定するための追加確認が必要で、RTC時刻が表示に使えるだけでは送信を許可しない。RTCだけで送信許可できる具体条件やOS同期確認の実装方法は今回確定しない。
+
+Clock TrustとHistory Trustを独立して評価する。壁時計が正常と見えることと、過去のQuota履歴が完全であることを区別し、History Trustは次の3要素をすべて評価する。いずれかを確認できなければFail Closedとする。
 
 | 要素 | 確認する内容 |
 |---|---|
@@ -2721,13 +2725,22 @@ Date.now()とprocess.hrtime.bigint()の経過差分を監視し、OSの時刻同
 
 これらは数学的な安全保証・実測保証値ではない。安定観測60秒や各窓2秒の余裕だけで、時刻異常履歴や初期Quota使用状況が安全だと判断しない。Tx-Q Timestampからfetch開始までの最大差と余裕の妥当性はF-02として実機検証する。OS同期確認の具体実装は今回固定しない。
 
-**C-1との整合確認事項**：23.9とArchitecture 16.3には「MVPでは時計変更専用の監視機構を追加しない」という記載がある。一方、今回のC-3には上記の時計監視が含まれる。Schedulerの時計変更監視とQuota送信安全性の監視を区別する意図か、既存記載の適用範囲の確認が必要である。既存C-1本文は変更せず、この差異をレビュー対象として残す。確認前に監視不要・送信安全性確認済みとは扱わない。
+**C-1との責務境界（R-01）**：C-1はSchedulerの再スケジュールを目的とする時計変更監視を追加しない方針を維持する。C-3はQuota Guardの送信安全性専用の監視であり、時計変更イベントの発行やScheduler専用再スケジュール機構を追加しない。表示用時刻のRTC利用可否（R-02）とも別判定とし、既存C-1・C-2受入条件は変更しない。
 
 <a id="pr-c-c3-http-tx-a"></a>
 
 #### HTTP・Abort・Tx-A連携
 
-Request LifecycleでHTTP成功・通常失敗・Timeout・制御Abortを区別し、結果分類を一度だけ確定する。Abort要求とRequest終了を混同せず、Timeoutと管理Abortが競合しても二重確定・二重Tx-A更新をしない。競合時の具体的な決着規則・実装方式は実装前の確認対象であり、今回独断で優先順位を固定しない。
+**U-08の終端競合規則（R-03）**：Request LifecycleはHTTP成功・通常失敗・Timeout・制御Abortを区別し、成立が確認された最初の終端結果で一度だけ確定する。後続イベントでは確定結果を変更せず、二重Tx-A・二重Backoff更新を禁止する。abort()呼出しはAbort要求であり、Request終了確定ではない。Timeout通知・Abort要求・HTTP完了の発生と、Lifecycleの終端結果確定を区別する。
+
+| 先に成立・確定した終端結果 | 後続イベントと処理 |
+|---|---|
+| HTTP成功 | 後続Abortで制御Abortへ変更しない |
+| 通常失敗 | 後続イベントで終端結果を変更せず、既存の失敗処理と保存条件を確認 |
+| 制御Abortによる終了 | 通常Provider失敗としてBackoffを更新しない |
+| Timeoutによる終了 | 既存C-2のTimeout失敗処理を適用する。保存確定はTx-A Commit条件に従う |
+
+競合順序はJavaScript Applicationが観測・確定した順序であり、物理ネットワーク上の発生順序の保証ではない。Node.jsのAbortSignal / fetchの実装詳細から、分類が必ず特定順序になるとは断定しない。終端結果が確定してもTx-Aは自動許可されず、保存直前に停止理由・DB安全性・Evidence・Authorizationを再確認する。管理停止中のHTTP結果の保存条件はF-03として未確定のまま維持する。
 
 - 管理停止・Shutdown・DB保護による制御Abortは通常のProvider失敗とは区別する。制御AbortではconsecutiveFailures・nextAttemptAtを変更しない。
 - Timeout・HTTP 429・通信失敗は既存C-2のBackoff / Retry-Afterに従う。計算したBackoffはTx-A Commit成功後にのみ保存済みの制御として確定する。
@@ -2755,7 +2768,7 @@ C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照
 | F-03 | 管理停止中に確定したHTTP結果のTx-A保存条件 | 最終詳細は未確定。C-2・制御Abort・Request終了の区別を維持 |
 | U-12 | Tomorrow.ioの実契約Quota値・窓定義・Header利用可否 | 利用プラン・APIキーに基づく外部確認待ち |
 
-追加確認対象は、C-1の時計監視なしとの適用範囲、およびTimeout / 管理Abort競合時の一度だけの分類を具体化する規則である。Provider固有停止はSend Gate内部の区分として記録し、C-1のRunOnceResultへ新しいscopeを追加しない。Schedulerとの具体接続は既存Interfaceの意味論に沿って実装前に確認する。
+R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCとProvider送信用Trustの境界、U-08の一度だけの終端競合規則を明文化した。F-01〜F-03・U-12を解決したものではない。RTCだけで送信許可できる具体条件・OS同期確認の実装方法は新たに確定しない。Provider固有停止はSend Gate内部の区分として記録し、C-1のRunOnceResultへ新しいscopeを追加しない。Schedulerとの具体接続は既存Interfaceの意味論に沿って実装前に確認する。
 
 以下はMVP保証対象外とする。
 
@@ -2790,10 +2803,10 @@ C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照
 | SG-04 | Tx-Q Commit成功後、fetch前に管理停止すると新規fetchなし、履歴は保持 | C1-29、TQ-04 |
 | SG-05 | fetch開始が停止より先なら既開始Requestとして扱う。保証は呼出し順序で物理送信時刻ではない | C1-29 |
 | SG-06 | Global / Provider停止を独立管理し、一方の解除で他方や旧送信権限を復活させない | C1-22・29 |
-| CLK-01 | 壁時計と単調増加時計の差、観測欠落、OS同期確認の古さを評価し、不明時送信禁止 | C1-23・24、整合確認事項 |
-| CLK-02 | 時計回復後もHistory Trust未回復ならFail Closed。履歴の自動修復・削除なし | SCH-16 |
-| CLK-03 | History Trustの内部整合性・Timestamp信頼性・完全性を別々に確認 | QH-03 |
-| CLK-04 | 暫定閾値・安定観測・各窓2秒だけで安全確定しない | F-01・F-02 |
+| CLK-01 | Quota Guardが壁時計・単調増加時計の経過差、観測欠落、OS時刻情報の信頼性を評価。異常時はProviderの新規Tx-Q・HTTP送信を抑止し、C-2 Control Stateは更新しない | C1-23・24、R-01・R-02 |
+| CLK-02 | OS / RTCが表示に利用可能ならネットワーク未同期だけで表示を無効化しない。表示可能なRTCだけで送信を許可せず、時計回復後もHistory Trust未回復ならFail Closed、履歴自動修復・削除なし | SCH-16 |
+| CLK-03 | Clock TrustとHistory Trustを独立評価し、履歴の内部整合性・Timestamp信頼性・完全性のいずれか不明ならFail Closed | QH-03 |
+| CLK-04 | 暫定閾値・安定観測・各窓2秒だけで安全確定しない。RTC単独送信許可の具体条件・OS同期確認実装を確定済みとしない | F-01・F-02 |
 | REC-01 | Startupは閉じたGateからDB・Schema・Transaction・Provider・管理停止・Trust・Controlを復元し、強制HTTPなし | SCH-23〜26・29 |
 | REC-02 | DB Recoveryは既存5秒・Single-flight。復旧後にProvider安全性再検証 | SCH-09・10・30 |
 | REC-03 | DB Recovery後の旧Permit・旧Connection世代の予約／検証結果を拒否 | SG-03・06 |
@@ -2805,12 +2818,12 @@ C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照
 | ADM-03 | ACTIVEのCommit成功でも、他停止理由・Trust未確認なら送信なし。Resume成功で即時HTTPなし | SCH-23、SG-06 |
 | ADM-04 | 未Commit停止意図のProcess Crash後の永続保持を保証済みとしない | 保証境界 |
 | HTTP-01 | 必要なBody読込みを含むHTTP全体10秒Timeout。Task全体Timeoutとは区別 | SCH-01・05、C1-16 |
-| HTTP-02 | Timeoutと管理Abortが競合しても結果分類・Tx-A更新は一度だけ。具体決着規則は別途確認 | SCH-01・22、F-03 |
-| HTTP-03 | 管理停止・Shutdown・DB保護の制御Abortで失敗回数・nextAttemptAtを変更しない | C2-22〜25 |
+| HTTP-02 | JavaScript Applicationで成立を確認した最初の終端結果を一度だけ確定。成功後Abortで変更せず、Timeout通知・Abort要求だけを終了確定とみなさず、二重Tx-A・Backoff更新なし | SCH-01・22、F-03 |
+| HTTP-03 | 制御Abort終了が先に確定した場合は失敗回数・nextAttemptAtを変更しない。Timeout終了が先ならC-2 Timeout失敗処理。要求と実際の終了を区別 | C2-22〜25 |
 | HTTP-04 | Timeout・429・通信失敗はC-2 Backoff、更新確定はTx-A Commit成功後 | SCH-01〜03・06 |
 | HTTP-05 | DB障害中にHTTP成功してTx-A不能なら原則破棄。Tx-A未実施結果をPending保持しない | SCH-06・28、C2-24 |
 | HTTP-06 | Tx-A成功後のTx-P失敗だけ既存Pendingを使い、取得成功記録とQuotaを取消さない | SCH-27、C2-24 |
-| HTTP-07 | HTTP結果後もC-2保存許可を確認。管理停止中の結果はF-03を勝手に解決せず、Shutdown初回INSERTも禁止 | C2-09・25、F-03 |
+| HTTP-07 | 終端結果確定後も保存直前の停止理由・DB安全性・Evidence・Authorizationを再確認。自動Tx-A許可なし。管理停止中保存条件はF-03未確定、Shutdown初回INSERT禁止 | C2-09・25、F-03 |
 | KEY-01 | 新規DB空履歴をキー未使用証明とせず、Provisioning安全性未確認ならFail Closed | F-01 |
 | KEY-02 | APIキー変更後に旧履歴を無条件初期化せず、管理Provisioningを要求 | F-01・U-12 |
 | KEY-03 | 外部Senderの未記録消費・別キー自動切替・分散制御を保証済みとしない | MVP保証境界 |
