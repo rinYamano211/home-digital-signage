@@ -1452,7 +1452,7 @@ type AcquisitionControlState = {
 5 State共通Backoffは1分開始・係数2・上限30分、Jitterなし、即時Retryなし。HTTP 429は失敗とし、BackoffとRetry-After（秒数 / HTTP Date）の遅い方まで待機する。有効Retry-Afterは30分超でも尊重し、不正・欠損は通常Backoffとする。
 全Provider外部HTTP Timeoutは10秒、標準fetch + AbortSignal.timeout()を使用する方針。Task全体Timeoutは導入せず、長時間Taskでも同一Stateを重複起動しない。TimeoutはProvider処理・Quota消費取消しを意味しない。
 
-State SchedulerとProvider Quotaは分離し、Tomorrow.ioは送信前Tx-Q Commit、同時最大1件、永続履歴を確認不能ならFail Closedとする。Quota解除見込みは各ローリング窓の最早解除時刻の最大値を使い、次回発火時に再評価する。安全上限は暫定値を維持する。
+State SchedulerとProvider Quotaは分離し、Tomorrow.ioは送信前Tx-Q Commit、同時最大1件、永続履歴を確認不能ならFail Closedとする。Quota解除見込みは各ローリング窓の最早解除時刻の最大値を使い、次回発火時に再評価する。安全上限はローリング24時間400回・60分20回・1秒1回をMVP正式運用設計値とする。利用アカウントのダッシュボード確認値500 / 25 / 3やProvider契約保証とは区別する。
 詳細・採用状態・SQL未決定の区別は[技術スタック選定 第23章](technology-stack.md#23-backend-schedulersqlite-recoverypending-publication)に従う。
 
 #### PR-C / C-1の責務分離
@@ -1475,7 +1475,7 @@ Acquisition Control Repositoryは既存acquisition_controlのRow・JSON、Allowl
 
 #### PR-C / C-3設計検討結果への参照
 
-Quota履歴・MetadataのSchema案、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。既存4 Table・Schema Version・C-1 / C-2契約を変更する実装指示ではない。F-01〜F-03・U-12、実機前の暫定値と保証境界を区別し、未確認事項を安全性成立とみなさない。
+Quota履歴・MetadataのSchema案、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。既存4 Table・Schema Version・C-1 / C-2契約を変更する実装指示ではない。F-01は管理者が過去使用がQuota判定期間外であることを信頼できる時刻・必要な安全余裕を踏まえて確認し、同一キーの他Senderがいない前提で、取得済みキーを継続使用して初回のみ明示的に空履歴から開始する方式として確定した。通常起動・再起動では初期化しない。管理者の初期確認と通常運用のHistory Trustを分け、空履歴・ACTIVEだけで安全とせず、既存Fail Closedを維持する。U-12はローリング窓によるMVP運用方針として確定し、Provider固定窓追従の追加機構は導入しない。F-02・F-03、時計関連の実機前暫定値、外部仕様の未確認事項・保証境界は残す。詳細な成立条件は同節を正本とし、責務分離・DB管理方針は変更しない。
 
 ### 16.4 Validation・Transaction分離・公開
 

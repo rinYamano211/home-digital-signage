@@ -1291,8 +1291,8 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 | 正式採用：WeeklyWeather | Open-Meteo Daily Forecast。周期6時間・TTL12時間はMVP暫定値（第22章） |
 | 正式採用：HourlyWeather | Open-Meteo（第16・20章）。周期・TTLは暫定 |
 | 条件付き正式採用：RainForecast | Tomorrow.io Timelines API、rainIntensity、1m。周期5分・TTL30分・表示鮮度10分は暫定（第21章） |
-| 暫定採用：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
-| 暫定値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。正式制限確認後に再評価（16.4） |
+| MVP運用設計方針：Provider取得制御 | Tomorrow.ioのQuota Guard・送信前SQLite永続記録・Provider同時取得最大1件（16.4） |
+| MVP正式運用設計値：Quota安全上限 | ローリング24時間400回・60分20回・1秒1回。Provider契約保証とは区別（16.4・23.11） |
 | 合意済み詳細設計 | Tx-Q / Tx-A / Tx-P / Tx-C、SQLite障害Recovery、Scheduler時刻・Backoff・HTTP10秒・429、Pending Publication（第23章）。未実装・未検証 |
 | 未決定 | 下記の実装詳細・条件付き採用の条件確認・具体値 |
 
@@ -1309,7 +1309,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Open-Meteoの追加・長期検証と商用利用時の利用条件再確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
-- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioの暫定制御方針は第16章。
+- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioのMVP運用設計方針と外部仕様の保証境界は第16章・23.11。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 個別Migration・単一EXの具体ScriptとFD番号・Timeout値・起動経路の迂回防止、Provisioning CLI、DB・Lockの具体Path・Permission・Symlink対策、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理は未決定（23.5）。Tx-P単体のCommit結果不明時照合は12.10で設計済みだが実装未完了であり、Crashをまたぐ完全識別は保証しない。
 - Cache不正時の物理削除。
@@ -1359,7 +1359,7 @@ API Response取得と時間間隔指定は実証済みだが、降雨時の予�
 
 ### 16.3 利用枠の確認内容
 
-ユーザーのダッシュボード画面で、以下を確認した。Providerの正式仕様・将来の継続条件を最終確認したものではない。
+本プロジェクトのTomorrow.io無料プラン利用アカウントのダッシュボードで、ユーザーが以下を確認した。利用アカウントでの確認値であり、一般的な契約保証や将来の継続条件を最終確認したものではない。
 
 | 項目 | ユーザー確認値 |
 |---|---|
@@ -1371,9 +1371,9 @@ API Response取得と時間間隔指定は実証済みだが、降雨時の予�
 RainForecastを5分周期・1 Request / 取得で運用すると、通常取得分は288回/日・12回/時となる。
 無料利用を優先するが、無料枠超過時の課金条件、制限のリセット境界、継続的な無料利用条件は未確認である。枠内であれば無条件に継続無料と保証しない。
 
-### 16.4 Quota Guardの暫定採用方針
+### 16.4 Quota GuardのMVP運用設計方針
 
-以下を**暫定採用**とし、既存SQLite Acquisition Control・Scheduler・Backoffへ組み合わせる。Quota GuardはProvider単位の送信許可であり、State単位の取得制御や取得失敗後のRetry / Backoffとは別の責務である。
+以下を**MVPの正式な運用設計方針**として採用し、既存SQLite Acquisition Control・Scheduler・Backoffへ組み合わせる。実装・受入検証の完了を意味しない。Quota GuardはProvider単位の送信許可であり、State単位の取得制御や取得失敗後のRetry / Backoffとは別の責務である。
 
 - Tomorrow.ioの通常取得周期は5分、Providerへの同時取得は最大1件とする。
 - 即時Retryは行わず、Request送信前にQuota Guardを通す。
@@ -1381,19 +1381,19 @@ RainForecastを5分周期・1 Request / 取得で運用すると、通常取得�
 - 通信失敗・Timeoutでも、消費枠を安易に取り消さない。
 - Backend再起動後も送信履歴・Backoff・取得制御状態を復元する。
 - 日次・時間・秒間の制限をそれぞれ判定する。
-- Providerリセット境界が未確定の間は、ローリングウィンドウで保守的に管理する。
+- Backend側のローリングウィンドウで保守的に管理し、Providerの固定窓へ厳密に追従する追加機構はMVPに導入しない。
 - Quota不足による送信抑止と、実際に送信したHTTP Requestの失敗を区別する。
 - HTTP 429は取得失敗とし、BackoffとRetry-Afterの遅い方まで待機する。具体ルールは23.3に従う。
 
 送信前の永続記録は、外部HTTPをDB Transactionの外で行う既存境界を変更しない。Tx-Qによる送信前Commitと解除時刻判定は第23章に従う。具体SQL・DDLは未決定である。
 
-| 対象 | Provider公称上限（ユーザー画面確認） | Backend安全上限（暫定） |
+| 対象 | 利用アカウントのダッシュボード確認値 | Backend安全上限（MVP正式運用設計値） |
 |---|---|---|
 | 24時間 | 500回 | 400回 |
 | 60分 | 25回 | 20回 |
 | 1秒 | 3回 | 1回 |
 
-安全上限は実装前の暫定値であり、Providerの正式な制限仕様を確認して再評価する。ローリング24時間・60分・1秒の管理をProvider側の正式なリセット仕様と同一視しない。
+Backend上限400 / 20 / 1は、利用アカウントの確認値500 / 25 / 3に対して余裕を持たせた、MVPの正式な運用設計値とする。ローリング24時間・60分・1秒の管理をProvider側の正式な窓定義・リセット仕様と同一視せず、契約適合の実証・保証とも扱わない。未確認事項は23.11の保証境界に残す。
 
 Backend外で同一API Keyを利用するRequest数は、このBackendのSQLiteだけでは把握できない。手動検証、複数インスタンス、他のAPI経路による消費は運用上の制約として扱う。
 
@@ -2058,7 +2058,7 @@ Daily Response：
 
 ## 23. Backend Scheduler・SQLite Recovery・Pending Publication
 
-本章はIssue #4で合意済みの詳細設計を記録する。Backend技術の正式採用・Tomorrow.io条件付き採用とQuota安全上限等の暫定状態を区別し、実装・試験完了とは扱わない。Domain Data第18〜22章は変更しない。
+本章はIssue #4で合意済みの詳細設計を記録する。Backend技術の正式採用・Tomorrow.io条件付き採用・Quota上限のMVP正式運用設計値と、その他の暫定値を区別し、実装・試験完了とは扱わない。Domain Data第18〜22章は変更しない。
 
 ### 23.1 SQLite障害分類とRecovery
 
@@ -2125,7 +2125,7 @@ Provider同時取得最大1件、Tx-Q送信前記録、失敗・Timeout時の消
 Tx-Q失敗・履歴不正・確認不能ではFail Closed。
 ローリング24時間・60分・1秒ごとに保存履歴から最早解除見込み時刻を求め、複数制限ではその最大値を次回判定に使う。Timer発火時に全条件を再評価する。
 Quota不足だけではnextAttemptAt・失敗回数を変えない。
-安全上限400回 / 24時間、20回 / 60分、1回 / 1秒は**暫定Backend上限**であり、正式Provider制限ではない。
+安全上限400回 / ローリング24時間、20回 / ローリング60分、1回 / ローリング1秒は**MVP正式運用設計値**であり、正式Provider制限や契約保証とは区別する（16.4・23.11）。
 
 ### 23.5 Pending Publication保持と再公開
 
@@ -2591,7 +2591,7 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 
 ### 23.11 PR-C / C-3：Quota履歴・Tx-Q・Provider Send Gate・Startup / Recovery
 
-本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01〜F-03・U-12は未解決のまま残す。時計監視の責務・RTCとの境界・U-08の終端競合規則は下記の補足に従う。C-1 / C-2の既存契約を変更しない。
+本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01は管理者確認による初回Provisioning、U-12はMVPのQuota運用方針として設計判断を確定した。F-02・F-03は未解決とし、外部仕様の未確認事項は保証境界に残す。時計監視の責務・RTCとの境界・U-08の終端競合規則は下記の補足に従う。C-1 / C-2の既存契約を変更しない。
 
 #### 採用状態・運用前提
 
@@ -2599,10 +2599,11 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 |---|---|
 | 設計方針 | Provider MetadataとQuota履歴の分離、送信前Tx-Q Commit、Process内Permit、停止理由の独立管理、Clock Trust / History Trust、安全確認前の送信禁止 |
 | Schema設計案 | 下記2 Tableと検索Index候補。既存4 Table・user_version=1へ適用済みとはしない |
-| 暫定Backend安全上限 | Tomorrow.ioは400回 / ローリング24時間、20回 / ローリング60分、1回 / ローリング1秒。正式契約値ではない |
+| MVP正式運用設計値 | Tomorrow.ioは400回 / ローリング24時間、20回 / ローリング60分、1回 / ローリング1秒。利用アカウントの確認値500 / 25 / 3に余裕を持たせたBackend上限であり、正式契約値ではない |
 | 実機前の暫定設定案 | 時計観測・同期確認の鮮度・安定観測・Quota窓の安全余裕。安全性の数学的保証ではない |
 | 運用前提 | 単一Backend Process・管理されたWriterとAPIキー利用・管理Provisioning / Restore。外部消費や過去履歴を確認できなければFail Closed |
-| 未確定 | F-01・F-02・F-03・U-12。責務境界とU-08の競合規則の明文化は、これらの解決を意味しない |
+| 設計判断確定 | F-01：管理者確認による初回Provisioning。U-12：ローリング窓と400 / 20 / 1によるMVP運用方針。実装・外部仕様の保証とは区別する |
+| 未確定 | F-02・F-03。時計関連の具体実装と外部仕様の未確認事項も後続確認へ維持する |
 
 <a id="pr-c-c3-01-history"></a>
 
@@ -2634,7 +2635,19 @@ CREATE TABLE provider_quota_consumptions (
 
 provider_keyとreserved_at_msを使う検索Index（両項目の複合Index等）は検討対象とし、具体DDL・Query Planを採用済みとしない。履歴の連続性、Metadataのlast_sequenceとの整合、Timestamp、Providerとの対応を検証する。Metadata欠損・履歴不正・時刻信頼性不明では送信しない。history_statusがACTIVEであることだけを安全性の証明にしない。
 
-新規DBの空履歴はAPIキー未使用の証明ではない。APIキー変更には管理Provisioningが必要で、旧履歴を無条件に削除・初期化したり、新キーだから使用枠が確実に空いていると推測したりしない。初期ProvisioningでQuota安全性をどう証明するかはF-01の未確定事項であり、成立前はFail Closedを維持する。APIキーやSecretそのものを文書・ログに記録しない。
+新規DBの空履歴はAPIキー未使用の証明ではない。APIキー変更には管理Provisioningが必要で、旧履歴を無条件に削除・初期化したり、新キーだから使用枠が確実に空いていると推測したりしない。F-01では以下の管理者確認による初回Provisioning方式を正式採用する。初期安全性が未確認ならFail Closedを維持する。APIキーやSecretそのものを文書・ログに記録しない。
+
+F-01の前提として、本プロジェクトではTomorrow.io無料プランのアカウントとAPIキーを新規作成し、プロジェクト初期のWindows PowerShell検証で数回使用した後は使用していない（ユーザー確認）。16.2の認証・1分／5分間隔の将来予報・precipitationIntensity取得実績は維持する。
+
+初回Provisioningでは取得済みのAPIキーを継続使用し、以下を成立条件とする。
+
+1. 管理者が過去のAPI使用状況を確認する。
+2. 信頼できる時刻と必要な安全余裕を踏まえ、過去の使用がQuota判定期間の外にあることを確認する。具体的な安全余裕の値は今回確定しない。
+3. 同じAPIキーを使用する他のSenderが存在しないことを運用上の前提とする。
+4. 上記を満たす場合に限り、明示的な管理Provisioningで空のQuota消費履歴から開始する。
+5. 通常起動・再起動では既存履歴を初期化せず、初期化後の送信は既存Tx-Q・Quota Guard・Send Gateで管理する。
+
+初回の管理者確認と通常運用時のHistory Trustは別である。空履歴・history_status=ACTIVEだけを安全性の証明にせず、Clock Trust / History Trustの独立評価、履歴欠損・不整合・DB障害・Commit unknown時の安全側停止、Tx-Q Commit成功前の送信禁止を維持する。管理外Restore・巻戻しを通常起動で自動修復せず、未記録の外部Sender消費の自動把握も保証しない。初回Provisioningだけのために証拠Table・専用Service・複雑な過去履歴復元機構を追加しない。
 
 <a id="pr-c-c3-02-tx-q"></a>
 
@@ -2753,9 +2766,9 @@ C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照
 
 #### Tomorrow.io外部仕様の確認範囲
 
-400 / ローリング24時間、20 / ローリング60分、1 / ローリング1秒は既存の暫定Backend安全上限であり、Tomorrow.ioの契約上限や窓境界の正式仕様と同一ではない。
+U-12はMVPで採用するQuota運用方針の設計判断として完了とする。16.3の500 / day・25 / hour・3 / secondは利用アカウントのダッシュボードでユーザーが確認した値である。400 / ローリング24時間、20 / ローリング60分、1 / ローリング1秒をMVPの正式なBackend運用設計値とし、Provider固定窓へ厳密に追従する追加機構は導入しない。これはTomorrow.ioの一般的な契約保証や窓境界の正式仕様と同一ではない。
 
-[Tomorrow.io公式 Rate Limiting & Tokens](https://docs.tomorrow.io/reference/rate-limiting)を2026-10-28に確認した。公開ページにはプランに応じた時間・日単位の制限、超過時のHTTP 429、Rate Limit残数HeaderのEnterprise向け提供という一般説明がある。これは当該プロジェクトのプラン・キーでHeaderを取得できるという検証結果ではない。利用プラン・APIキー固有の正式上限、窓の境界方式、Header利用可否はU-12として外部確認待ちに残す。今回、実APIへのアクセスやQuota実測は行っていない。
+[Tomorrow.io公式 Rate Limiting & Tokens](https://docs.tomorrow.io/reference/rate-limiting)を2026-10-28に確認した。公開ページにはプランに応じた時間・日単位の制限、超過時のHTTP 429、Rate Limit残数HeaderのEnterprise向け提供という一般説明がある。これは当該プロジェクトのプラン・キーでHeaderを取得できるという検証結果ではない。利用アカウントのダッシュボード確認値と公開仕様の一般説明を区別する。Providerの秒単位の厳密な窓定義、個別アカウントへの追加制限の有無、無料枠超過時の課金条件、継続的な無料利用条件・将来の契約変更、当該アカウントでのRate Limit Header提供可否は未確認の保証境界として残す。未記録の外部Senderによる消費も把握・保証しない。今回、実APIへのアクセスやQuota実測は行っていない。
 
 <a id="pr-c-c3-open-items"></a>
 
@@ -2763,12 +2776,12 @@ C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照
 
 | ID | 項目 | 状態・確認先 |
 |---|---|---|
-| F-01 | 初期ProvisioningのQuota安全性証明 | 未確定。新規DBの空履歴・ACTIVEだけでは成立せず、Fail Closedを維持 |
+| F-01 | 初期ProvisioningのQuota安全性確認 | 設計判断確定。C-3/01の管理者確認方式を採用。個々のProvisioningでは成立条件の確認が必要で、未確認ならFail Closed。空履歴・ACTIVEだけでは成立しない |
 | F-02 | Tx-Q Timestampから送信開始までの最大差・安全余裕 | 実機検証が必要。各窓2秒の案を保証値にしない |
 | F-03 | 管理停止中に確定したHTTP結果のTx-A保存条件 | 最終詳細は未確定。C-2・制御Abort・Request終了の区別を維持 |
-| U-12 | Tomorrow.ioの実契約Quota値・窓定義・Header利用可否 | 利用プラン・APIキーに基づく外部確認待ち |
+| U-12 | MVPのQuota運用方針 | 設計判断確定。アカウント確認値500 / 25 / 3とBackendローリング上限400 / 20 / 1を区別して採用。外部仕様の未確認事項は上記保証境界として維持 |
 
-R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCとProvider送信用Trustの境界、U-08の一度だけの終端競合規則を明文化した。F-01〜F-03・U-12を解決したものではない。RTCだけで送信許可できる具体条件・OS同期確認の実装方法は新たに確定しない。Provider固有停止はSend Gate内部の区分として記録し、C-1のRunOnceResultへ新しいscopeを追加しない。Schedulerとの具体接続は既存Interfaceの意味論に沿って実装前に確認する。
+R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCとProvider送信用Trustの境界、U-08の一度だけの終端競合規則を明文化した。これらの補足とは別に、今回F-01・U-12の設計判断を確定した。F-02・F-03と外部仕様の保証境界は残す。RTCだけで送信許可できる具体条件・OS同期確認の実装方法は新たに確定しない。Provider固有停止はSend Gate内部の区分として記録し、C-1のRunOnceResultへ新しいscopeを追加しない。Schedulerとの具体接続は既存Interfaceの意味論に沿って実装前に確認する。
 
 以下はMVP保証対象外とする。
 
@@ -2779,7 +2792,7 @@ R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCと
 - Quota履歴の自動GC・圧縮。
 - 自動Restore機能。
 
-既存コードのSchema検証は4 Table・user_version=1を前提にしており、本節のSchema案をそのまま追加すれば互換性は成立しない。将来のSchema / Migration・Provisioning設計が必要だが、今回は実装・Version変更・検証条件の緩和を行わない。F-01を空履歴の作成だけで解決済みとしない。継続DB Recovery・Backup / Restoreの実装責務はPR-E、公開・Pending連携はPR-D、OS運用・実機確認は既存Issue #12・#13へ維持する。
+既存コードのSchema検証は4 Table・user_version=1を前提にしており、本節のSchema案をそのまま追加すれば互換性は成立しない。将来のSchema / Migration・Provisioning設計が必要だが、今回は実装・Version変更・検証条件の緩和を行わない。F-01の方式確定を、管理者確認なしで空履歴を安全と扱う許可にしない。継続DB Recovery・Backup / Restoreの実装責務はPR-E、公開・Pending連携はPR-D、OS運用・実機確認は既存Issue #12・#13へ維持する。
 
 <a id="pr-c-c3-acceptance"></a>
 
@@ -2828,7 +2841,7 @@ R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCと
 | KEY-02 | APIキー変更後に旧履歴を無条件初期化せず、管理Provisioningを要求 | F-01・U-12 |
 | KEY-03 | 外部Senderの未記録消費・別キー自動切替・分散制御を保証済みとしない | MVP保証境界 |
 
-Quota窓の複数制限・最遅解除見込みとControl State非更新はSCH-14〜19を引き続き正本とする。正式Quota値・窓境界を取得できていない状態で、暫定Backend上限をProvider契約適合の実証結果としない。
+Quota窓の複数制限・最遅解除見込みとControl State非更新はSCH-14〜19を引き続き正本とする。利用アカウントの確認値とMVP正式Backend上限を、未確認の窓境界や追加制限を含むProvider契約適合の実証結果としない。
 
 ---
 
