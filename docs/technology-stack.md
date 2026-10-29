@@ -2591,7 +2591,7 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 
 ### 23.11 PR-C / C-3：Quota履歴・Tx-Q・Provider Send Gate・Startup / Recovery
 
-本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01は管理者確認による初回Provisioning、U-12はMVPのQuota運用方針として設計判断を確定した。F-02は固定安全余裕と送信直前の経過時間チェックを設計方針として確定し、実装・実機検証は未完了とする。F-03は未解決とし、外部仕様の未確認事項は保証境界に残す。時計監視の責務・RTCとの境界・U-08の終端競合規則は下記の補足に従う。C-1 / C-2の既存契約を変更しない。
+本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01は管理者確認による初回Provisioning、U-12はMVPのQuota運用方針として設計判断を確定した。F-02は固定安全余裕と送信直前の経過時間チェックを設計方針として確定し、実装・実機検証は未完了とする。F-03は管理停止とHTTP・Tx-A・Tx-P・Pending・停止完了の境界を設計確定し、実装・受入試験・実機検証は未完了とする。外部仕様の未確認事項は保証境界に残す。時計監視の責務・RTCとの境界・U-08の終端競合規則は下記の補足に従う。C-1 / C-2の既存契約を変更しない。
 
 #### 採用状態・運用前提
 
@@ -2602,8 +2602,8 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 | MVP正式運用設計値 | Tomorrow.ioは400回 / ローリング24時間、20回 / ローリング60分、1回 / ローリング1秒。利用アカウントの確認値500 / 25 / 3に余裕を持たせたBackend上限であり、正式契約値ではない |
 | 実機前の暫定設定案 | 時計観測・同期確認の鮮度・安定観測、F-02の最大許容遅延1秒・各窓余裕2秒・超過後Provider待機5秒。実測保証・数学的安全保証ではない |
 | 運用前提 | 単一Backend Process・管理されたWriterとAPIキー利用・管理Provisioning / Restore。外部消費や過去履歴を確認できなければFail Closed |
-| 設計判断確定 | F-01：管理者確認による初回Provisioning。F-02：固定安全余裕と送信直前の経過時間チェック。U-12：ローリング窓と400 / 20 / 1によるMVP運用方針。実装・実機検証・外部仕様の保証とは区別する |
-| 未確定・未検証 | F-03は未解決。F-02の実装・数値妥当性と実機検証、時計関連の具体実装、外部仕様の未確認事項は後続へ維持する |
+| 設計判断確定 | F-01：管理者確認による初回Provisioning。F-02：固定安全余裕と送信直前の経過時間チェック。F-03：管理停止時の保存・公開と厳格な停止完了。U-12：ローリング窓と400 / 20 / 1によるMVP運用方針。実装・実機検証・外部仕様の保証とは区別する |
+| 未確定・未検証 | F-03の実装・受入試験・実機検証、F-02の実装・数値妥当性と実機検証、時計関連の具体実装、外部仕様の未確認事項は後続へ維持する |
 
 <a id="pr-c-c3-01-history"></a>
 
@@ -2699,7 +2699,7 @@ Send Gateを閉じて開始する。DB・Schema・Transaction安全性、Provide
 
 **管理停止・Resume**
 
-停止要求を受信した時点でProvider Gateを同期的に閉じ、既開始HTTPにAbortを要求する。SUSPENDEDのCommit成功を確認して初めて停止操作完了とする。Commit unknownではGateを閉じたまま保存前・予定・保存後とTransaction状態を照合し、未確定のまま停止成功とは報告しない。
+停止要求を受信した時点でProvider Gateを同期的に閉じ、既開始HTTPにAbortを要求する。SUSPENDEDのCommit成功確認は停止操作完了の必要条件であり、[F-03の厳格な停止完了条件](#pr-c-c3-f03-management-stop)もすべて満たす必要がある。Commit unknownではGateを閉じたまま保存前・予定・保存後とTransaction状態を照合し、未確定のまま停止成功とは報告しない。
 
 Commit未確認の停止要求について、Process Crash後の永続停止は保証しない。再起動は閉じたGateから検証するが、未Commitの停止意図が復元できたとはしない。
 
@@ -2818,16 +2818,74 @@ Process再起動後は5秒待機期限を復元しない。Process内の一時�
 | 制御Abortによる終了 | 通常Provider失敗としてBackoffを更新しない |
 | Timeoutによる終了 | 既存C-2のTimeout失敗処理を適用する。保存確定はTx-A Commit条件に従う |
 
-競合順序はJavaScript Applicationが観測・確定した順序であり、物理ネットワーク上の発生順序の保証ではない。Node.jsのAbortSignal / fetchの実装詳細から、分類が必ず特定順序になるとは断定しない。終端結果が確定してもTx-Aは自動許可されず、保存直前に停止理由・DB安全性・Evidence・Authorizationを再確認する。管理停止中のHTTP結果の保存条件はF-03として未確定のまま維持する。
+競合順序はJavaScript Applicationが観測・確定した順序であり、物理ネットワーク上の発生順序の保証ではない。Node.jsのAbortSignal / fetchの実装詳細から、分類が必ず特定順序になるとは断定しない。終端結果が確定してもTx-Aは自動許可されず、保存直前に停止理由・DB安全性・Evidence・Authorizationを再確認する。管理停止との競合および保存・公開の可否は[F-03](#pr-c-c3-f03-management-stop)に従う。
 
 - 管理停止・Shutdown・DB保護による制御Abortは通常のProvider失敗とは区別する。制御AbortではconsecutiveFailures・nextAttemptAtを変更しない。
 - Timeout・HTTP 429・通信失敗は既存C-2のBackoff / Retry-Afterに従う。計算したBackoffはTx-A Commit成功後にのみ保存済みの制御として確定する。
 - HTTP取得全体（必要なResponse Body読込みを含む）に10秒Timeoutを適用する。Task全体Timeoutは追加せず、AbortはProvider処理やQuota消費の取消しを保証しない。
 - HTTP結果確定後もTx-Aの保存許可を確認する。これはC-2のEvidence・初回Authorization・停止理由別保存条件の確認であり、通常UPDATEに新しいAuthorization型を追加する決定ではない。Shutdown中の初回Authorization発行・再発行・INSERT禁止、開始済み試行の正常既存Row UPDATEの全条件を変更しない。
-- 管理停止中に確定したHTTP結果を保存できるかの最終詳細はF-03として未確定に残し、通常成功・失敗の結果を無条件にTx-Aへ流さない。制御AbortによるControl非更新方針とは区別する。
-- DB障害中にTx-A未実施となったHTTP結果は原則破棄し、Pending Publicationとして保持しない。Tx-A成功後・Tx-P失敗時だけ、23.5〜23.6の既存Pending契約を使う。
+- 管理停止後に確定したHTTP終端結果は新規Tx-Aへ流さない。停止前に確定した結果も、F-03のTx-A開始境界・保存条件を満たす場合に限る。制御AbortによるControl非更新方針とは区別する。
+- DB障害中にTx-A未実施となったHTTP結果は原則破棄し、Pending Publicationとして保持しない。Tx-A成功後・Tx-P失敗確定時だけ、23.5〜23.6の既存Pending契約を使う。Tx-P Commit unknownを通常失敗として無条件にPendingへ移行しない。
 
 C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照合・Tx-A unknownのFail Closedは維持する。C-3でTx-P / Tx-Cや公開用Metadataを変更しない。
+
+<a id="pr-c-c3-f03-management-stop"></a>
+
+#### F-03：管理停止とHTTP結果・Tx-A・Tx-P・Pending・停止完了
+
+本設計は確定事項であり、実装・受入試験・実機検証は未完了である。管理停止は新規外部API取得を停止する操作であり、停止前に適法に開始された取得結果の保存・公開を一律に取り消さない。ただし、管理停止後に新規Tx-A保存試行を開始しない。管理停止・Shutdown・DB安全性によるGlobal停止を区別し、上位の停止・安全制約を優先する。
+
+**HTTP終端とTx-A開始の境界**
+
+- U-08に従い、Applicationが最初に成立を確認・確定したHTTP成功・通常失敗・Timeout・制御Abortの終端結果を一度だけ採用する。abort()は要求であり終了確定ではなく、後続イベントで確定結果を変更しない。
+- 管理停止前にHTTP終端結果が確定した場合のみTx-A候補となり得る。停止後に確定した結果は新規Tx-Aへ進めない。HTTP結果確定だけで保存を自動許可しない。
+- Tx-A開始は23.10の保存試行開始境界とする。保存条件・Evidence・必要なAuthorizationを検証し、保存試行を登録してトークンを消費し、BEGIN IMMEDIATEを試みる直前の境界である。BEGIN成功時点へ変更しない。
+- 管理停止チェックと保存試行開始登録を、非同期処理が割り込まない同期的な競合制御とする。停止が先なら開始禁止、保存試行開始が先なら管理停止後も結果確定まで進められる。具体的な実装構造は本節では固定しない。
+- Evidence・Authorizationの使い捨て・失効条件、Transaction内Row再照合、Commit照合はC-2を維持する。管理停止前に適法に開始した初回INSERT・通常UPDATEの双方を対象とする。Shutdown後の初回Authorization発行・再発行・初回INSERT禁止は維持し、管理停止の許可をShutdownへ拡張しない。
+- 制御Abortは通常Provider失敗とせず、consecutiveFailures・nextAttemptAtを変更しない。Timeout・429・通常通信失敗の分類とBackoffはC-2に従い、二重Tx-A・二重更新をしない。
+
+| 開始済みTx-Aの結果 | 管理停止後の扱い |
+|---|---|
+| saved | 取得実績として確定してよい。後続公開には下記の全条件が必要 |
+| unchanged | 既存C-2の条件どおり分類し、この結果だけで新しい取得成功・公開許可を導入しない |
+| not_saved | 未保存確定。保存成功とせずTx-P禁止 |
+| unknown | Fail Closed。無条件再保存・後続Tx-P禁止。対象Stateの後続Tx-A・通常Read・Evidence発行も既存C-2に従って保留 |
+
+**管理停止後のTx-PとPending再公開**
+
+次のすべてを満たす取得試行だけ、管理停止後もTx-Pを条件付きで許可する。
+
+1. 管理停止前にHTTP終端結果が確定している。
+2. 管理停止前にTx-A保存試行を開始している。
+3. Tx-Aが既存契約上、後続Tx-Pへ進める成功結果として確定している。
+4. DB・Connection・Transactionの安全性が成立している。
+5. 既存Published State Validation・取得順序・公開条件を満たす。
+6. Shutdownその他の上位停止・安全制約に違反しない。
+
+Tx-Aがnot_savedまたはunknownならTx-Pは禁止する。Tx-PのCommit成功・失敗・unknownはPR-B / PR-Dの既存契約に従い、管理停止専用の公開成功判定を追加しない。Tx-P失敗が確定した場合は23.5〜23.6のPending契約へ引き継ぎ、Tx-Aの取得成功記録・Quota消費を取り消さず、Provider失敗としてBackoffを加算しない。Tx-P Commit unknownは通常失敗と区別し、後続公開を保留する。無条件にPendingへ移行しない。
+
+管理停止中も、23.5のP-01〜P-06をすべて満たすPending再公開を条件付きで許可する。新規HTTPを伴わず、SUSPENDEDを解除せず、Provider送信Permitを再利用・復活させない。Backoff・nextAttemptAt・Quota消費を変更しない。PendingのTTL・Validation・取得順序・State固有条件を維持し、DB安全性不明・取得順序の安全な確認不能なら自動再公開しない。Stateごと最大1件のメモリ保持、永続Queueを追加しない方針、Recovery・破棄条件、Process再起動でメモリPendingが消失するMVP制約は変更しない。
+
+**管理停止完了応答：厳格な停止完了**
+
+成功応答には、次のすべてを要求する。
+
+1. 停止要求が同期的に反映されSend Gateが閉鎖済み。
+2. 旧Permitが失効し、新規Provider送信・新規取得・新規Tx-A開始が禁止済み。
+3. SUSPENDEDのCommit成功が確定済み。
+4. 停止対象の実行中HTTPの終端結果が確定済み。
+5. 停止前に開始した対象Tx-Aの結果が確定済み。
+6. 停止前の適格な取得試行から派生する対象Tx-Pの結果が確定済み。
+7. 停止要求時点で実行中だったPending再公開Tx-Pの結果が確定済み。
+8. 停止完了判定と対象Tx-P開始の競合が防止され、待機対象を漏れなく追跡している。
+
+取得試行単位で終了を追跡し、HTTP終端・Tx-A開始／結果・後続Tx-Pの開始可否と結果を関連付ける。停止前の適格な試行は、対象Tx-Pの結果が確定するか、以後その試行から対象Tx-Pを開始しないことが確定するまで待機対象から外さない。対象Tx-Pの開始登録と停止完了判定を同期的に調整し、後から開始可能な対象Tx-Pを見落とさない。単純な「現在実行中のTransactionが0件」では停止完了としない。停止要求時点で実行中のPending再公開Tx-Pも別途追跡するが、未着手Pending・将来のRecovery後の再公開は待機対象に含めない。具体的な追跡データ構造や新規永続Tableを本設計では追加しない。
+
+Tx-Pの公開成功自体は停止成功の必須条件ではない。not_saved等の失敗が確定し、既存Pending契約へ引き継げる場合は停止完了を認める。一方、対象Tx-A・Tx-PのCommit unknown、HTTP未終了、SUSPENDED Commit unknownでは停止成功を報告しない。Tx-CのCache更新成功は必須としないが、既存のTx-P Commit後公開・Tx-C更新順序を変えない。管理停止APIの新しい固定Timeout・HTTPステータスコードは導入しない。
+
+**異常・Crash・Resumeとの境界**
+
+SUSPENDED Commit unknownではGate閉鎖を維持し既存照合規則に従う。Tx-A unknownでは対象Stateの後続Tx-A・Tx-Pを、Tx-P unknownでは後続公開を保留する。共有ConnectionのTransaction未解決ではDB全体の安全性を優先し、State固有異常は無条件に全Stateへ波及させない。Shutdown・DB Recoveryは既存LifecycleとPR-Eの責務に従う。Process Crash後に未Commitの停止意図が永続化されたと仮定しない。Resumeは明示的管理操作で、ACTIVE Commit確認・Trust・他停止理由の確認を維持し、成功を即時HTTP取得許可としない。
 
 #### Tomorrow.io外部仕様の確認範囲
 
@@ -2843,10 +2901,10 @@ U-12はMVPで採用するQuota運用方針の設計判断として完了とす�
 |---|---|---|
 | F-01 | 初期ProvisioningのQuota安全性確認 | 設計判断確定。C-3/01の管理者確認方式を採用。個々のProvisioningでは成立条件の確認が必要で、未確認ならFail Closed。空履歴・ACTIVEだけでは成立しない |
 | F-02 | Tx-Qからfetch開始までの遅延・Quota安全余裕 | 設計方針確定・実装および実機検証未完了。固定余裕と直前経過時間チェックを採用。最大許容1秒・各窓2秒・Provider待機5秒は暫定設定で保証値ではない |
-| F-03 | 管理停止中に確定したHTTP結果のTx-A保存条件 | 最終詳細は未確定。C-2・制御Abort・Request終了の区別を維持 |
+| F-03 | 管理停止とHTTP結果・保存・公開・停止完了 | 設計確定・実装／受入試験／実機検証未完了。上記F-03の開始境界・条件付き公開・厳格な停止完了に従う |
 | U-12 | MVPのQuota運用方針 | 設計判断確定。アカウント確認値500 / 25 / 3とBackendローリング上限400 / 20 / 1を区別して採用。外部仕様の未確認事項は上記保証境界として維持 |
 
-R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCとProvider送信用Trustの境界、U-08の一度だけの終端競合規則を明文化した。これらの補足とは別に、今回F-01・U-12の設計判断を確定した。F-02は方式のみ設計確定で実装・実機検証は未完了、F-03は未解決とし、外部仕様の保証境界も残す。RTCだけで送信許可できる具体条件・OS同期確認の実装方法は新たに確定しない。Provider固有停止はSend Gate内部の区分として記録し、C-1のRunOnceResultへ新しいscopeを追加しない。Schedulerとの具体接続は既存Interfaceの意味論に沿って実装前に確認する。
+R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCとProvider送信用Trustの境界、U-08の一度だけの終端競合規則を明文化した。これらの補足とは別に、今回F-01・U-12の設計判断を確定した。F-02は方式のみ設計確定で実装・実機検証は未完了、F-03も上記の方針を設計確定し実装・受入試験・実機検証は未完了とし、外部仕様の保証境界も残す。RTCだけで送信許可できる具体条件・OS同期確認の実装方法は新たに確定しない。Provider固有停止はSend Gate内部の区分として記録し、C-1のRunOnceResultへ新しいscopeを追加しない。Schedulerとの具体接続は既存Interfaceの意味論に沿って実装前に確認する。
 
 以下はMVP保証対象外とする。
 
@@ -2906,10 +2964,34 @@ R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCと
 | HTTP-04 | Timeout・429・通信失敗はC-2 Backoff、更新確定はTx-A Commit成功後 | SCH-01〜03・06 |
 | HTTP-05 | DB障害中にHTTP成功してTx-A不能なら原則破棄。Tx-A未実施結果をPending保持しない | SCH-06・28、C2-24 |
 | HTTP-06 | Tx-A成功後のTx-P失敗だけ既存Pendingを使い、取得成功記録とQuotaを取消さない | SCH-27、C2-24 |
-| HTTP-07 | 終端結果確定後も保存直前の停止理由・DB安全性・Evidence・Authorizationを再確認。自動Tx-A許可なし。管理停止中保存条件はF-03未確定、Shutdown初回INSERT禁止 | C2-09・25、F-03 |
+| HTTP-07 | 終端結果確定後も保存直前の停止理由・DB安全性・Evidence・Authorizationを再確認。自動Tx-A許可なし。管理停止時はF-03のHTTP終端・Tx-A開始境界と保存条件に従い、Shutdown初回INSERT禁止 | C2-09・25、F-03 |
 | KEY-01 | 新規DB空履歴をキー未使用証明とせず、Provisioning安全性未確認ならFail Closed | F-01 |
 | KEY-02 | APIキー変更後に旧履歴を無条件初期化せず、管理Provisioningを要求 | F-01・U-12 |
 | KEY-03 | 外部Senderの未記録消費・別キー自動切替・分散制御を保証済みとしない | MVP保証境界 |
+
+
+#### F-03追加受入条件
+
+以下は未実施の設計検証項目であり、既存ADM-01〜04・HTTP-01〜07・C2-01〜26等を維持して対応観点と結合検証する。ID数だけ独立テスト関数を要求せず、実装・試験完了を意味しない。
+
+| ID | 条件・期待結果 | 既存観点・追跡先 |
+|---|---|---|
+| F03-01 | 管理停止前後のHTTP終端確定を区別。停止後確定は新規Tx-A禁止、停止前確定だけでは自動許可しない | HTTP-02・07 |
+| F03-02 | 停止チェックとTx-A開始登録・トークン消費を同期的に調整。停止が先なら禁止、開始が先なら結果確定まで許可。BEGIN成功を境界にしない | C2-05〜09、HTTP-07 |
+| F03-03 | 停止前開始の初回INSERT・通常UPDATEとも結果確定を許可し、Evidence・Authorizationの使い捨てとRow再照合を維持 | C2-05〜10・15〜17 |
+| F03-04 | saved・unchanged・not_saved・unknownを既存C-2どおり区別。Rollback等でnot_saved確定なら成功扱いせず、unknownは再保存・Tx-P禁止 | C2-18〜21 |
+| F03-05 | HTTP成功・通常失敗・Timeout・制御Abortの最初の終端確定を維持。Abort要求と終了を区別し、制御AbortはControl非更新、Timeout等は既存Backoff | HTTP-02〜04 |
+| F03-06 | 管理停止後のTx-PはHTTP終端とTx-A開始が停止前で、Tx-A成功確定・DB安全性・Validation・取得順序・公開条件・上位停止制約をすべて満たす場合のみ許可 | C2-24、SCH-27 |
+| F03-07 | Tx-A not_saved・unknownではTx-P禁止。Tx-Pの確定失敗だけ既存Pendingへ引継ぎ、取得成功・Quota維持、Backoff加算なし | HTTP-06、C2-24 |
+| F03-08 | Tx-P Commit unknownは確定失敗と区別し、無条件Pending移行・再公開をせず後続公開を保留 | 23.6、12.10 |
+| F03-09 | 管理停止中のPending再公開はP-01〜P-06すべてを要求。新規HTTPなし、SUSPENDED維持、Permit復活なし、Control・Quota非更新 | P-01〜P-06 |
+| F03-10 | PendingはTTL・Validation・順序・State条件を維持。DB安全性不明・取得順序確認不能なら再公開禁止。保持数・破棄・再起動時消失を維持 | 23.5〜23.6 |
+| F03-11 | 停止成功応答はF-03の8条件をすべて要求。SUSPENDED Commit成功だけでは完了せず、HTTP未終了・対象Tx-A／Tx-P unknownなら成功禁止 | ADM-01〜02 |
+| F03-12 | 停止要求後に派生Tx-Pが開始する競合でも試行単位で追跡し、開始可否確定前に待機対象を外さない。実行中Txが一時0件でも早期完了しない | ADM-01、SCH-27 |
+| F03-13 | 停止要求時点で実行中のPending再公開Tx-Pを待つ。未着手Pending・将来のRecovery再公開は待機対象外 | ADM-01、23.5 |
+| F03-14 | Tx-P公開成功は停止成功の必須条件でない。失敗確定後のPending引継ぎで完了可能。Tx-C成功は不要だがCommit後公開・Cache更新順序を維持 | 23.2・23.5 |
+| F03-15 | 管理停止の許可をShutdownへ拡張しない。Shutdown後の初回Authorization発行・再発行・INSERT禁止と既存終了待機を維持 | C2-09・25、C1-13〜18 |
+| F03-16 | DB／Connection未解決は共有基盤を保護し、State固有異常は局所保留。Crash後の未Commit停止永続化を仮定せず、ResumeでもTrust・他停止理由を再確認し即時HTTP禁止 | ADM-02〜04、REC、C2-21・24 |
 
 Quota窓の複数制限・最遅解除見込みとControl State非更新はSCH-14〜19を引き続き正本とする。利用アカウントの確認値とMVP正式Backend上限を、未確認の窓境界や追加制限を含むProvider契約適合の実証結果としない。
 
