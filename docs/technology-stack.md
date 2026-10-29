@@ -2841,6 +2841,7 @@ C-2のRead Evidence・Authorization使い捨て・BEGIN IMMEDIATE内のRow再照
 - 管理停止前にHTTP終端結果が確定した場合のみTx-A候補となり得る。停止後に確定した結果は新規Tx-Aへ進めない。HTTP結果確定だけで保存を自動許可しない。
 - Tx-A開始は23.10の保存試行開始境界とする。保存条件・Evidence・必要なAuthorizationを検証し、保存試行を登録してトークンを消費し、BEGIN IMMEDIATEを試みる直前の境界である。BEGIN成功時点へ変更しない。
 - 管理停止チェックと保存試行開始登録を、非同期処理が割り込まない同期的な競合制御とする。停止が先なら開始禁止、保存試行開始が先なら管理停止後も結果確定まで進められる。具体的な実装構造は本節では固定しない。
+- 管理停止によるAuthorization失効は、未消費のAuthorizationおよび新規Tx-A開始を対象とする。管理停止前に適法に保存試行を開始し、Evidence・Authorizationを消費済みのTx-Aは、管理停止だけを理由に取り消さず、既存のTransaction・Commit照合規則に従って結果を確定する。ただしShutdown・DB安全性の制約は優先する。
 - Evidence・Authorizationの使い捨て・失効条件、Transaction内Row再照合、Commit照合はC-2を維持する。管理停止前に適法に開始した初回INSERT・通常UPDATEの双方を対象とする。Shutdown後の初回Authorization発行・再発行・初回INSERT禁止は維持し、管理停止の許可をShutdownへ拡張しない。
 - 制御Abortは通常Provider失敗とせず、consecutiveFailures・nextAttemptAtを変更しない。Timeout・429・通常通信失敗の分類とBackoffはC-2に従い、二重Tx-A・二重更新をしない。
 
@@ -2978,7 +2979,7 @@ R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCと
 |---|---|---|
 | F03-01 | 管理停止前後のHTTP終端確定を区別。停止後確定は新規Tx-A禁止、停止前確定だけでは自動許可しない | HTTP-02・07 |
 | F03-02 | 停止チェックとTx-A開始登録・トークン消費を同期的に調整。停止が先なら禁止、開始が先なら結果確定まで許可。BEGIN成功を境界にしない | C2-05〜09、HTTP-07 |
-| F03-03 | 停止前開始の初回INSERT・通常UPDATEとも結果確定を許可し、Evidence・Authorizationの使い捨てとRow再照合を維持 | C2-05〜10・15〜17 |
+| F03-03 | 管理停止で未消費Authorizationは失効し新規Tx-Aは禁止。停止前に適法に開始・トークン消費済みの初回INSERT・通常UPDATEは管理停止だけでは取り消さず、既存Transaction・Commit照合で結果確定。使い捨て・Row再照合とShutdown・DB安全性の優先を維持 | C2-05〜10・15〜17 |
 | F03-04 | saved・unchanged・not_saved・unknownを既存C-2どおり区別。Rollback等でnot_saved確定なら成功扱いせず、unknownは再保存・Tx-P禁止 | C2-18〜21 |
 | F03-05 | HTTP成功・通常失敗・Timeout・制御Abortの最初の終端確定を維持。Abort要求と終了を区別し、制御AbortはControl非更新、Timeout等は既存Backoff | HTTP-02〜04 |
 | F03-06 | 管理停止後のTx-PはHTTP終端とTx-A開始が停止前で、Tx-A成功確定・DB安全性・Validation・取得順序・公開条件・上位停止制約をすべて満たす場合のみ許可 | C2-24、SCH-27 |
