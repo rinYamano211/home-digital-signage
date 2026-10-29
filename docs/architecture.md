@@ -1475,7 +1475,7 @@ Acquisition Control Repositoryは既存acquisition_controlのRow・JSON、Allowl
 
 #### PR-C / C-3設計検討結果への参照
 
-Quota履歴・MetadataのSchema案、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。既存4 Table・Schema Version・C-1 / C-2契約を変更する実装指示ではない。F-01は管理者が過去使用がQuota判定期間外であることを信頼できる時刻・必要な安全余裕を踏まえて確認し、同一キーの他Senderがいない前提で、取得済みキーを継続使用して初回のみ明示的に空履歴から開始する方式として確定した。通常起動・再起動では初期化しない。管理者の初期確認と通常運用のHistory Trustを分け、空履歴・ACTIVEだけで安全とせず、既存Fail Closedを維持する。U-12はローリング窓によるMVP運用方針として確定し、Provider固定窓追従の追加機構は導入しない。F-02・F-03、時計関連の実機前暫定値、外部仕様の未確認事項・保証境界は残す。詳細な成立条件は同節を正本とし、責務分離・DB管理方針は変更しない。
+Quota履歴・MetadataのSchema案、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。既存4 Table・Schema Version・C-1 / C-2契約を変更する実装指示ではない。F-01は管理者が過去使用がQuota判定期間外であることを信頼できる時刻・必要な安全余裕を踏まえて確認し、同一キーの他Senderがいない前提で、取得済みキーを継続使用して初回のみ明示的に空履歴から開始する方式として確定した。通常起動・再起動では初期化しない。管理者の初期確認と通常運用のHistory Trustを分け、空履歴・ACTIVEだけで安全とせず、既存Fail Closedを維持する。U-12はローリング窓によるMVP運用方針として確定し、Provider固定窓追従の追加機構は導入しない。F-02は固定Quota安全余裕とfetch直前の経過時間チェックを設計採用し、超過時は未送信でも消費を保持してProvider単位の新規Tx-Qを待機させる。最大許容遅延1秒・各窓余裕2秒・待機5秒は暫定設定であり、実装・実機検証は未完了とする。F-03は未解決のまま維持し、時計関連の暫定値・外部仕様の未確認事項・保証境界も残す。詳細な成立条件は同節を正本とし、責務分離・DB管理方針は変更しない。
 
 ### 16.4 Validation・Transaction分離・公開
 
