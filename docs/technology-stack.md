@@ -714,7 +714,7 @@ Provisioningは次の順序とする。
 
 ### 12.4 Schema VersionとMigration
 
-初期MVP Schema Versionは**1**とし、SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。通常起動で既存Version 0を自動初期化しない。Table欠損・不正構造を検出し、state_generation_countersのTable欠損はDB全体のBLOCKEDとする。Counter Rowの整合性・State隔離とは区別する。
+初期MVP Schema Versionは**1**とし、C-Impl-3でVersion **2**への拡張設計を確定した（[23.11](#pr-c-c-impl-3-quota-persistence)参照、実装・Migration実行は未完了）。SQLiteの`PRAGMA user_version`をDB Schema Version管理に採用する。APIやCache EntryのschemaVersionとは区別する。Version 0を無条件に新規DBと判断せず、現在VersionとSchema実態を確認する。通常起動で既存Version 0を自動初期化しない。Table欠損・不正構造を検出し、state_generation_countersのTable欠損はDB全体のBLOCKEDとする。Counter Rowの整合性・State隔離とは区別する。
 
 - 明示的に登録された個別MigrationのAllowlist方式を正式採用する。既知Version間で旧Releaseとの読出し・書込み互換性を検証済みのMigrationのみ、通常Backend起動時の自動適用を許可する。Backend起動時のEX保持中に実行し、適用前後にVersionとSchema実態を検証する。
 - DDLとVersion更新は同一Transactionで行う。DDL失敗・Rollback成功時は、DBのVersionとSchema実態を再検証し、失敗原因を分類する。
@@ -725,7 +725,7 @@ Provisioningは次の順序とする。
 - 旧Releaseとの読出し・書込み互換性を確認できないMigrationは自動実行しない。
 - 自動Downgrade MigrationはMVPでは実装しない。非互換MigrationはBackup・Deploy・Rollback手順と連携して別途管理する。
 
-自動適用の可否はDDLの種類だけで決めず、個別Migrationの検証結果で判断する。汎用Migration Frameworkは導入しない。現時点では初期Version 1のみを具体化し、架空のv1→v2 Migrationは作成しない。継続的なRecoveryの詳細実装はPR-Eへ引き継ぐ。
+自動適用の可否はDDLの種類だけで決めず、個別Migrationの検証結果で判断する。汎用Migration Frameworkは導入しない。Version 1の初期DDLは12.6に維持し、C-Impl-3のv1→v2設計は23.11に従う。v2の自動適用可否は上記の互換性・個別検証条件に従い、設計確定だけで旧Release互換性の検証完了とはしない。継続的なRecoveryの詳細実装はPR-Eへ引き継ぐ。
 
 ### 12.5 Lifecycleの技術的制約と後続工程
 
@@ -2591,14 +2591,14 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 
 ### 23.11 PR-C / C-3：Quota履歴・Tx-Q・Provider Send Gate・Startup / Recovery
 
-本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Schemaは設計案、時計関連の数値は実機前の暫定設定案として区別する。F-01は管理者確認による初回Provisioning、U-12はMVPのQuota運用方針として設計判断を確定した。F-02は固定安全余裕と送信直前の経過時間チェックを設計方針として確定し、実装・実機検証は未完了とする。F-03は管理停止とHTTP・Tx-A・Tx-P・Pending・停止完了の境界を設計確定し、実装・受入試験・実機検証は未完了とする。外部仕様の未確認事項は保証境界に残す。時計監視の責務・RTCとの境界・U-08の終端競合規則は下記の補足に従う。C-1 / C-2の既存契約を変更しない。
+本節はC-3/01〜C-3/04の設計検討結果の記録であり、実装・テスト・Migration完了を意味しない。送信前の永続消費、送信権限の失効、Trust不明時のFail Closedを設計方針とし、Quota Schema v2・Index・Tx-QのC-Impl-3詳細は下記で設計確定し、実装・検証とは区別する。時計関連の数値は実機前の暫定設定案として扱う。F-01は管理者確認による初回Provisioning、U-12はMVPのQuota運用方針として設計判断を確定した。F-02は固定安全余裕と送信直前の経過時間チェックを設計方針として確定し、実装・実機検証は未完了とする。F-03は管理停止とHTTP・Tx-A・Tx-P・Pending・停止完了の境界を設計確定し、実装・受入試験・実機検証は未完了とする。外部仕様の未確認事項は保証境界に残す。時計監視の責務・RTCとの境界・U-08の終端競合規則は下記の補足に従う。C-1 / C-2の既存契約を変更しない。
 
 #### 採用状態・運用前提
 
 | 区分 | 内容 |
 |---|---|
 | 設計方針 | Provider MetadataとQuota履歴の分離、送信前Tx-Q Commit、Process内Permit、停止理由の独立管理、Clock Trust / History Trust、安全確認前の送信禁止 |
-| Schema設計案 | 下記2 Tableと検索Index候補。既存4 Table・user_version=1へ適用済みとはしない |
+| Schema設計確定・未実装 | C-Impl-3でv2の2 Table追加・検索Index・Atomic Migrationを確定。既存v1の4 Table・データを維持し、コード・DBへ適用済みとはしない |
 | MVP正式運用設計値 | Tomorrow.ioは400回 / ローリング24時間、20回 / ローリング60分、1回 / ローリング1秒。利用アカウントの確認値500 / 25 / 3に余裕を持たせたBackend上限であり、正式契約値ではない |
 | 実機前の暫定設定案 | 時計観測・同期確認の鮮度・安定観測、F-02の最大許容遅延1秒・各窓余裕2秒・超過後Provider待機5秒。実測保証・数学的安全保証ではない |
 | 運用前提 | 単一Backend Process・管理されたWriterとAPIキー利用・管理Provisioning / Restore。外部消費や過去履歴を確認できなければFail Closed |
@@ -2611,7 +2611,7 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 
 Tomorrow.ioのQuota消費履歴をSQLiteへ永続保存し、Provider Metadataとは分離する。Providerごとに連続したSequenceを管理し、Tx-QのTimestampをUTC epoch millisecondsで保存する。MVPでは履歴を自動削除・自動圧縮せず、Quota窓の外へ出た履歴も自動GCしない。
 
-次は検討済みのSchema案である。既存12.6の初期DDLを置換・拡張する実装指示ではなく、具体Migration・Schema Version移行・適用時の検証は別途必要となる。
+次の2 Table定義をC-Impl-3のSchema v2設計として採用する。既存12.6のVersion 1の4 Table定義は維持し、追加Index・Migration・検証の詳細は[C-Impl-3](#pr-c-c-impl-3-quota-persistence)に従う。今回は文書反映のみであり、実装・Migration適用・検証は未実施である。
 
 ```sql
 CREATE TABLE provider_quota_metadata (
@@ -2633,7 +2633,17 @@ CREATE TABLE provider_quota_consumptions (
 );
 ```
 
-provider_keyとreserved_at_msを使う検索Index（両項目の複合Index等）は検討対象とし、具体DDL・Query Planを採用済みとしない。履歴の連続性、Metadataのlast_sequenceとの整合、Timestamp、Providerとの対応を検証する。Metadata欠損・履歴不正・時刻信頼性不明では送信しない。history_statusがACTIVEであることだけを安全性の証明にしない。
+検索IndexはC-Impl-3で下記の名前・定義を採用する。Query Plan・性能の実測は未実施である。
+
+```sql
+CREATE INDEX idx_provider_quota_reserved_at
+ON provider_quota_consumptions (
+    provider_key,
+    reserved_at_ms
+);
+```
+
+履歴の連続性、Metadataのlast_sequenceとの整合、Timestamp、Providerとの対応を検証する。Metadata欠損・履歴不正・時刻信頼性不明では送信しない。history_statusがACTIVEであることだけを安全性の証明にしない。
 
 新規DBの空履歴はAPIキー未使用の証明ではない。APIキー変更には管理Provisioningが必要で、旧履歴を無条件に削除・初期化したり、新キーだから使用枠が確実に空いていると推測したりしない。F-01では以下の管理者確認による初回Provisioning方式を正式採用する。初期安全性が未確認ならFail Closedを維持する。APIキーやSecretそのものを文書・ログに記録しない。
 
@@ -2648,6 +2658,39 @@ F-01の前提として、本プロジェクトではTomorrow.io無料プラン�
 5. 通常起動・再起動では既存履歴を初期化せず、初期化後の送信は既存Tx-Q・Quota Guard・Send Gateで管理する。
 
 初回の管理者確認と通常運用時のHistory Trustは別である。空履歴・history_status=ACTIVEだけを安全性の証明にせず、Clock Trust / History Trustの独立評価、履歴欠損・不整合・DB障害・Commit unknown時の安全側停止、Tx-Q Commit成功前の送信禁止を維持する。管理外Restore・巻戻しを通常起動で自動修復せず、未記録の外部Sender消費の自動把握も保証しない。初回Provisioningだけのために証拠Table・専用Service・複雑な過去履歴復元機構を追加しない。
+
+<a id="pr-c-c-impl-3-quota-persistence"></a>
+
+#### C-Impl-3：Quota永続化 / Tx-Qの詳細設計（Step 1・Step 2確定）
+
+最新mainのC-Impl-2（PR #43）を前提とする設計の詳細化であり、F-01・F-02・F-03・U-12、C-1 / C-2、PR-Bの意味論を変更しない。以下は設計確定事項であり、Schema v2・Migration・Quota Repository / Guard / Tx-Qのコード実装・受入試験・実機検証は未完了である。今回Migrationを実行しない。
+
+**Step 1：Schema / Migration（9項目）**
+
+1. **Schema Version 2**：PRAGMA user_version=2を採用する。Version 1のpublished_state_snapshots・backend_cache・acquisition_control・state_generation_countersは列・制約・既存データを変更せず維持し、上記provider_quota_metadata・provider_quota_consumptionsの2 Tableを追加する。API / Cache EntryのschemaVersionとは別管理とする。
+2. **Table・Index検証**：上記2 Table定義とidx_provider_quota_reserved_atの名前・定義を含むv2 Schemaを厳密に検証する。Indexはprovider_quota_consumptions(provider_key, reserved_at_ms)とし、同等に見える未確認構造を推測で許可しない。Quota専用の追加Version列・証拠Table・Permit Tableは導入しない。
+3. **Timestamp**：initialized_at_ms・reserved_at_msはUTC epoch millisecondsのSQLite INTEGERとする。Application側で安全な整数範囲・意味的妥当性を検証し、不正値を安全とみなさない。単調増加時計の値はSQLiteへ保存しない。
+4. **Atomic Migration**：既存Migration基盤を再利用し、v1→v2をBEGIN IMMEDIATE内で実行する。DDL適用とuser_version=2更新は同一Transactionに含め、Migration前後のSchema検証と既存v1データ保持を要求する。
+5. **不明結果・不正DB**：12.4のRollback・VersionとSchema実態の照合を維持し、Commit不明のまま無条件再実行しない。既存v0 DBを自動Upgradeせず、未知Version・不正Schemaの自動修復・無条件再初期化をしない。
+6. **新規初期化と実装差**：明示Provisioningによる新規DBの初期化結果もv2とする。現行schema.ts・migrations.ts・store.tsはv1前提であり、実装時にv2対応が必要。通常起動の自動DB作成禁止、Lock・単一Connection・Close所有権は維持する。
+7. **DB移行とProvider許可の分離**：Migration時にProvider Metadataを自動ACTIVE化しない。v2へのMigration成功だけでProvider送信を許可せず、Metadata・履歴・Clock Trust / History Trust・Send Gate等の既存条件を引き続き要求する。
+8. **明示的な初回Provisioning**：F-01どおり、管理者が過去API使用状況、信頼できる時刻・必要な余裕を踏まえたQuota窓外への経過、同一キーを利用する他Senderの不在を確認した後に実施する。通常起動・再起動・DB RecoveryでQuota履歴を自動初期化・修復しない。History Trust不成立なら送信禁止。初回専用証拠Table・複雑な自動復元機構を追加しない。
+9. **回帰と適用条件**：PR-B・C-Impl-1・C-Impl-2、v1データ保持、新規v2初期化、異常Migrationの回帰を実装時に検証する。12.4の旧Release互換性・Allowlist・Deploy / Rollback条件は維持する。旧Releaseのv1限定検証でv2が読めるとは判断しない。自動適用可否の互換性確認・実装検証は未完了である。
+
+**Step 2：Quota Guard / Tx-Q（10項目）**
+
+1. **責務分離**：Quota GuardはProvider単位のQuota窓、Metadata・履歴整合性、History Trustの安全側判定、抑止理由・再評価時刻の計算を担当する。Quota Repository / Tx-Qは共有BackendStore Connectionを借り、BEGIN IMMEDIATE内の再評価・Sequence採番・履歴INSERT・last_sequence更新・Atomic Commit・Read-only照合を担当する。事前のGuard判定だけで送信許可しない。
+2. **4結果**：saved（当該予約のCommit成功確定）、quota_blocked（安全上限等で予約抑止）、not_saved（未保存確定）、unknown（一意に確定不能）を維持する。savedでもHTTPを直接許可せずC-Impl-4のSend Gate最終判定を要求する。unknownでは無条件再予約・再送信禁止、未解決Connectionでは別Transactionを開始しない。
+3. **Quota Reservation Evidence**：Commit成功確定済みの予約を表すProcess内の不透明な証拠を導入する設計とする。単なるSequenceを送信権限にせず、別Attempt・Connection世代変更後・Process再起動後の流用を禁止する。Send Permitとは別であり、C-Impl-4で最終検証する。永続Evidence Tableを追加せず、具体的型名・内部実装は固定しない。
+4. **Quota窓**：U-12の400回 / ローリング24時間・20回 / ローリング60分・1回 / ローリング1秒を維持する。F-02に従い各窓に暫定2秒の余裕を加え、境界ちょうどの履歴も消費に含める。複数窓で制限される場合、解除見込みの最も遅い時刻を再評価の目安とし、再評価時にも全条件を確認する。Providerダッシュボード確認値500 / 25 / 3とは区別し、2秒を実測値・数学的安全保証としない。
+5. **Tx-Qの処理順序**：Provider・Attempt・Connectionの有効性 → Clock Trust / History Trust成立確認 → 単調増加時計の計測起点取得 → 直後のreserved_at_ms取得 → BEGIN IMMEDIATE → Metadata・履歴再読込／整合性・Quota窓再判定 → 上限未到達時のSequence採番・履歴INSERT・Metadata更新 → Commit結果確定 → saved時のみ予約証拠を次工程へ渡す。Quota不足では書込みせずquota_blockedとする。
+6. **F-02の計測との接続**：計測起点はprocess.hrtime.bigint()、直後のTimestampはDate.now()とし、Process内Attemptへ計測情報を保持する。Timestamp取得処理・Tx-Q Commit中の時間を遅延計測から除外しない。最大許容1秒・各窓2秒・Provider再評価待機5秒は既存の暫定値を維持し、fetch直前の遅延判定・待機制御はC-Impl-4以降へ引き継ぐ。
+7. **Commit不明の照合**：Transaction状態・Rollback結果、保存前Metadata／履歴、確定済み予定Sequence・Timestamp・内容、保存後Metadata／履歴を使ってRead-only照合する。予定内容を再生成しない。単なるRow・Sequence一致だけでsavedとせず、Transaction解決・競合書込み排除・保存前後の区別を含む当該Tx-Qへの一意な帰属が確認不能ならunknownを維持する。単一Writer・外部変更・ABA・再起動跨ぎの既存識別限界を解決済みにしない。
+8. **Control State非更新**：Quota不足、Clock Trust不成立、History Trust不成立、Tx-Q失敗／unknown、HTTP未開始のSend Gate拒否、F-02遅延超過ではC-2のconsecutiveFailures・nextAttemptAtを更新しない。Provider通信失敗とは区別する。HTTP失敗・Timeout・Abort・未送信でもCommit済みQuota履歴を取り消さない。
+9. **概念Interfaceと未固定事項**：QuotaRepository、QuotaGuard、QuotaReservationRequest / Result / Evidence、QuotaInspectionResultは論理的な候補名である。型名・フィールド構成は既存コードと合わせて実装時に調整可能とし、reconcile()の具体的戻り値、recheckAtMs、停止スコープ等は実装前の詳細化事項に残す。C-1のRunOnceResultやC-2・PR-BのInterfaceへ変更を導入しない。
+10. **後続境界・未完了**：C-Impl-4以降はOS同期状態を含むClock Trust具体監視、Provider Send Gate、Send Permit発行・失効、HTTP直前最終判定、Coordinator / Lifecycle、Management Stop / Startup統合を担当する。C-Impl-3のQuota永続化・Guard・Tx-Q自体も未実装である。PR-Dの公開・Pending、PR-Eの継続Recovery / Backup、Pi実機・暫定余裕の妥当性検証を先取りしない。Issue #16・PR-C全体は継続中とする。
+
+既存QH・TQ・SG・CLK・REC・ADM・HTTP・KEY、SCH・C1・C2・F03の受入条件は維持し、上記のSchema・Migration・境界・証拠・Commit不明・Control非更新の観点と対応付けて実装時に検証する。今回テストコードの追加・実行、Migration実行、実APIアクセス、実機試験は行っていない。
 
 <a id="pr-c-c3-02-tx-q"></a>
 
@@ -2916,7 +2959,7 @@ R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCと
 - Quota履歴の自動GC・圧縮。
 - 自動Restore機能。
 
-既存コードのSchema検証は4 Table・user_version=1を前提にしており、本節のSchema案をそのまま追加すれば互換性は成立しない。将来のSchema / Migration・Provisioning設計が必要だが、今回は実装・Version変更・検証条件の緩和を行わない。F-01の方式確定を、管理者確認なしで空履歴を安全と扱う許可にしない。継続DB Recovery・Backup / Restoreの実装責務はPR-E、公開・Pending連携はPR-D、OS運用・実機確認は既存Issue #12・#13へ維持する。
+現行schema.ts・migrations.ts・store.tsは4 Table・user_version=1を前提としており、C-Impl-3のv2設計に対応する実装修正と検証が必要である。旧Releaseのv1限定Schema検証との互換性を推測せず、12.4の自動Migration許可条件・Deploy / Rollback境界を維持する。今回はコード変更・Migration実行・検証条件の緩和を行わない。F-01の方式確定を、管理者確認なしで空履歴を安全と扱う許可にしない。継続DB Recovery・Backup / Restoreの実装責務はPR-E、公開・Pending連携はPR-D、OS運用・実機確認は既存Issue #12・#13へ維持する。
 
 <a id="pr-c-c3-acceptance"></a>
 
