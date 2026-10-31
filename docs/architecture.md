@@ -1427,7 +1427,7 @@ Domain固有Validation、Data変換、Cache採用、Freshness、Published State�
 | Frontend Component State | Display内で生成する派生State。BackendやStoreへ戻さない |
 | Display Runtime State | Displayの切替位置等。MVPではCrash前の表示位置復元を要求しない |
 
-SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。初期Schemaはpublished_state_snapshots・backend_cache・acquisition_controlと、State単位の最終Generationを保持する内部管理Table state_generation_countersの4 Tableを正式採用する。これは将来の永続データを網羅するものではなく、Provider単位のQuota履歴の保存先は未決定である。
+SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。初期Schemaはpublished_state_snapshots・backend_cache・acquisition_controlと、State単位の最終Generationを保持する内部管理Table state_generation_countersの4 Tableを正式採用する。これはVersion 1の初期Schemaである。C-Impl-3では既存4 Table・データを維持し、Provider Metadata・Quota履歴の2 Tableと検索Indexを追加するSchema v2・Atomic Migrationを設計確定した。詳細は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-3-quota-persistence)を正本とし、コード実装・Migration適用は未完了である。
 Published StateのDataとMetadataは1 JSON Snapshotとして保存し、不完全なSnapshotを公開しない。最新・直前の2世代を保持する。
 BackendStoreがConnectionの生成・利用可否・終了を所有し、Backend Process内で原則1つのSQLite Connectionを共有する。Published State・Backend Cache・Acquisition Control Stateの各Repositoryは共通Connectionを利用し、Repositoryごとの独立Connectionは原則採用しない。FastifyはStoreの公開Interfaceを利用し、SQLite内部の管理を直接行わない。具体的なType名・Interface・Module構成は実装時に決定する。
 共有Connectionは他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
@@ -1475,7 +1475,7 @@ Acquisition Control Repositoryは既存acquisition_controlのRow・JSON、Allowl
 
 #### PR-C / C-3設計検討結果への参照
 
-Quota履歴・MetadataのSchema案、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。既存4 Table・Schema Version・C-1 / C-2契約を変更する実装指示ではない。F-01は管理者が過去使用がQuota判定期間外であることを信頼できる時刻・必要な安全余裕を踏まえて確認し、同一キーの他Senderがいない前提で、取得済みキーを継続使用して初回のみ明示的に空履歴から開始する方式として確定した。通常起動・再起動では初期化しない。管理者の初期確認と通常運用のHistory Trustを分け、空履歴・ACTIVEだけで安全とせず、既存Fail Closedを維持する。U-12はローリング窓によるMVP運用方針として確定し、Provider固定窓追従の追加機構は導入しない。F-02は固定Quota安全余裕とfetch直前の経過時間チェックを設計採用し、超過時は未送信でも消費を保持してProvider単位の新規Tx-Qを待機させる。最大許容遅延1秒・各窓余裕2秒・待機5秒は暫定設定であり、実装・実機検証は未完了とする。F-03は[管理停止時のHTTP・Tx-A・Tx-P・Pendingと厳格な停止完了](technology-stack.md#pr-c-c3-f03-management-stop)を設計確定した。管理停止後の新規Tx-Aは禁止し、停止前開始試行の結果確定・条件付き公開と停止完了待機を区別する。Shutdown・DB安全性の制約は維持し、実装・受入試験・実機検証は未完了とする。時計関連の暫定値・外部仕様の未確認事項・保証境界も残す。詳細な成立条件は同節を正本とし、責務分離・DB管理方針は変更しない。
+Quota履歴・MetadataのSchema v2設計、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。C-Impl-3でSchema v2・Index・Migration・Quota予約証拠を詳細化するが、既存4 Table・C-1 / C-2の契約は維持し、今回はコード・DBへの適用を行わない。F-01は管理者が過去使用がQuota判定期間外であることを信頼できる時刻・必要な安全余裕を踏まえて確認し、同一キーの他Senderがいない前提で、取得済みキーを継続使用して初回のみ明示的に空履歴から開始する方式として確定した。通常起動・再起動では初期化しない。管理者の初期確認と通常運用のHistory Trustを分け、空履歴・ACTIVEだけで安全とせず、既存Fail Closedを維持する。U-12はローリング窓によるMVP運用方針として確定し、Provider固定窓追従の追加機構は導入しない。F-02は固定Quota安全余裕とfetch直前の経過時間チェックを設計採用し、超過時は未送信でも消費を保持してProvider単位の新規Tx-Qを待機させる。最大許容遅延1秒・各窓余裕2秒・待機5秒は暫定設定であり、実装・実機検証は未完了とする。F-03は[管理停止時のHTTP・Tx-A・Tx-P・Pendingと厳格な停止完了](technology-stack.md#pr-c-c3-f03-management-stop)を設計確定した。管理停止後の新規Tx-Aは禁止し、停止前開始試行の結果確定・条件付き公開と停止完了待機を区別する。Shutdown・DB安全性の制約は維持し、実装・受入試験・実機検証は未完了とする。時計関連の暫定値・外部仕様の未確認事項・保証境界も残す。詳細な成立条件は同節を正本とし、責務分離・DB管理方針は変更しない。
 
 ### 16.4 Validation・Transaction分離・公開
 
