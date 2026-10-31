@@ -32,6 +32,7 @@ interface Attempt {
   repository: QuotaRepository;
   epoch: bigint;
   used: boolean;
+  cleanupAttempted: boolean;
 }
 interface Flight {
   abort: AbortController;
@@ -44,6 +45,8 @@ interface Slot {
   epoch: bigint;
   reasons: Set<object>;
   historyReason: object;
+  failureReason: object;
+  repositoryFailure?: "begin_attempt_failed" | "attempt_cleanup_failed";
   cooldownUntil?: bigint;
   flight?: Flight;
   attempts: Set<Attempt>;
@@ -80,6 +83,7 @@ export class ProviderSendGate {
         epoch: 0n,
         reasons: new Set([historyReason]),
         historyReason,
+        failureReason: Object.freeze({}),
         attempts: new Set(),
       });
       this.unsubscribe.push(
@@ -155,13 +159,30 @@ export class ProviderSendGate {
       !this.reservationStatus(provider).allowed
     )
       return null;
-    const quotaAttempt = slot.binding.repository.beginAttempt(provider);
+    // Gate-owned duplicates can be rejected without asking storage.
+    if (slot.attempts.size) return null;
+    let quotaAttempt: QuotaAttempt;
+    try {
+      quotaAttempt = slot.binding.repository.beginAttempt(provider);
+    } catch (error) {
+      // Verified against the current Repository: for the allowlisted Provider,
+      // this exact rejection is the active-attempt guard, not every TypeError.
+      if (
+        error instanceof TypeError &&
+        error.message === "Quota attempt unavailable"
+      )
+        return null;
+      slot.repositoryFailure = "begin_attempt_failed";
+      this.close(provider, slot.failureReason);
+      throw error; // unexpected storage failure is not ordinary unavailability
+    }
     const record: Attempt = {
       provider,
       quotaAttempt,
       repository: slot.binding.repository,
       epoch: slot.epoch,
       used: false,
+      cleanupAttempted: false,
     };
     const attempt = Object.freeze(Object.create(null)) as GateAttempt;
     this.attempts.set(attempt, record);
@@ -257,6 +278,7 @@ export class ProviderSendGate {
     phase: ProviderPhase;
     epoch: bigint;
     stopped: boolean;
+    repositoryFailure?: "begin_attempt_failed" | "attempt_cleanup_failed";
     cooldownUntil?: bigint;
   } {
     const slot = this.slots.get(provider);
@@ -266,6 +288,7 @@ export class ProviderSendGate {
       phase: slot.flight?.phase ?? "IDLE",
       epoch: slot.epoch,
       stopped: !!(this.globalReasons.size || slot.reasons.size),
+      repositoryFailure: slot.repositoryFailure,
       cooldownUntil: slot.cooldownUntil,
     };
   }
@@ -289,22 +312,50 @@ export class ProviderSendGate {
   }
   private close(scope: string, owner: object): void {
     if (scope === "global") this.globalReasons.add(owner);
-    for (const [provider, slot] of this.slots) {
-      if (scope !== "global" && scope !== provider) continue;
+    const targets = [...this.slots].filter(
+      ([provider]) => scope === "global" || scope === provider,
+    );
+    const cleanup: Attempt[] = [];
+    // Close every affected slot and invalidate local authority BEFORE invoking
+    // Abort listeners or Repository cleanup, either of which can re-enter.
+    for (const [, slot] of targets) {
       if (scope !== "global") slot.reasons.add(owner);
       slot.epoch++;
-      for (const record of [...slot.attempts]) this.invalidate(record);
+      for (const record of [...slot.attempts]) {
+        this.invalidateLocally(record);
+        cleanup.push(record);
+      }
+    }
+    for (const [, slot] of targets) {
       const flight = slot.flight;
       if (flight) {
         flight.phase = "ABORT_REQUESTED";
-        flight.abort.abort(); // reason and epoch updated BEFORE synchronous Abort listeners
+        flight.abort.abort();
       }
     }
+    // Abort is independent of cleanup success; one failure never skips another.
+    for (const record of cleanup) this.cleanupAttempt(record);
   }
-  private invalidate(record: Attempt): void {
+  private invalidateLocally(record: Attempt): void {
     record.used = true;
     this.slots.get(record.provider)?.attempts.delete(record);
-    record.repository.endAttempt(record.quotaAttempt);
+  }
+  private invalidate(record: Attempt): void {
+    this.invalidateLocally(record);
+    this.cleanupAttempt(record);
+  }
+  private cleanupAttempt(record: Attempt): void {
+    if (record.cleanupAttempted) return;
+    record.cleanupAttempted = true;
+    try {
+      record.repository.endAttempt(record.quotaAttempt);
+    } catch {
+      const slot = this.slots.get(record.provider)!;
+      slot.repositoryFailure = "attempt_cleanup_failed";
+      slot.reasons.add(slot.failureReason); // sticky, not cleared by Resume/Trust
+      // Sanitized diagnostic is exposed in snapshot; no raw exception/Secret.
+      // Do not retry cleanup or make an uncertain Repository attempt reusable.
+    }
   }
   private now(): bigint {
     const now = this.time.monotonicNs();

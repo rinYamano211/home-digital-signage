@@ -60,9 +60,18 @@ PASSは独立制御・Fake Adapter・実SQLite単体の範囲に限る。実Prov
 
 ## 品質確認と変更範囲
 
-新規79件。Windowsは662件成功・Linux専用47件Skip（合計709件）。Lint / Format / Type Check / Backend Build成功。Linux CI結果はPRへ記録する。
+初期実装79件にPR #47レビュー対応16件を追加し、C-Impl-4は95件。レビュー修正後のWindows全体は678件成功・Linux専用47件Skip（合計725件）。Lint / Format / Type Check / Backend Build成功。Linux CI結果はPRへ記録する。
 
 追加はTimeSource、Gate本番入口とinternal制御、2テストファイルとtest fixture、本書。既存Quota Repository / Guard / Tx-Q、Schema / Migration、Connection Coordination、Scheduler、Control Repository、既存テスト、設計正本、依存関係、Signal Handler、Shutdown全体10秒は変更しない。
+
+## PR #47レビュー対応：P1 / P2
+
+- **P1**：Gate自身が保持する同Providerの未終了AttemptはRepository呼出し前にnullとする。Repositoryでの外部既存Attemptは、Provider Allowlist検証済みの同期呼出しについて、現行コードの拒否箇所で使用するTypeErrorと固定message `Quota attempt unavailable`の両方が一致する場合だけnullとする。TypeError全般・messageだけで分類しない。この判定は現行Repository実装の拒否表現に依存し、表現が変われば安全側の予期しない障害として扱う。C-Impl-3の公開Interface・実装は変更しない。
+- 既知拒否ではGateのAttempt Record生成・Quota予約・Permit発行・HTTP開始を行わない。それ以外の例外はProviderを閉じ、snapshot.repositoryFailureへbegin_attempt_failedを保持したうえで元の例外を再送出する。正常な取得不可として握りつぶさない。
+- **P2**：対象全slotの停止理由登録・Epoch更新・ローカル旧Attempt失効を先に完了し、既開始RequestをABORT_REQUESTEDにしてAbort要求、その後に各Repositoryの後片付けを行う。後片付けを一件ずつ捕捉し、一件の失敗で他の処理を中断しない。
+- 後片付け失敗はsnapshot.repositoryFailureのattempt_cleanup_failedと、そのGate instanceではResume / Trust回復で解除されない停止理由として保持する。raw例外・Secretを診断情報へ含めない。既存Attemptを再利用せず、自動cleanup再試行も行わない。回復手順を今回新設せず、必要な手動確認・後続Recoveryへ残す。
+- Abort要求とLifecycle終了は区別し、後片付け失敗でも終了通知まで占有を維持する。開始例外・拒否・明示endAttemptからの同じ後片付け経路も例外を外へ漏らさず、異常保留を維持する。
+- 追加16件：P1 7件（Gate重複・外部既存・固定拒否・予期しない4種類）、P2 9件（4停止経路、Abort先行、明示終了／拒否時cleanup異常、Global複数recordのFault Injection、Clock通知先の継続）。MVPはQuota ProviderがTomorrow.ioのみなので、Global複数slotの検証は内部recordのFault Injectionで行い、新Providerの取得処理を追加していない。
 
 ## 未確定・後続工程
 

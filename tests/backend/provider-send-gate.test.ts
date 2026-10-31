@@ -5,6 +5,7 @@ import {
   ProviderSendGate,
   type GateAttempt,
 } from "../../src/backend/send/internal/provider-send-gate.js";
+import { PermitRegistry } from "../../src/backend/send/internal/permits.js";
 import { connectionCoordination } from "../../src/backend/storage/connection-coordination.js";
 import type {
   QuotaReservationEvidence,
@@ -483,4 +484,244 @@ test("T2 malformed asynchronous Adapter is absent from production's configurable
   expect("adapter" in prod).toBe(false);
   expect("setTrust" in prod).toBe(false);
   prod.dispose();
+});
+
+test("P1 Gate-owned duplicate returns null without another Repository acquisition", () => {
+  const f = setup();
+  const begin = vi.spyOn(f.repo, "beginAttempt");
+  const first = f.gate.beginAttempt(provider)!;
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+  expect(begin).toHaveBeenCalledTimes(1);
+  f.gate.endAttempt(first.attempt);
+  expect(f.gate.beginAttempt(provider)).not.toBeNull();
+  expect(f.rows()).toEqual([]);
+  expect(f.calls()).toBe(0);
+});
+test("P1 pre-existing external Repository attempt refuses safely without a Gate record", () => {
+  const f = setup();
+  const external = f.repo.beginAttempt(provider);
+  const reserve = vi.spyOn(f.repo, "reserve"),
+    issue = vi.spyOn(PermitRegistry.prototype, "issue");
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+  expect(reserve).not.toHaveBeenCalled();
+  expect(issue).not.toHaveBeenCalled();
+  expect(f.calls()).toBe(0);
+  f.repo.endAttempt(external);
+  expect(f.gate.beginAttempt(provider)).not.toBeNull();
+  expect(f.rows()).toEqual([]);
+});
+test("P1 exact known Repository refusal returns null and leaves no local attempt", () => {
+  const f = setup();
+  const real = f.repo.beginAttempt.bind(f.repo);
+  const begin = vi
+    .spyOn(f.repo, "beginAttempt")
+    .mockImplementationOnce(() => {
+      throw new TypeError("Quota attempt unavailable");
+    })
+    .mockImplementation(real);
+  const issue = vi.spyOn(PermitRegistry.prototype, "issue");
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+  expect(f.gate.beginAttempt(provider)).not.toBeNull();
+  expect(begin).toHaveBeenCalledTimes(2);
+  expect(issue).not.toHaveBeenCalled();
+  expect(f.rows()).toEqual([]);
+  expect(f.calls()).toBe(0);
+});
+test.each([
+  new Error("unexpected"),
+  new TypeError("internal failure"),
+  new Error("Quota attempt unavailable"),
+  "unknown failure",
+])(
+  "P1 unexpected Repository failure is rethrown and kept stopped (%s)",
+  (error) => {
+    const f = setup();
+    vi.spyOn(f.repo, "beginAttempt").mockImplementation(() => {
+      throw error;
+    });
+    const issue = vi.spyOn(PermitRegistry.prototype, "issue");
+    let caught: unknown;
+    try {
+      f.gate.beginAttempt(provider);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBe(error);
+    expect(f.gate.snapshot(provider).repositoryFailure).toBe(
+      "begin_attempt_failed",
+    );
+    expect(f.gate.beginAttempt(provider)).toBeNull();
+    expect(f.rows()).toEqual([]);
+    expect(f.calls()).toBe(0);
+    expect(issue).not.toHaveBeenCalled();
+  },
+);
+test.each(["global", "provider", "clock", "history"])(
+  "P2 %s closes, invalidates and aborts even when Repository cleanup throws",
+  (kind) => {
+    const f = setup();
+    const r = saved(f);
+    f.gate.start(r.attempt, r.result);
+    const epoch = f.gate.snapshot(provider).epoch;
+    const original = f.rows();
+    const cleanup = vi.spyOn(f.repo, "endAttempt").mockImplementation(() => {
+      throw new Error("cleanup failed");
+    });
+    const stop = f.gate.stopControl(kind === "global" ? "global" : provider);
+    const onAbort = vi.fn(() => {
+      expect(f.gate.snapshot(provider).stopped).toBe(true);
+      expect(f.gate.beginAttempt(provider)).toBeNull();
+      expect(f.gate.start(r.attempt, r.result).kind).toBe("blocked");
+    });
+    f.signal()!.addEventListener("abort", onAbort);
+    const trigger = () => {
+      if (kind === "clock") {
+        f.setOs(false);
+        f.clock.observe();
+      } else if (kind === "history") f.history.suspend();
+      else stop.stop();
+    };
+    expect(trigger).not.toThrow();
+    expect(onAbort).toHaveBeenCalledTimes(1);
+    expect(f.signal()?.aborted).toBe(true);
+    expect(f.gate.snapshot(provider)).toMatchObject({
+      phase: "ABORT_REQUESTED",
+      stopped: true,
+      repositoryFailure: "attempt_cleanup_failed",
+    });
+    expect(f.gate.snapshot(provider).epoch).toBeGreaterThan(epoch);
+    expect(f.rows()).toEqual(original);
+    expect(f.control()).toEqual([]);
+    stop.release();
+    f.confirmHistory();
+    expect(f.gate.beginAttempt(provider)).toBeNull();
+    expect(f.gate.start(r.attempt, r.result).kind).toBe("blocked");
+    expect(f.calls()).toBe(1);
+    f.finish();
+    expect(f.gate.snapshot(provider).phase).toBe("IDLE");
+    expect(f.gate.snapshot(provider).stopped).toBe(true);
+    expect(cleanup).toHaveBeenCalledTimes(1); // no implicit retry after uncertain cleanup
+  },
+);
+test("P2 Abort request happens before Repository cleanup", () => {
+  const f = setup();
+  const r = saved(f);
+  f.gate.start(r.attempt, r.result);
+  const original = f.repo.endAttempt.bind(f.repo);
+  vi.spyOn(f.repo, "endAttempt").mockImplementation((a) => {
+    expect(f.signal()?.aborted).toBe(true);
+    original(a);
+  });
+  f.gate.stopControl(provider).stop();
+  expect(f.signal()?.aborted).toBe(true);
+});
+test("P2 failure during direct endAttempt remains observable and cannot be resumed", () => {
+  const f = setup();
+  const a = f.gate.beginAttempt(provider)!;
+  vi.spyOn(f.repo, "endAttempt").mockImplementation(() => {
+    throw new TypeError("failure");
+  });
+  expect(() => f.gate.endAttempt(a.attempt)).not.toThrow();
+  expect(f.gate.snapshot(provider).repositoryFailure).toBe(
+    "attempt_cleanup_failed",
+  );
+  const control = f.gate.stopControl(provider);
+  control.stop();
+  control.release();
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+});
+test("P2 cleanup failure on rejected start does not escape or restore authority", () => {
+  const f = setup();
+  const r = saved(f);
+  vi.spyOn(f.repo, "endAttempt").mockImplementation(() => {
+    throw new Error();
+  });
+  expect(
+    f.gate.start(r.attempt, {
+      outcome: "not_saved",
+      scope: "provider",
+      reason: "test",
+    }).kind,
+  ).toBe("blocked");
+  expect(f.gate.snapshot(provider).repositoryFailure).toBe(
+    "attempt_cleanup_failed",
+  );
+  expect(f.rows()).toHaveLength(1);
+  expect(f.calls()).toBe(0);
+});
+test("P2 Global close invalidates all target records and continues cleanup after first failure", () => {
+  const f = setup();
+  const r = saved(f);
+  f.gate.start(r.attempt, r.result);
+  const other = setup();
+  const extra = other.repo.beginAttempt(provider);
+  const secondCleanup = vi.spyOn(other.repo, "endAttempt");
+  // Fault-inject a second registered Provider slot's record. MVP quota permits
+  // only Tomorrow.io; this verifies the existing generic Global-close traversal
+  // without introducing another Provider's runtime acquisition implementation.
+  const slots = Reflect.get(f.gate, "slots") as Map<
+    string,
+    { attempts: Set<unknown>; epoch: bigint }
+  >;
+  const extraRecord = {
+    provider: "other",
+    quotaAttempt: extra,
+    repository: other.repo,
+    epoch: slots.get("other")!.epoch,
+    used: false,
+    cleanupAttempted: false,
+  };
+  slots.get("other")!.attempts.add(extraRecord);
+  vi.spyOn(f.repo, "endAttempt").mockImplementation(() => {
+    throw new Error();
+  });
+  f.signal()!.addEventListener("abort", () =>
+    expect(extraRecord.used).toBe(true),
+  );
+  expect(() => f.gate.stopControl("global").stop()).not.toThrow();
+  expect(extraRecord.used).toBe(true);
+  expect(extraRecord.cleanupAttempted).toBe(true);
+  expect(secondCleanup).toHaveBeenCalledWith(extra);
+  expect(f.signal()?.aborted).toBe(true);
+  expect(f.gate.snapshot(provider).phase).toBe("ABORT_REQUESTED");
+  expect(f.gate.snapshot("other").stopped).toBe(true);
+});
+test("P2 clock revocation notifies later Gates despite an earlier Gate cleanup failure", () => {
+  const f = setup();
+  const first = saved(f);
+  f.gate.start(first.attempt, first.result);
+  const other = setup();
+  const history = other.history;
+  let signal: AbortSignal | undefined;
+  let finish: (() => void) | undefined;
+  const gate = new ProviderSendGate(
+    new Map([[provider, { repository: other.repo, history }]]),
+    f.clock,
+    f.time,
+    {
+      start(s, ended) {
+        signal = s;
+        finish = ended;
+        return Promise.resolve();
+      },
+    },
+  );
+  const a = gate.beginAttempt(provider)!;
+  const result = other.repo.reserve({
+    providerKey: provider,
+    attempt: a.quotaAttempt,
+    trust: () => gate.quotaTrust(provider),
+  });
+  expect(result.outcome).toBe("saved");
+  gate.start(a.attempt, result);
+  vi.spyOn(f.repo, "endAttempt").mockImplementation(() => {
+    throw new Error();
+  });
+  f.setOs(false);
+  expect(() => f.clock.observe()).not.toThrow();
+  expect(f.signal()?.aborted).toBe(true);
+  expect(signal?.aborted).toBe(true);
+  expect(gate.snapshot(provider).phase).toBe("ABORT_REQUESTED");
+  finish?.();
+  gate.dispose();
 });
