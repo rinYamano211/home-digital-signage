@@ -24,14 +24,14 @@ afterEach(() => {
   vi.restoreAllMocks();
   for (const db of connections.splice(0)) if (db.open) db.close();
 });
-test("initial schema is four exact tables, version 1, PK index used", () => {
+test("initial schema is six exact tables, version 2, PK index used", () => {
   const db = database();
   initializeSchema(db);
   validateSchema(db);
-  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  expect(db.pragma("user_version", { simple: true })).toBe(2);
   expect(
     db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all(),
-  ).toHaveLength(4);
+  ).toHaveLength(6);
   const plan = JSON.stringify(
     db
       .prepare(
@@ -70,7 +70,7 @@ test("same version with missing CHECK or an extra index is rejected", () => {
   normal.exec("CREATE INDEX extra ON backend_cache(cache_json)");
   expect(() => validateSchema(normal)).toThrow(SchemaError);
 });
-test.each([0, 2, 999])(
+test.each([0, 3, 999])(
   "version %s is never initialized or repaired",
   (version) => {
     const db = database();

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { SchemaError } from "./errors.js";
-import { validateSchema } from "./schema.js";
+import { validateSchema, QUOTA_DDL, enableForeignKeys } from "./schema.js";
 
 export interface Migration {
   from: number;
@@ -9,14 +9,30 @@ export interface Migration {
   validateAfter(db: Database.Database): void;
   apply(db: Database.Database): void;
 }
-// No production upgrade exists yet. Version 0 is not an initialization route.
+// Old Release rejects v2. Keep the automatic allowlist empty until compatibility
+// is verified. Explicit administrative upgrade may select V1_TO_V2 under EX.
+export const V1_TO_V2: Migration = Object.freeze({
+  from: 1,
+  to: 2,
+  validateBefore(db: Database.Database) {
+    validateSchema(db, 1);
+  },
+  validateAfter(db: Database.Database) {
+    validateSchema(db, 2);
+  },
+  apply(db: Database.Database) {
+    db.exec(QUOTA_DDL);
+  },
+});
 export const MIGRATIONS: readonly Migration[] = Object.freeze([]);
 export function migrate(
   db: Database.Database,
   allowed: readonly Migration[] = MIGRATIONS,
-  target = 1,
+  target = 2,
 ) {
   try {
+    if (db.inTransaction !== false) throw new SchemaError();
+    if (target === 2) enableForeignKeys(db);
     applyMigrations(db, allowed, target);
   } catch (error) {
     // Definition/validator failures require manual review, not an OS-fatal exit.
@@ -55,9 +71,12 @@ function applyMigrations(
       db.pragma(`user_version = ${entry.to}`);
       entry.validateAfter(db);
       db.exec("COMMIT");
+      if (db.inTransaction !== false) throw new SchemaError();
     } catch (error) {
       try {
-        if (db.inTransaction) db.exec("ROLLBACK");
+        const active = db.inTransaction;
+        if (active === true) db.exec("ROLLBACK");
+        if (db.inTransaction !== false) throw new SchemaError();
       } catch {
         throw new SchemaError();
       }
@@ -72,5 +91,5 @@ function applyMigrations(
       throw error;
     }
   }
-  if (target === 1) validateSchema(db);
+  if (target === 1 || target === 2) validateSchema(db, target);
 }

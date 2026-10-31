@@ -658,7 +658,7 @@ test("C2-21 unresolved rollback holds same shared Connection globally", () => {
 });
 test("fatal Schema mismatch blocks shared storage without altering Schema", () => {
   const f = fixture();
-  f.db.pragma("user_version=2");
+  f.db.pragma("user_version=3");
   expect(f.repo.read("schedule")).toMatchObject({
     outcome: "database_error",
     layer: "L3",

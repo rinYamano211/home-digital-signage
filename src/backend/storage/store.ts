@@ -2,12 +2,15 @@ import Database from "better-sqlite3";
 import type { ExclusiveLock } from "./lock.js";
 import { storagePaths, validateDatabaseFiles } from "./paths.js";
 import { migrate } from "./migrations.js";
+import { QuotaRepository } from "./quota-repository.js";
+import { enableForeignKeys } from "./schema.js";
 import { SchemaError } from "./errors.js";
 import { PublishedStateRepository } from "./published-state-repository.js";
 import { AcquisitionControlRepository } from "./acquisition-control-repository.js";
 import { BackendCacheRepository } from "./backend-cache-repository.js";
 
 export function configureDatabase(db: Database.Database) {
+  enableForeignKeys(db);
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
   db.pragma("wal_autocheckpoint = 1000");
@@ -22,10 +25,12 @@ export class BackendStore {
   readonly publishedStates: PublishedStateRepository;
   readonly cache: BackendCacheRepository;
   readonly acquisitionControl: AcquisitionControlRepository;
+  readonly quota: QuotaRepository;
   private constructor(private readonly db: Database.Database) {
     this.publishedStates = new PublishedStateRepository(db);
     this.cache = new BackendCacheRepository(db);
     this.acquisitionControl = new AcquisitionControlRepository(db);
+    this.quota = new QuotaRepository(db);
   }
   static open(lock: ExclusiveLock): BackendStore {
     lock.assertHeld();

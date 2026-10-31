@@ -158,7 +158,7 @@ linux(
     const db = new Database(file);
     try {
       expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
-      expect(db.pragma("user_version", { simple: true })).toBe(1);
+      expect(db.pragma("user_version", { simple: true })).toBe(2);
     } finally {
       db.close();
     }
@@ -523,5 +523,46 @@ linux(
     );
     expect(await job.done, job.output()).toBe(0);
     expect(await probe(dir)).toBe(0);
+  },
+);
+
+linux(
+  "v1 startup refuses automatic upgrade; explicit EX migration requires acknowledgement and v2 restarts",
+  async () => {
+    const dir = await directory();
+    const create = harness(
+      dir,
+      `import Database from 'better-sqlite3';import {INITIAL_DDL} from ${moduleUrl("storage/schema")};const db=new Database(process.env.SIGNAGE_DATA_DIR+'/signage.db');db.exec(INITIAL_DDL);db.pragma('user_version=1');db.prepare("INSERT INTO backend_cache VALUES ('schedule','legacy')").run();db.close();`,
+    );
+    expect(await create.done, create.output()).toBe(0);
+    await chmod(join(dir, "signage.db"), 0o600);
+    const p = await port();
+    const old = command(dir, "backend", { SIGNAGE_BACKEND_PORT: String(p) });
+    await expect
+      .poll(old.output, { timeout: 8000 })
+      .toContain('"state":"BLOCKED"');
+    old.child.kill("SIGTERM");
+    expect(await old.done).toBe(0);
+    const refused = command(dir, "migrate-v2");
+    expect(await refused.done).toBe(1);
+    let db = new Database(join(dir, "signage.db"));
+    expect(db.pragma("user_version", { simple: true })).toBe(1);
+    db.close();
+    const upgraded = command(dir, "migrate-v2", {
+      SIGNAGE_V2_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+    });
+    expect(await upgraded.done, upgraded.output()).toBe(0);
+    db = new Database(join(dir, "signage.db"));
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.prepare("SELECT cache_json FROM backend_cache").get()).toEqual({
+      cache_json: "legacy",
+    });
+    expect(db.prepare("SELECT * FROM provider_quota_metadata").all()).toEqual(
+      [],
+    );
+    db.close();
+    const running = await backend(dir);
+    running.child.kill("SIGTERM");
+    expect(await running.done).toBe(0);
   },
 );

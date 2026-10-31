@@ -26,55 +26,134 @@ CREATE TABLE state_generation_counters (
     last_generation INTEGER NOT NULL
         CHECK (last_generation >= 0)
 );`;
-const statements = INITIAL_DDL.split(";")
-  .map((sql) => sql.trim())
-  .filter(Boolean);
+export const QUOTA_DDL = String.raw`CREATE TABLE provider_quota_metadata (
+    provider_key TEXT PRIMARY KEY,
+    history_status TEXT NOT NULL
+        CHECK(history_status IN ('ACTIVE', 'SUSPENDED')),
+    initialized_at_ms INTEGER NOT NULL,
+    last_sequence INTEGER NOT NULL DEFAULT 0
+        CHECK(last_sequence >= 0)
+);
+CREATE TABLE provider_quota_consumptions (
+    provider_key TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence > 0),
+    reserved_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (provider_key, sequence),
+    FOREIGN KEY (provider_key)
+        REFERENCES provider_quota_metadata(provider_key)
+);
+CREATE INDEX idx_provider_quota_reserved_at
+ON provider_quota_consumptions (provider_key, reserved_at_ms);`;
 const normalize = (sql: string) =>
-  sql.toLowerCase().replace(/\s+/g, "").replace(/;$/, "");
-export function initializeSchema(db: Database.Database) {
+  sql
+    .trim()
+    .replace(/;$/, "")
+    .replace(/'[^']*'|[^']+/g, (part) =>
+      part.startsWith("'") ? part : part.toLowerCase().replace(/\s+/g, ""),
+    );
+export function enableForeignKeys(db: Database.Database): void {
+  db.pragma("foreign_keys=ON");
+  if (db.pragma("foreign_keys", { simple: true }) !== 1)
+    throw new SchemaError();
+}
+export function initializeSchema(db: Database.Database): void {
+  enableForeignKeys(db);
   db.transaction(() => {
     db.exec(INITIAL_DDL);
-    db.pragma("user_version = 1");
+    db.exec(QUOTA_DDL);
+    db.pragma("user_version=2");
+    validateSchema(db);
   })();
 }
-export function validateSchema(db: Database.Database) {
-  if (db.pragma("user_version", { simple: true }) !== 1)
+/** v1 exists only as an explicit pre-upgrade validator; runtime defaults to v2. */
+export function validateSchema(
+  db: Database.Database,
+  version: 1 | 2 = 2,
+): void {
+  if (db.pragma("user_version", { simple: true }) !== version)
     throw new SchemaError();
+  if (version === 2 && db.pragma("foreign_keys", { simple: true }) !== 1)
+    throw new SchemaError();
+  const statements = (INITIAL_DDL + (version === 2 ? QUOTA_DDL : ""))
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const rows = db
     .prepare(
-      "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
+      "SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
     )
     .all() as { name: string; type: string; sql: string }[];
-  if (rows.length !== 4) throw new SchemaError();
+  if (rows.length !== statements.length) throw new SchemaError();
   for (const statement of statements) {
-    const name = /CREATE TABLE (\w+)/.exec(statement)![1];
-    const row = rows.find((r) => r.name === name && r.type === "table");
-    // Conservative canonical DDL comparison covers columns, NOT NULL, CHECK and PK.
-    // Equivalent but unreviewed DDL is rejected rather than inferred compatible.
+    const match = /^CREATE (TABLE|INDEX) (\w+)/.exec(statement)!;
+    const [, type, name] = match;
+    const row = rows.find(
+      (r) => r.name === name && r.type === type.toLowerCase(),
+    );
     if (!row || normalize(row.sql) !== normalize(statement))
       throw new SchemaError();
+    if (type === "INDEX") {
+      const columns = db.pragma(`index_info(${name})`) as { name: string }[];
+      if (
+        JSON.stringify(columns.map((c) => c.name)) !==
+        JSON.stringify(["provider_key", "reserved_at_ms"])
+      )
+        throw new SchemaError();
+      continue;
+    }
     const indexes = db.pragma(`index_list(${name})`) as {
       unique: number;
       origin: string;
       name: string;
+      partial: number;
     }[];
-    if (
-      indexes.length !== 1 ||
-      indexes[0].unique !== 1 ||
-      indexes[0].origin !== "pk"
-    )
-      throw new SchemaError();
-    const columns = db.pragma(`index_info(${indexes[0].name})`) as {
-      name: string;
-    }[];
-    const expected =
+    const hasTimeIndex = name === "provider_quota_consumptions";
+    if (indexes.length !== (hasTimeIndex ? 2 : 1)) throw new SchemaError();
+    const pk = indexes.find((i) => i.origin === "pk");
+    if (!pk || pk.unique !== 1 || pk.partial !== 0) throw new SchemaError();
+    const pkColumns =
       name === "published_state_snapshots"
         ? ["state_key", "generation"]
-        : ["state_key"];
+        : name === "provider_quota_consumptions"
+          ? ["provider_key", "sequence"]
+          : name === "provider_quota_metadata"
+            ? ["provider_key"]
+            : ["state_key"];
+    const columns = db.pragma(`index_info(${pk.name})`) as { name: string }[];
     if (
-      JSON.stringify(columns.map((column) => column.name)) !==
-      JSON.stringify(expected)
+      JSON.stringify(columns.map((c) => c.name)) !== JSON.stringify(pkColumns)
     )
       throw new SchemaError();
+    if (
+      hasTimeIndex &&
+      !indexes.some(
+        (i) =>
+          i.name === "idx_provider_quota_reserved_at" &&
+          i.origin === "c" &&
+          i.unique === 0 &&
+          i.partial === 0,
+      )
+    )
+      throw new SchemaError();
+    const fk = db.pragma(`foreign_key_list(${name})`) as {
+      table: string;
+      from: string;
+      to: string;
+      on_update: string;
+      on_delete: string;
+      match: string;
+    }[];
+    if (hasTimeIndex) {
+      if (
+        fk.length !== 1 ||
+        fk[0].table !== "provider_quota_metadata" ||
+        fk[0].from !== "provider_key" ||
+        fk[0].to !== "provider_key" ||
+        fk[0].on_update !== "NO ACTION" ||
+        fk[0].on_delete !== "NO ACTION" ||
+        fk[0].match !== "NONE"
+      )
+        throw new SchemaError();
+    } else if (fk.length !== 0) throw new SchemaError();
   }
 }
