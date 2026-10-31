@@ -1018,7 +1018,7 @@ OS / RTCが明確に利用不能を示す場合は、その時刻を通常の時
 同期完了を基本画面起動の条件とせず、利用可能な時刻が得られれば利用者操作なしで通常表示へ移行する。
 利用可否の具体的な取得・判定方法はIssue #4、未同期状態の具体的UIはIssue #5で扱う。
 
-Provider送信用Clock Trustは、上記の表示用時刻の利用可否とは別にQuota窓の安全性を確認する。RTC時刻が時計・日付表示に使用可能でも、それだけで送信を許可しない。Clock TrustとHistory Trustは独立評価し、履歴の内部整合性・Timestamp信頼性・完全性が不明ならFail Closedとする。RTCだけで送信可能な具体条件やOS同期確認の実装方法は今回確定せず、既存のOffline表示・RTC利用方針を変更しない。詳細は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-clock-history-trust)に従う。
+Provider送信用Clock Trustは、上記の表示用時刻の利用可否とは別にQuota窓の安全性を確認する。RTC時刻が時計・日付表示に使用可能でも、それだけで送信を許可しない。Clock TrustとHistory Trustは独立評価し、履歴の内部整合性・Timestamp信頼性・完全性が不明ならFail Closedとする。RTCだけで送信可能な具体条件やOS同期確認の実装方法は今回確定せず、既存のOffline表示・RTC利用方針を変更しない。Clock監視はBackend Process内でCommon Time Moduleの時間情報を利用する独立した確認責務とし、新しい独立Process / 常駐Serviceは追加しない。Gateは送信直前にもTrustの鮮度を確認し、時計の安定回復だけでHistory Trustを回復させない。詳細・暫定値・未確定事項は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-clock-history-trust)に従う。
 
 ### 10.3 Timezone
 
@@ -1427,7 +1427,7 @@ Domain固有Validation、Data変換、Cache採用、Freshness、Published State�
 | Frontend Component State | Display内で生成する派生State。BackendやStoreへ戻さない |
 | Display Runtime State | Displayの切替位置等。MVPではCrash前の表示位置復元を要求しない |
 
-SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。初期Schemaはpublished_state_snapshots・backend_cache・acquisition_controlと、State単位の最終Generationを保持する内部管理Table state_generation_countersの4 Tableを正式採用する。これはVersion 1の初期Schemaである。C-Impl-3では既存4 Table・データを維持し、Provider Metadata・Quota履歴の2 Tableと検索Indexを追加するSchema v2・Atomic Migrationを設計確定した。詳細は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-3-quota-persistence)を正本とし、コード実装・Migration適用は未完了である。
+SQLiteを正式採用し、Published State、Backend Cache、Acquisition Control Stateを1 Databaseの論理的な別Tableに保存する。初期Schemaはpublished_state_snapshots・backend_cache・acquisition_controlと、State単位の最終Generationを保持する内部管理Table state_generation_countersの4 Tableを正式採用する。これはVersion 1の初期Schemaである。C-Impl-3では既存4 Table・データを維持し、Provider Metadata・Quota履歴の2 Tableと検索Indexを追加するSchema v2・Atomic Migrationを設計し、PR #45で実装・単体検証を完了してmainへ反映した。旧Release非互換のため通常起動の自動Migrationは無効であり、明示管理Upgradeとする。実運用DBへの適用・実機検証とは区別し、詳細は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-3-quota-persistence)を正本とする。
 Published StateのDataとMetadataは1 JSON Snapshotとして保存し、不完全なSnapshotを公開しない。最新・直前の2世代を保持する。
 BackendStoreがConnectionの生成・利用可否・終了を所有し、Backend Process内で原則1つのSQLite Connectionを共有する。Published State・Backend Cache・Acquisition Control Stateの各Repositoryは共通Connectionを利用し、Repositoryごとの独立Connectionは原則採用しない。FastifyはStoreの公開Interfaceを利用し、SQLite内部の管理を直接行わない。具体的なType名・Interface・Module構成は実装時に決定する。
 共有Connectionは他DomainのState書換え権限を与えない。永続DBはRelease Directory外に配置する。
@@ -1475,7 +1475,15 @@ Acquisition Control Repositoryは既存acquisition_controlのRow・JSON、Allowl
 
 #### PR-C / C-3設計検討結果への参照
 
-Quota履歴・MetadataのSchema v2設計、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。C-Impl-3でSchema v2・Index・Migration・Quota予約証拠を詳細化するが、既存4 Table・C-1 / C-2の契約は維持し、今回はコード・DBへの適用を行わない。F-01は管理者が過去使用がQuota判定期間外であることを信頼できる時刻・必要な安全余裕を踏まえて確認し、同一キーの他Senderがいない前提で、取得済みキーを継続使用して初回のみ明示的に空履歴から開始する方式として確定した。通常起動・再起動では初期化しない。管理者の初期確認と通常運用のHistory Trustを分け、空履歴・ACTIVEだけで安全とせず、既存Fail Closedを維持する。U-12はローリング窓によるMVP運用方針として確定し、Provider固定窓追従の追加機構は導入しない。F-02は固定Quota安全余裕とfetch直前の経過時間チェックを設計採用し、超過時は未送信でも消費を保持してProvider単位の新規Tx-Qを待機させる。最大許容遅延1秒・各窓余裕2秒・待機5秒は暫定設定であり、実装・実機検証は未完了とする。F-03は[管理停止時のHTTP・Tx-A・Tx-P・Pendingと厳格な停止完了](technology-stack.md#pr-c-c3-f03-management-stop)を設計確定した。管理停止後の新規Tx-Aは禁止し、停止前開始試行の結果確定・条件付き公開と停止完了待機を区別する。Shutdown・DB安全性の制約は維持し、実装・受入試験・実機検証は未完了とする。時計関連の暫定値・外部仕様の未確認事項・保証境界も残す。詳細な成立条件は同節を正本とし、責務分離・DB管理方針は変更しない。
+Quota履歴・MetadataのSchema v2設計、送信前Tx-Q、Process内Send Permit、Startup / Recovery・管理停止・Clock / History Trustの設計検討結果は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-quota-send-gate)に記録する。C-Impl-3のSchema v2・Index・明示管理Migration・Quota Repository / Guard / Tx-Q・予約証拠はPR #45で実装・単体検証済み。既存4 Table・C-1 / C-2の契約は維持し、実運用DBへの適用・実Provider統合の完了とはしない。F-01は管理者が過去使用がQuota判定期間外であることを信頼できる時刻・必要な安全余裕を踏まえて確認し、同一キーの他Senderがいない前提で、取得済みキーを継続使用して初回のみ明示的に空履歴から開始する方式として確定した。通常起動・再起動では初期化しない。管理者の初期確認と通常運用のHistory Trustを分け、空履歴・ACTIVEだけで安全とせず、既存Fail Closedを維持する。U-12はローリング窓によるMVP運用方針として確定し、Provider固定窓追従の追加機構は導入しない。F-02は固定Quota安全余裕とfetch直前の経過時間チェックを設計採用し、超過時は未送信でも消費を保持してProvider単位の新規Tx-Qを待機させる。最大許容遅延1秒・各窓余裕2秒・待機5秒は暫定設定とする。固定余裕・計測起点はC-Impl-3実装済みだが、Gate遅延判定・Cooldownの実装と実機妥当性検証は未完了である。F-03は[管理停止時のHTTP・Tx-A・Tx-P・Pendingと厳格な停止完了](technology-stack.md#pr-c-c3-f03-management-stop)を設計確定した。管理停止後の新規Tx-Aは禁止し、停止前開始試行の結果確定・条件付き公開と停止完了待機を区別する。Shutdown・DB安全性の制約は維持し、実装・受入試験・実機検証は未完了とする。時計関連の暫定値・外部仕様の未確認事項・保証境界も残す。詳細な成立条件は同節を正本とし、責務分離・DB管理方針は変更しない。
+
+#### C-Impl-4の責務境界（詳細設計確定・未実装）
+
+Provider Send GateはBackend Process内の独立した責務を持つコンポーネントとし、Coordinator・Quota Repositoryへ混在させない。Quota Repository / Guardは永続予約・Quota判定、Gateは送信直前の判定・Permit・停止・Provider in-flight・F-02 Cooldownを担当する。Clock / History Trustの確認とSchedulerは別責務を維持する。既存beginAttempt / reserve / inspectReservation / endAttemptを接続点とし、Quota予約証拠とSend Permitを区別する。
+
+Gateは最終判定・一度限りのPermit消費・fetch開始をawaitなしで連続実行する。停止受付で同期的に閉じ、Send Epochを更新し、旧権限を復活させない。Providerごとの未終了Requestは最大1件とし、Abort要求・fetch Promise resolveだけではBodyを含むLifecycle全体の終了とみなさない。管理停止の永続化・厳格な停止完了・HTTP終端とTx-A / Tx-P / Pendingは既存F-03と後続工程の責務を維持する。
+
+今回確定したStep 1〜6、Permit・Trust・F-02境界・テスト計画は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-4-send-gate-trust)を正本とする。C-Impl-4の実装・テストは未実施。OS同期取得方法、RTC-only送信許可、History Trustの管理確認・回復手順は未確定で、確認不能なら送信しない。独立制御の完成と、実Provider Client・Coordinator・Startup / Management Stop・Recoveryを含む本番統合の完成を区別する。今回コード・DB操作・実APIアクセス・実機検証は行わない。
 
 ### 16.4 Validation・Transaction分離・公開
 
