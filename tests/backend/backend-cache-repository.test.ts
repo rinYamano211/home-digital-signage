@@ -249,7 +249,7 @@ test("C-08/C-17 first save creates only the existing Cache Row", () => {
   });
   expect(row(db)).toEqual({ cache_json: JSON.stringify(entry()) });
   expect(db.prepare("SELECT * FROM sqlite_schema").all()).toEqual(schema);
-  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  expect(db.pragma("user_version", { simple: true })).toBe(2);
 });
 test.each([
   { ...entry(), schemaVersion: 2 },

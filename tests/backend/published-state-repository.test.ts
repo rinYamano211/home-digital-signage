@@ -692,7 +692,7 @@ test("Tx-P leaves Cache, Acquisition Control, Schema and Version unchanged", () 
     { state_key: "schedule", control_json: "control" },
   ]);
   expect(db.prepare("SELECT * FROM sqlite_schema").all()).toEqual(schema);
-  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  expect(db.pragma("user_version", { simple: true })).toBe(2);
 });
 test("saved generations persist after actual Connection close/reopen", () => {
   const { db, repo } = fixture();
