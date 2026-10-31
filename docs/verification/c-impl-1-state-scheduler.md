@@ -53,9 +53,33 @@ PASSは記載した検証範囲のみ。後続統合待ちの行は単体部分�
 
 Lifecycle試験ではpreCloseでstopを呼んで同期的に新規Taskを禁止し、DBを閉じる同じonClose処理でstopをawaitした後にMock DB Closeを行う。FastifyのpreClose自体の待機はHook timeoutで打ち切られ得るため、preClose待機だけをDB Close順序の保証にしない。実Storeとの接続時にもTask終了前に通常Closeへ進まないことを確認する。既存Shutdownの10秒を超えた際の強制終了はそのまま維持する。
 
+## PR #42レビュー：Timer予約とinFlight解除の境界
+
+指摘された「runOnce完了後に予約したTimerが、まだ残るinFlightを見て破棄され、次回判定が消える」競合は、現行実装と通常のNode.js Timerでは再現せず、実装修正は不要と判断した。Schedulerの本体・C-1契約は変更していない。
+
+`await coordinator.runOnce()`から再開した後は、結果検証 → recheckの読取り → arm()による取消し・予約 → finallyのinFlight解除まで、awaitや別の非同期中断点がない。setTimeoutはCallbackを同期的に呼ばず、現在のJavaScript処理を中断しない。0ms Timerでも、予約処理とfinallyの間へ割り込むことはない。外側のPromiseがまだsettleしていなくても、Timer発火までにはslot.inFlight自体は解除済みとなる。
+
+requestRecheckが完了継続より前に実行された場合はinFlight中のフラグへ集約され、scheduledの検証後に0ms再判定として予約される。完了継続の後に実行された場合はinFlight解除済みなので、既存Timerを取消し・再予約する。通常のMicrotask・Timer・nextTickはこの同期区間の途中へ割り込まない。stopも前なら結果からの予約を禁止し、後なら予約済みTimerを取消す。Callbackの世代検証は取消し前の古いCallbackを無効化する。
+
+この判断は現行の中断点とNodeの非同期Timerに基づく。今後、armからfinallyまでにawait等を追加する場合は前提が変わるため再検証が必要。テスト用setTimeoutがCallbackを登録中に同期実行するような置換は、Node標準Timerの再現とは扱わない。
+
+参照：[Node.js v24.14.0 Timers](https://nodejs.org/download/release/v24.14.0/docs/api/timers.html#settimeoutcallback-delay-args)、[Node.js Event Loop / process.nextTick](https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick#understanding-processnexttick)。ローカル実Timer試験はNode v24.14.0で実行。Linux CIでも実Timer試験を実行し、使用Node版・結果はCIログで確認する。
+
+追加ファイルは`tests/backend/state-scheduler-races.test.ts`。既存57件のテスト本文は変更していない。
+
+| 検証   | 追加件数 | 確認内容                                                                                                               |
+| ------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| R42-01 | 3        | Promise解決前、解決後、Timer予約直後のMicrotaskで再判定要求を20回集約。再判定後の将来Timerも発火し、消失しない         |
+| R42-02 | 1        | 集約された0ms再判定と、続く最短1ms Timerの発火を分離して確認                                                           |
+| R42-03 | 2        | 完了前・予約直後のstopが勝ち、追加Task・Timerが発生しない                                                              |
+| R42-04 | 1        | 完了後の再予約に対して古いCallbackを呼んでも、新しいTimerが消えない                                                    |
+| R42-05 | 1        | Fake Timerを解除した実Node Timerで、登録後に同期処理を10ms続けても割込みなし。20回の連続再判定と追加の再判定が進行する |
+
+追加8件によりScheduler関連は65件となる。これらはHTTP・Quota・Tx-A・C1-29の実Provider送信安全性を検証するものではなく、上記の後続統合待ちの分類を変更しない。
+
 ## 品質確認と残作業
 
-Windows：Scheduler関連57件成功。全体356件成功・Linux専用46件Skip（合計402件）。Lint / Format / Type Check / Backend Build成功。Linux実Process試験の結果はPRのCIを別途参照する。
+Windows：Scheduler関連65件成功（既存57件＋追加8件）。全体364件成功・Linux専用46件Skip（合計410件）。Lint / Format / Type Check / Backend Build成功。Linux実Process試験の結果はPRのCIを別途参照する。
 
 PR-BのPublished State保存53件・Read66件、Cache Repository80件・Cache Entry29件を回帰確認。日時関数の移動以外にPR-Bの証跡・Transaction・Generation・TTL・DB処理は変更していない。設計正本、DDL、Migration、依存関係、HTTP Routeも変更していない。
 
