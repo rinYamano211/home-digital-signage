@@ -2710,9 +2710,10 @@ C-Impl-3のmain反映を前提として、以下を詳細設計として確定�
 
 - PermitはProcess内の不透明Objectとし、WeakMap等によるObject identity・内部状態で検証する。永続Permit Table・署名付きTokenは採用しない。Quota Reservation EvidenceやSequence単体はSend Permitではない。
 - 発行後は即時・一度だけ消費し、偽造、別Attempt / Provider / Sequence / Connection世代、旧Send Epoch、再利用を拒否する。
-- Send Gateが最終判定・Permit消費・fetch開始を同期的に連続実行する。最終判定から`fetch()`呼出しまでawaitを挟まない。開始Callbackは事前の非同期処理なしで同期的にfetchを呼び、そのPromiseを返す契約とする。
+- 本番のHTTP開始経路ではSend Gateが信頼済みHTTP開始Adapterを使用する。AdapterはGateの最終判定・Permit消費の直後、awaitや非同期処理を挟まず同期的に`fetch()`を呼び、そのPromiseを返す。任意の外部Callbackを、本番の安全性を保証する境界として無条件に受け入れない。
 - 同期例外でもPermitを再利用不可とし、Commit済みQuota履歴を取り消さない。同期Callbackの再入もテスト対象とする。
-- TypeScriptの型だけではCallback内部の任意処理を完全に制限できない。上記は実装する呼出経路の契約・テストで保証する境界であり、型によって任意Callbackの動作まで保証したとはしない。
+- TypeScriptの型だけではCallback内部の任意処理や同期開始を保証できない。信頼済みAdapterを使う実装上の呼出経路・コードレビュー・テストで上記契約を検証する。Adapterの具体的なAPI・型名・配置は既存実装と整合させて実装時に確定する。
+- 保証対象はApplicationによるfetch呼出し開始の順序に限る。物理的なネットワーク送信時刻やProvider側のQuota計上時刻まで保証しない。
 
 **Step 3：停止競合とProvider in-flight**
 
@@ -2731,7 +2732,14 @@ Providerごとの未終了Requestは最大1件とする。fetchのPromise resolv
 
 **Step 4：Clock Trust / History Trust**
 
-詳細と暫定値は[Clock Trust・History Trust](#pr-c-c3-clock-history-trust)を正本とする。Clock監視はBackend Process内でCommon Time ModuleのOS時刻・単調時計を利用する。起動時UNVERIFIED、TRUSTEDだけが送信条件を満たし、異常・観測欠落・確認不足・鮮度切れはFail Closed。Gate直前も確認し、異常検出でGateを閉じ旧送信権限を失効させる。
+詳細と暫定値は[Clock Trust・History Trust](#pr-c-c3-clock-history-trust)を正本とする。Clock監視はBackend Process内でCommon Time ModuleのOS時刻・単調時計を利用する。起動時UNVERIFIED、TRUSTEDだけが送信条件を満たし、異常・観測欠落・確認不足・鮮度切れはFail Closed。Clock / History Trustの監視・判定責務と、Gateの送信権限制御責務を分離する。
+
+- Trust監視・判定側は失効を検出した場合、Gateへ失効を通知し、Gateは通知に対して同期的に閉鎖する。Gate自身が送信直前の最終確認でTrust異常・鮮度切れを検出した場合も、新規送信を禁止して同じ閉鎖・旧権限失効処理を行う。
+- 閉鎖時はGateがsendEpochを更新し、未使用Permit・旧Attemptを失効させる。Trust回復後も旧権限は復活させない。
+- Trust起因の停止理由は、Global / Providerという既存の影響範囲上でも管理停止等の他理由と区別して保持する。各Trustの監視・判定責務が自身の理由を所有し、必要な確認条件が成立した場合に限り、その理由の解除を要求できる。他の責務による無条件解除や、一理由の解除による他理由の解除を認めない。Gateは再開前にも必要なTrust・鮮度と残る停止条件を確認し、未確定条件があれば閉鎖を維持する。具体的な管理確認・回復手順をここで追加決定しない。
+- Trust失効による閉鎖時、対象Providerに開始済み・未終了のHTTP Requestがある場合、GateはAbortを要求する。失効がfetch開始に先行すれば新規開始禁止、fetch開始が先なら既開始RequestとするStep 3の順序を維持する。Abort要求だけで終了扱いせず、ABORT_REQUESTEDもin-flight占有中とし、Bodyを含むLifecycle終了確認は既存HTTP・F-03と後続Lifecycleの責務を維持する。
+
+同期閉鎖は失効の検出・通知後のApplication内制御である。定期監視の観測間隔中に発生した未検出の時計異常や外部状態変化まで即時に把握し、完全に防止できるという保証はしない。
 
 History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立確認とし、UNVERIFIED / TRUSTED / SUSPENDED等の論理状態はDBのhistory_statusと同一視しない。時計の安定観測だけではHistory Trustを自動回復せず、不明履歴を削除・初期化しない。OS同期状態の取得方法、RTC-only送信許可条件、History Trustの管理確認・回復手順は未確定であり、確認不能な環境では送信禁止とする。
 
@@ -2748,13 +2756,13 @@ History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立�
 | 群 | 必須検証観点 |
 |---|---|
 | T1：Permit / Evidence | 偽造、別Attempt・Provider・Sequence・Connection世代、二重消費、旧Send Epoch、Tx-Q非saved結果を拒否 |
-| T2：停止競合・in-flight | 停止先行・fetch先行、Abort要求後も占有、未終了Request、Stop → Resume、同期Callback再入・同期例外 |
-| T3：Clock / History Trust | 起動直後、観測欠落、OS確認期限切れ、時計前後ジャンプ、回復後60秒未満、History未確認、Trust失効競合 |
+| T2：停止競合・in-flight | 停止先行・fetch先行、Abort要求後も占有、未終了Request、Stop → Resume。信頼済みAdapterの同期fetch開始、fetch前に非同期処理を挟む実装を本番経路として許可しないこと、同期例外・再入でもPermit再利用不可。保証対象は最終判定後のApplication内fetch呼出し開始順序 |
+| T3：Clock / History Trust | 起動直後、観測欠落、OS確認期限切れ、時計前後ジャンプ、回復後60秒未満。監視側の失効検出・通知による同期閉鎖、Gate最終確認での異常・鮮度切れ検出、Send Epoch更新・旧Permit失効、回復後の旧Attempt / Permit再利用禁止、複数停止理由の独立性、既開始RequestへのAbort要求とin-flight維持。Clock回復後もHistory未確認なら送信禁止 |
 | T4：F-02 / Cooldown | 0 / 999,999,999 / 1,000,000,000 / 1,000,000,001ns、負値・不正値・取得失敗、5秒境界、Provider共有待機、再起動非復元 |
 | T5：Transaction / Quota非破壊 | Gate拒否・遅延超過・停止・Abort・fetch同期例外でも履歴保持。Tx-Q再予約・Sequence再利用なし |
 | T6：既存回帰 | PR-B・C-1・C-2・C-Impl-3契約維持。HTTP未開始ではC-2 Backoff更新・Pending生成なし |
 
-テスト用Clock・OS状態・HTTP Callbackの差し替えを、本番のTrust確認経路から分離する。独立制御の実装完了と、OS確認・実Provider送信可能な本番統合完了を区別する。OS同期取得方法が未確定のまま、無条件TRUSTEDで統合完了扱いにしない。
+テスト用Clock・OS状態・HTTP Callbackの差し替えを、本番のTrust確認経路および信頼済みHTTP開始Adapterの経路から分離する。独立制御の実装完了と、OS確認・実Provider送信可能な本番統合完了を区別する。OS同期取得方法が未確定のまま、無条件TRUSTEDで統合完了扱いにしない。
 
 **後続工程・未確定事項**
 
@@ -2783,7 +2791,7 @@ HTTP失敗・Timeout・Abort・Gateでの送信中止など、実際に送信し
 
 Providerの同時HTTP取得は最大1件とする。Tx-Q Commit成功後、HTTP開始直前にSend Gateで最終判定し、Process内のPermitを発行して即時消費する。永続Permit Tableは追加しない。
 
-最終判定からfetch()呼出しまでの同期区間にawaitを挟まない。attemptId、quotaSequence、connectionGeneration、sendEpoch、使用状態を検証し、Commit成功確定・停止条件・Trust・同時取得制限に加え、[F-02](#pr-c-c3-f02-delay-margin)の経過時間チェックを満たす送信権限だけを使う。Permitの偽造・別Attempt / Sequence / Connection世代・失効済み権限・再利用を拒否する。Gateの具体的な型名・公開API細部は実装時に確定する。Object identity等の今回の詳細設計は[C-Impl-4](#pr-c-c-impl-4-send-gate-trust)に従う。
+最終判定からfetch()呼出しまでの同期区間にawaitを挟まない。attemptId、quotaSequence、connectionGeneration、sendEpoch、使用状態を検証し、Commit成功確定・停止条件・Trust・同時取得制限に加え、[F-02](#pr-c-c3-f02-delay-margin)の経過時間チェックを満たす送信権限だけを使う。Permitの偽造・別Attempt / Sequence / Connection世代・失効済み権限・再利用を拒否する。Gateの具体的な型名・公開API細部は実装時に確定する。Object identity、信頼済みHTTP開始Adapter、Trust失効時の通知・同期閉鎖・旧権限失効は[C-Impl-4](#pr-c-c-impl-4-send-gate-trust)に従う。
 
 Global停止理由とProvider停止理由を独立管理し、一方の解除で他方の停止を解除しない。停止・Recoveryで旧送信権限を失効させ、解除後も旧Attempt・旧Permitを復活させない。Connection世代変更後は旧予約・旧検証結果を使い回さない。
 
@@ -2824,7 +2832,7 @@ Resumeは明示的な管理操作であり、ACTIVEのCommit成功を確認す�
 
 #### Clock Trust・History Trustと暫定設定
 
-Provider送信用Clock Trustは、Backend Process内の監視コンポーネントがCommon Time ModuleのOS時刻・単調時計（Date.now()・process.hrtime.bigint()）を利用し、経過差分、観測欠落、OS時刻情報の信頼性・同期確認の鮮度を評価する。Quota Guardへ判定ロジック全体を混在させず、独立した確認責務とする。時計異常時はProviderの新規Tx-Q・HTTP送信を抑止し、その異常だけでC-2のnextAttemptAt・consecutiveFailuresを更新しない。独立Processや新しい常駐Serviceを追加しない。Clock Trustは起動直後UNVERIFIEDとし、TRUSTEDのみ送信条件を満たす。異常・観測欠落・確認不足はFail Closed、監視結果の鮮度をGate直前にも確認する。時計異常検出時はGateを閉じ、旧送信権限を失効させる。
+Provider送信用Clock Trustは、Backend Process内の監視コンポーネントがCommon Time ModuleのOS時刻・単調時計（Date.now()・process.hrtime.bigint()）を利用し、経過差分、観測欠落、OS時刻情報の信頼性・同期確認の鮮度を評価する。Quota Guardへ判定ロジック全体を混在させず、独立した確認責務とする。時計異常時はProviderの新規Tx-Q・HTTP送信を抑止し、その異常だけでC-2のnextAttemptAt・consecutiveFailuresを更新しない。独立Processや新しい常駐Serviceを追加しない。Clock Trustは起動直後UNVERIFIEDとし、TRUSTEDのみ送信条件を満たす。異常・観測欠落・確認不足はFail Closed、監視結果の鮮度をGate直前にも確認する。時計異常を含むTrust失効時の監視側通知・Gate最終確認・同期閉鎖・Send Epoch更新・旧権限失効・開始済みRequestへのAbort要求と停止理由の所有は[C-Impl-4 Step 4](#pr-c-c-impl-4-send-gate-trust)に従う。検出・通知後の制御であり、観測間隔中の未検出異常まで完全防止する保証ではない。
 
 表示用時刻の利用可否は[Architecture 10.2](architecture.md#102-時刻同期rtcと利用可否)に従う。OS / RTCの利用可能な時刻は時計・日付表示に使え、現在ネットワーク同期できないことだけを理由に表示用時刻を無効化しない。一方、Provider送信用Clock TrustにはQuota窓を安全に判定するための追加確認が必要で、RTC時刻が表示に使えるだけでは送信を許可しない。RTCだけで送信許可できる具体条件やOS同期確認の実装方法は今回確定しない。
 

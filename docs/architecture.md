@@ -1481,7 +1481,9 @@ Quota履歴・MetadataのSchema v2設計、送信前Tx-Q、Process内Send Permit
 
 Provider Send GateはBackend Process内の独立した責務を持つコンポーネントとし、Coordinator・Quota Repositoryへ混在させない。Quota Repository / Guardは永続予約・Quota判定、Gateは送信直前の判定・Permit・停止・Provider in-flight・F-02 Cooldownを担当する。Clock / History Trustの確認とSchedulerは別責務を維持する。既存beginAttempt / reserve / inspectReservation / endAttemptを接続点とし、Quota予約証拠とSend Permitを区別する。
 
-Gateは最終判定・一度限りのPermit消費・fetch開始をawaitなしで連続実行する。停止受付で同期的に閉じ、Send Epochを更新し、旧権限を復活させない。Providerごとの未終了Requestは最大1件とし、Abort要求・fetch Promise resolveだけではBodyを含むLifecycle全体の終了とみなさない。管理停止の永続化・厳格な停止完了・HTTP終端とTx-A / Tx-P / Pendingは既存F-03と後続工程の責務を維持する。
+Gateは本番の信頼済みHTTP開始Adapterを使い、最終判定・一度限りのPermit消費・fetch呼出しをawaitなしで連続実行する。任意の外部Callbackを無条件に本番の安全境界とせず、型だけでは保証できない同期開始契約を実装経路・レビュー・テストで確認する。保証対象はApplicationのfetch呼出し開始順序であり、物理送信・ProviderのQuota計上時刻ではない。停止受付で同期的に閉じ、Send Epochを更新し、旧権限を復活させない。Providerごとの未終了Requestは最大1件とし、Abort要求・fetch Promise resolveだけではBodyを含むLifecycle全体の終了とみなさない。管理停止の永続化・厳格な停止完了・HTTP終端とTx-A / Tx-P / Pendingは既存F-03と後続工程の責務を維持する。
+
+Clock / History Trust監視・判定側は失効をGateへ通知し、Gateが同期的に閉鎖・Send Epoch更新・旧権限失効を行う。Gateの最終確認で異常・鮮度切れを検出した場合も同じ制御とする。対象Providerに未終了HTTPがあればGateがAbortを要求し、Lifecycle終了までは占有を維持する。各Trustの判定責務が自身の停止理由・解除条件を所有し、他の停止理由を解除せず、回復後も旧Attempt / Permitを復活させない。これは検出・通知後のApplication内制御であり、監視間隔中の未検出の外部変化を即時に把握する保証ではない。
 
 今回確定したStep 1〜6、Permit・Trust・F-02境界・テスト計画は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-4-send-gate-trust)を正本とする。C-Impl-4の実装・テストは未実施。OS同期取得方法、RTC-only送信許可、History Trustの管理確認・回復手順は未確定で、確認不能なら送信しない。独立制御の完成と、実Provider Client・Coordinator・Startup / Management Stop・Recoveryを含む本番統合の完成を区別する。今回コード・DB操作・実APIアクセス・実機検証は行わない。
 
