@@ -9,7 +9,8 @@ import { ClockTrustMonitor, HistoryTrustMonitor } from "./trust.js";
 import { PermitRegistry } from "./permits.js";
 
 /** Internal trusted wiring only. Production has no HTTP adapter in C-Impl-4.
- * start must call fetch synchronously and return its Promise. lifecycleEnded is
+ * start must call fetch synchronously and return the Adapter result Promise
+ * (after Body/Lifecycle processing), not the native Headers Promise. lifecycleEnded is
  * called only after the entire Request (including Body/cancellation) has ended.
  * A Promise resolution/rejection alone is NOT lifecycle completion.
  */
