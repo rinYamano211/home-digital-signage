@@ -33,6 +33,26 @@ Headers受信・Timeout通知・Abort要求だけでは終端確定しない。�
 
 設定検証は原則生成時。startは同じ同期呼出し内でfetchを実行し、Headers以降の非同期処理を分離する。事前準備がSignalやRequest構築を伴う場合も、Permit消費後にawaitで開始を遅らせない。開始前の例外、fetchのReject、部分開始を否定できない同期throwを混同しない。
 
+## Body上限の暫定運用値と検証待ち事項
+
+本番Body上限は未採用の状態から、次の暫定運用値を採用済み・実API計測による最終確認待ちへ更新する。正本は[technology-stack.mdのC-Impl-5A](../technology-stack.md#pr-c-c-impl-5a-http-lifecycle)。実装・実Provider計測・境界試験の成功を意味しない。
+
+| 対象                                            | 暫定上限値                                  |
+| ----------------------------------------------- | ------------------------------------------- |
+| Adapter共通絶対上限                             | 1 MiB（1,048,576 bytes）                    |
+| Open-Meteo（Current / Hourly / Weekly Weather） | 256 KiB（262,144 bytes）                    |
+| Tomorrow.io（RainForecast）                     | 256 KiB（262,144 bytes）                    |
+| Google Calendar                                 | 1 MiB（1,048,576 bytes）／HTTP Response単位 |
+
+maxBodyBytesはAdapter生成時に検証し、共通絶対上限を超える設定は禁止する。Provider設定の選択はAdapter外側の責務とする。実受信Byte数を累積し、上限ちょうどを許容、1 Byte超過でbody_too_largeとする。圧縮時はアプリケーションに渡される展開後Bodyを対象とし、Content-Lengthによる早期判定だけで実Byte検査を省略しない。上限超過後もAbort / Cancel等の所有処理が未終了ならLifecycle通知・Flight解放を行わない。プロセス全体のメモリ上限を保証する設定ではない。
+
+以下は既存H5A-I10等に沿う今後の検証観点であり、新しいテスト実施・PASSを記録するものではない。
+
+- 設定値と共通絶対上限の関係、上限ちょうど／1 Byte超過、Content-Lengthあり／なし、展開後Bodyの実Byte判定を確認する。
+- 実Provider接続時に受信Byte数、応答サイズの変動、通信時間、メモリ使用量、上限境界値を測定し、暫定設定の妥当性を再評価する。
+- Calendarは各HTTP Responseに適用し、ページ単位と全ページ累積量を測定する。全ページ累積Byte数・最大ページ数・最大イベント数の上限は後続Schedule統合工程で検討する。
+- 前回EXP-11・12の32-byte上限は合成実験値のまま保持し、今回の256 KiB／1 MiBの実測証拠として流用しない。内部buffer・圧縮展開・JSON展開を含む総メモリの保証としない。
+
 ## 現行Gateの終了・throw・再入のコード照合
 
 | 経路                          | 実際の制御と必要な検証                                                                             |
@@ -162,7 +182,7 @@ H5A-01〜23は正式本文をGitHubで確認できない過去の検討観点で
 | H5A-I07 | C-Impl-5A Gate結合・C-Impl-5C           | 内部終端確定→Lifecycle確認・Gate通知→Promise配送→CoordinatorのTx-A再判定。通知と配送の間の管理停止・別試行を検証し、Gate解放を保存許可にしない                                                | HTTP-02・07、SG-01・02・05、F03-01・02・12 | 5Aは順序・間隙のFake結合、実Coordinator・停止とTx-A開始登録は5Cで検証。後続統合未実施                |
 | H5A-I08 | C-Impl-5A Adapter単体・Gate結合         | 終了未確認Timeout / AbortはPending・Flight保持。Signal失効・Rejectだけで通常完了にしない                                                                                                      | HTTP-01〜03、SG-01・06・09                 | EXP-08・18。実Adapter結合は未検証                                                                    |
 | H5A-I09 | C-Impl-5A Adapter単体・C-Impl-5C        | 429 / 500のresponse、Body失敗・超過時のhttp保持、未解釈Retry-Afterを検証。429 Body失敗にも有効Retry-After、Timeout終了先行ならTimeout優先、制御Abort終了先行ならControl非更新、確定後変更なし | HTTP-02〜04、SCH-02・03、C2-22             | EXP-04・05は正常Body範囲のみ。新しいBody失敗時優先順位は今回設計確定・未検証。待機計算・Tx-A結合は5C |
-| H5A-I10 | C-Impl-5A Adapter単体                   | Content-Length早期拒否と実Byte累積、body_too_largeとcleanup完了を分離                                                                                                                         | HTTP-01・02、SG-01                         | EXP-11・12は合成上限32。本番値・圧縮等は未確定／未検証                                               |
+| H5A-I10 | C-Impl-5A Adapter単体                   | Content-Length早期拒否と実Byte累積、body_too_largeとcleanup完了を分離                                                                                                                         | HTTP-01・02、SG-01                         | EXP-11・12は合成上限32。本番値は暫定採用済み・実測確認待ち。圧縮等は未検証                           |
 | H5A-I11 | C-Impl-5A Gate結合・C-Impl-5C           | AdapterはBackoff・Quota・Tx-A / Tx-Pを操作しない。停止・拒否・Abort等でも消費維持                                                                                                             | TQ-04、SG-03・04・08・09、HTTP-04〜07      | 5Aは副作用なしの結合検証、実Quota / SQLite・Tx-Aは5C。HTTP単独でPASSにしない                         |
 | H5A-I12 | C-Impl-5A Adapter単体・公開境界レビュー | HttpOutcomeだけを公開しResponse / Stream / Reader / Secret / 元例外の漏洩なし                                                                                                                 | HTTP-07、SG-02                             | 型・返却値・ログは実Adapter実装時に検証                                                              |
 
@@ -191,16 +211,16 @@ H5A-01〜23は正式本文をGitHubで確認できない過去の検討観点で
 
 今回、HttpMetadataの独立保持と429 Body失敗時優先順位、4段階の通知／保存境界、正式受入H5A-I01〜12への正本整理を確定し、従来の「Body失敗メタデータは要確認」「内部確定記録のInterface未固定を理由に順序全体を未決」とした説明を更新した。新たな公開Callback・永続Table・独自終端時刻Tokenは不要とする。実装済み・テストPASSを意味しない。
 
-| 未決事項・注意点                                                                                  | 確認工程                                                    |
-| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| 本番Body Byte上限の具体値。実験用32 bytesを流用せず、圧縮・buffer・JSON展開の総メモリ保証としない | C-Impl-5A実装前の設定検討・単体検証                         |
-| EXP-08の原因、Node / Undici一般的再現性、最小再現                                                 | C-Impl-5Aの追加検証および後続環境検証。未解決時の保持は維持 |
-| Linux / Pi、実Provider・TLS・ProxyのLifecycle挙動                                                 | 後続実機・Provider検証。Windowsローカル実測だけで保証しない |
-| Signal原因と実際のfetch / readエラーの因果を確認する実装条件                                      | C-Impl-5AのFI・HTTP単体／Gate結合で、確定した優先順位を検証 |
-| Coordinatorの具体構造、停止再確認・Tx-A開始登録の同期競合制御、厳格な停止完了追跡                 | C-Impl-5C以降。既存F-03境界を変えずに統合                   |
-| Clock / History Trust本番配線・確認事実の供給                                                     | C-Impl-5B。既存core単体と本番確認を区別                     |
-| 生fetch Promise返却と読めるソースコメントの明確化                                                 | C-Impl-5A実装時。シグネチャ・Gateアルゴリズムは維持         |
-| 旧H5A-01〜23の確認不能な個別本文・番号対応                                                        | 過去観点として未照合。正式受入の必須IDへ推測で昇格しない    |
+| 未決事項・注意点                                                                                      | 確認工程                                                    |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| 本番Body Byte上限は暫定採用済み。実験用32 bytesを流用せず、共通上限・Provider値の妥当性を最終確認する | C-Impl-5A実装時の境界検証・実Provider計測、後続Schedule統合 |
+| EXP-08の原因、Node / Undici一般的再現性、最小再現                                                     | C-Impl-5Aの追加検証および後続環境検証。未解決時の保持は維持 |
+| Linux / Pi、実Provider・TLS・ProxyのLifecycle挙動                                                     | 後続実機・Provider検証。Windowsローカル実測だけで保証しない |
+| Signal原因と実際のfetch / readエラーの因果を確認する実装条件                                          | C-Impl-5AのFI・HTTP単体／Gate結合で、確定した優先順位を検証 |
+| Coordinatorの具体構造、停止再確認・Tx-A開始登録の同期競合制御、厳格な停止完了追跡                     | C-Impl-5C以降。既存F-03境界を変えずに統合                   |
+| Clock / History Trust本番配線・確認事実の供給                                                         | C-Impl-5B。既存core単体と本番確認を区別                     |
+| 生fetch Promise返却と読めるソースコメントの明確化                                                     | C-Impl-5A実装時。シグネチャ・Gateアルゴリズムは維持         |
+| 旧H5A-01〜23の確認不能な個別本文・番号対応                                                            | 過去観点として未照合。正式受入の必須IDへ推測で昇格しない    |
 
 PR-Dの公開・Pending、PR-Eの継続Recovery / Backup、F-03の厳格な停止完了とStartup / Management Stop統合は既存境界を維持する。AdapterにDB・Backoff更新を移さず、不明な意味論をCodexが独断で補完しない。
 

@@ -2885,7 +2885,18 @@ Headersだけ、abort()返却だけ、Timeout Signalだけ、reader.cancel()呼�
 
 AbortSignal.timeout(10_000)とGate SignalのAbortSignal.any合成を基本案とし、同期start内でfetch開始に近接して用意する。同一SignalをHeaders後の必要Body読込みまで保持し、Headers受信時にTimeoutを解除・取り直さない。Timeout後も終端未確認ならFlightを保持し、Commit済みQuota履歴を取り消さない。Timeout・制御Abortの因果と最初の実際の終端を確認してU-08に従う。Timer・同期処理・Event Loop遅延による非厳密性、同期JSON解析の強制中断不能を区別する。
 
-Bodyの最大Byte数はAdapter生成時の設定で検証する。本番の具体値は根拠不足のため未確定。Content-Lengthは早期拒否の補助であり、信用して読込み検証を省略しない。実受信Uint8Array.byteLengthを累積し、超過chunkを採用bufferへ追加せずbody_too_largeを保持してAbort / Cancel・終端確認を行う。圧縮展開・内部buffer等も含む総メモリ保証とはしない。BodyはAdapterのみが所有し、Response / Readerを外部へ渡さず、clone / tee / 二重消費を導入しない。JSON ParseとDomain Schema / Semantic Validationは後続責務とする。
+Bodyの最大Byte数はmaxBodyBytesとしてAdapter生成時に検証し、Providerごとの設定値はAdapter外側で選択する。次を実API計測前の暫定運用値として採用し、共通絶対上限を超える設定は禁止する。正式な最終運用値・実測保証値とは扱わない。
+
+| 対象 | 暫定上限値 |
+|---|---|
+| Adapter共通絶対上限 | 1 MiB（1,048,576 bytes） |
+| Open-Meteo（Current / Hourly / Weekly Weather） | 256 KiB（262,144 bytes） |
+| Tomorrow.io（RainForecast） | 256 KiB（262,144 bytes） |
+| Google Calendar | 1 MiB（1,048,576 bytes）／HTTP Response単位 |
+
+実際に受信したUint8Array.byteLengthを累積し、上限ちょうどは許容、1 Byte超過でbody_too_largeとする。圧縮時はアプリケーションに渡される展開後Bodyを計測する。Content-Lengthは早期拒否の補助に留め、実Byte検査を省略しない。超過chunkを採用bufferへ追加せず、Abort / Cancel後も所有処理の終了確認前にLifecycle終了通知を行わない。Body上限は内部buffer・圧縮展開・JSON展開等を含むプロセス全体のメモリ上限を保証しない。BodyはAdapterのみが所有し、Response / Readerを外部へ渡さず、clone / tee / 二重消費を導入しない。JSON ParseとDomain Schema / Semantic Validationは後続責務とする。
+
+Google Calendarの上限は各HTTP Responseに適用し、全ページ累積Byte数・最大ページ数・最大イベント数は後続のSchedule統合工程で検討する。実Provider接続時に、受信Byte数・応答サイズの変動・通信時間・メモリ使用量・上限境界値と、Calendarのページ単位／全ページ累積量を測定し、設定値の妥当性を再評価する。暫定値採用は実装・境界試験・実Provider計測の完了を意味しない。
 
 **実測と実装前の未決事項**
 
@@ -2893,7 +2904,7 @@ Node.js 24.14.0 / Undici 7.21.0でEXP-01〜18（variant・Fault Injectionを含�
 
 C-Impl-5Aの正式なInterface受入条件はH5A-I01〜H5A-I12とし、既存SG-01〜09、HTTP-01〜07、TQ-04等、F03、C1・C2・SCH条件も正式契約として維持する。H5A-01〜23は正式本文がGitHubで確認できない過去の検討観点であり、独立した正式受入IDとはしない。検討内容は破棄せず、確認可能な観点を専用文書で正式条件へ対応付け、不明な個別対応は未照合とする。既存の正式IDの削除・再採番・意味変更をしない。
 
-今回、HttpMetadataによるBody失敗時の429通知と分類優先順位、4段階の責務・停止競合、正式Interface受入条件を確定し、これらの未決扱いは解消した。本番Body Byte上限はC-Impl-5A実装前の設定検討、EXP-08の原因・Node / Undiciでの一般的再現性、Linux / Pi・実Provider / TLS / Proxy挙動は後続環境検証へ残す。Signal原因と実際の終了の因果を確認する実装条件は、上記の優先順位を守ってC-Impl-5AのFI・HTTP単体／Gate結合で検証する。Clock / History Trust本番配線はC-Impl-5B、Coordinatorの具体構造・Quota / SQLite・Tx-A開始・F-03統合はC-Impl-5C以降とし、推測で実装確定しない。
+今回、HttpMetadataによるBody失敗時の429通知と分類優先順位、4段階の責務・停止競合、正式Interface受入条件を確定し、これらの未決扱いは解消した。本番Body Byte上限は上記の暫定値を採用済みで、実Provider計測による最終運用値の確認待ちとする。EXP-08の原因・Node / Undiciでの一般的再現性、Linux / Pi・実Provider / TLS / Proxy挙動は後続環境検証へ残す。Signal原因と実際の終了の因果を確認する実装条件は、上記の優先順位を守ってC-Impl-5AのFI・HTTP単体／Gate結合で検証する。Clock / History Trust本番配線はC-Impl-5B、Coordinatorの具体構造・Quota / SQLite・Tx-A開始・F-03統合はC-Impl-5C以降とし、推測で実装確定しない。
 
 C-Impl-5A Adapter単体とGate結合、C-Impl-5B Trust本番配線、C-Impl-5CのCoordinator / Quota・SQLite / Tx-A / F-03統合、後続の実機・Provider検証を分ける。実Provider通信・Domain変換・本番Factoryの送信可能化・PR-D / PR-Eの実装は今回の対象外である。
 
