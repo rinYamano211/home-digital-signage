@@ -1,5 +1,7 @@
 # C-Impl-5A HTTP Adapter / Lifecycle：詳細設計・実測・検証計画
 
+以下の設計・実測・受入計画はPR #48 / #49時点の記録として維持する。C-Impl-5A実装後の検証状態・証拠・後続範囲は末尾の「C-Impl-5A実装・受入検証」を参照する。正式受入条件の本文・IDは変更しない。
+
 設計正本は[technology-stack.md §23.11](../technology-stack.md#pr-c-c-impl-5a-http-lifecycle)、同§23.3・23.8・23.10・F-03、[architecture.md](../architecture.md)。基準mainはe9259f670a8033a57f1b9d4d4905ab6cf32f67ab。Issue #16 / PR-C全体を完了扱いにしない。本書は今回の文書反映、前回のローカル実測、既存コード読取り、未実装の受入計画を区別する。
 
 ## 参照範囲と採用状態
@@ -229,3 +231,65 @@ PR-Dの公開・Pending、PR-Eの継続Recovery / Backup、F-03の厳格な停�
 PR #48初回作成時に最新main・関連PR・実装と前回実測ログを確認した。今回の修正は既存PR #48の最新Head・差分と関連契約を再確認し、対象2文書のC-Impl-5A説明のみを更新する。既存C-1 / C-2 / F-01〜03 / U-12・SG・HTTP・TQの本文・IDは維持し、Body失敗時の429優先順位を今回の追加確定事項として区別する。Architectureは既存の所有権境界が成立するため変更しない。
 
 本番コード・テストコード・DDL・Migration・依存・Workflow・Issue #16は変更しない。今回はHTTP実験・既存テスト再実行・実機・実Provider通信は行っていない。PR #48の既存ブランチへ追加Commitし、新規PR作成・main直接Push・Mergeは行わない。
+
+## C-Impl-5A実装・受入検証
+
+基準mainはPR #49のMerge Commit `3d2967cfd338a8e53d6a1098e0644e09c4fba670`。上記の設計時点記録・EXP証拠を保持し、以下を新しい実装検証記録として追加する。H5A-I01〜12の本文・IDを再定義せず、5Aの担当範囲と後続5B / 5Cを区別する。
+
+### 実装・Interface照合
+
+- `src/backend/http/outcome.ts`に設計どおりのHttpMetadata / HttpOutcomeを定義した。statusと未解釈retryAfter、上限内Uint8Array以外のResponse / Reader / Stream / 元例外を外へ返さない。
+- `http/internal/native-http-adapter.ts`のNativeHttpAdapterがBody・Reader・取消しを単独所有する。startは非asyncで同じ同期呼出し内にfetchを開始し、Headers Promiseは内部所有、外部へPromise<HttpOutcome>を返す。既存Promise<unknown>と互換であり、Gateのコード変更はInterfaceコメントの明確化だけ。
+- `http/native-http-adapter.ts`のcreateHttpAdapter(config)はNode.js native fetch・AbortSignal.timeout(10_000)・AbortSignal.anyを使用する。Provider URL / Headers / maxBodyBytesの選択は外側で行う。本番Gate Factory・Trust・Coordinator・Startupへ結線しない。GETのnative fetch呼出しを提供するだけで、Domain Clientや実Provider API統合は追加しない。
+- 設定URL・Headers・Byte上限は生成時に検証・固定する。maxBodyBytesは非負の安全整数・共通絶対上限1,048,576以下。0はBodyなしのみ許容する上限として扱う。Provider暫定値の自動選択やCalendarページ累積制御は追加しない。
+- 実Byteを累積し、超過chunkは採用bufferへ入れず、responseは読み取り済みchunkをcopyして構築する。Content-Lengthは有効な非圧縮長の早期拒否補助だけに使い、Content-Encodingありでは展開後Byteの実検査を優先する。総メモリ上限保証ではない。
+- native fetch同期throwは部分開始を否定できず、通知せずsanitized同期例外とする。fetch呼出し前のSignal準備失敗だけは所有HTTP処理なしと確認し、同期終了通知後にsanitized例外とする。Promise RejectはHeaders前の実fetch終了、Body readはreadと本来のclosedの終了を別々に確認する。
+- 監視用Signal失効だけで終了にしない。エラーと合成Signal reasonのObject identityが一致する場合にのみTimeout / Abort因果を採用し、無関係なTypeError等を遡って変換しない。Windows native Body Timeout / Abortでreason identityを確認し、Fault Injectionでも一致・不一致と順序を検証した。実Provider・TLS・Proxy・他Runtimeで同じ因果表現になる一般保証はしない。
+- read / cancelと、releaseLock前に取得した本来のreader.closedを確認する。Cancel Rejectだけで完了せず、本来のStreamエラーと同一の例外であること等を要求する。終了根拠が不足・矛盾すればPendingとし、lock解放で人工的な終了根拠を作らない。
+- 終端分類・Metadataを固定し、所有処理終了確認→lifecycleEnded通知→結果Promiseのresolveを行う。通知後に追加の外部Callbackやawaitを挟まない。通知失敗等の内部違反は汎用ErrorでRejectし、元の例外やURL・Credentialを返さない。終了不明を成功・通知へ変換しない。
+
+### 新規テスト一覧・証拠
+
+すべての実通信は127.0.0.1の一時Port。Provider・APIキーは使用していない。
+
+| ファイル                                  | 件数 | 主な検証                                                                                                                                                                                                              |
+| ----------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| tests/backend/http-adapter.test.ts        | 57   | 生成時検証、同期start、開始前／部分開始不明、fetch Reject、単独所有、Bodyなし、429 / 500、Abort / Timeout因果、Byte境界、Content-Length、Cancel Pending / Reject、readとclosedの独立終了、通知最大1回、内部例外非露出 |
+| tests/backend/http-adapter-native.test.ts | 9    | native localhost 200 / 429 / 500、HeadersとBodyの別終了、Abort、切断Body、gzip展開後の上限ちょうど／超過、Headers後も同じ実10秒Timeout                                                                                |
+| tests/backend/http-adapter-gate.test.ts   | 11   | Permit消費→fetch→Gate復帰の同期順序、再入、準備失敗・部分開始不明、Pending read / cancel、Abort保持、通知と配送の間の別試行・管理停止、finish後例外・cleanup異常、消費履歴維持・Control非更新                         |
+
+Test Doubleはtests/support/http-adapter-fixture.tsとinternal HttpRuntime境界へ分離。本番createHttpAdapterにfetch / Timeout / Signalの注入設定を公開しない。既存send-gate-fixtureは変更せず再利用する。FIのPending観測にはイベント／PromiseとsetImmediateのcheckpointを用い、固定Sleep・無効化・本番の追加解放Timeoutを導入しない。
+
+### H5A-I01〜12：今回の5A検証結果
+
+PASSは記載のNode.js / localhost / FI / Gate結合範囲であり、実Provider・実機・5C統合を含まない。正式条件本文は上記の設計表を維持する。
+
+| ID      | 結果       | 根拠・後続範囲                                                                                                                                                               |
+| ------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H5A-I01 | PASS（5A） | 同じ同期呼出しでfetchを開始。native localhostと実Adapter＋Gate / FIの開始観測                                                                                                |
+| H5A-I02 | PASS（5A） | Permit consume→fetch→Gate returnが先行し、queued microtaskはその後。Gateアルゴリズムは無変更                                                                                 |
+| H5A-I03 | PASS（FI） | 証明済み準備失敗はSTARTING中の一度通知、native呼出し同期throw FIはABORT_REQUESTED保持。native実通信で同期throwを再現済みとはしない                                           |
+| H5A-I04 | PASS（5A） | reader取得1回、clone / teeなし、Body Used・公開結果境界。Body / reader / cancelの外部引渡しなし                                                                              |
+| H5A-I05 | PASS（5A） | Headers・Signal・cancel呼出しでは通知しない。read / closedの片方未解決、cancel未解決では保持                                                                                 |
+| H5A-I06 | PASS（5A） | 正常・異常・後続Abort / Timeout・再入・通知後throwで通知最大1回。内部違反はsanitized Reject                                                                                  |
+| H5A-I07 | 部分検証   | 終端固定・通知・配送順序と通知間隙の管理停止／別試行をFake結合で確認。実CoordinatorのTx-A開始再判定・F-03登録競合は5C未検証                                                  |
+| H5A-I08 | PASS（5A） | native全体10秒とFI。Timeout後のread / closed未解決、Abort後やCancel未終了は結果Pending・Flight保持。EXP-08の根本原因解決・永久停止を一般証明しない                           |
+| H5A-I09 | 部分検証   | 429正常・Body失敗／超過時のMetadata、500 Body失敗、因果確認できるTimeout / Abort先行、確定後不変を確認。Retry-Afterは未解釈文字列であり、Backoff適用・Tx-Aは5C未検証         |
+| H5A-I10 | PASS（5A） | 256 KiB／1 MiBの−1／ちょうど／＋1、生成時上限、変化する設定getter固定、Content-Length欠損・不正・不一致、実累積、gzip展開後、超過後cleanup待機。実Providerサイズ計測は未実施 |
+| H5A-I11 | 部分検証   | AdapterにDB / Quota / Backoff処理なし。実Gate＋一時SQLiteで部分開始不明・Timeout・Abort・cleanup異常でも消費保持・Control非更新。Coordinator全経路・Tx-A / Tx-Pは5C未検証    |
+| H5A-I12 | PASS（5A） | HttpOutcomeのみを公開。URL / HeadersのSynthetic Secret・元例外をエラー／Metadataへ露出しない。Adapterからログへraw情報を送らない構造                                         |
+
+### 品質確認・変更範囲
+
+新規77件。Windows全体755件成功・Linux専用47件Skip（計802件）。Lint / Format / Type Check / Backend Build成功。Linux CI結果はPRへ記録する。これらは今回実装後の結果であり、上記の過去EXP実測を再実行した結果ではない。
+
+新規Adapter3ファイル、テスト3ファイル、test fixture1ファイルと本書の追記・整形、GateのInterfaceコメントだけを変更する。Gateの実行アルゴリズム・状態遷移、Quota Repository / Guard、Schema / Migration / Transaction、Scheduler、Control、Trust、既存テスト、依存・Workflow、設計正本technology-stack.mdの正式本文は変更しない。main由来の本書のPrettier未整形は内容不変の整形で解消した。
+
+### 未解決事項・5B / 5Cへの引継ぎ
+
+- C-Impl-5BのClock / History Trust本番配線・確認事実の供給は未実装。RTC-only条件やHistory回復手順を独自に決めず、本番GateはFail Closedを維持する。
+- C-Impl-5CのCoordinator・Quota / SQLite・Tx-A登録競合・HTTP 429 Backoff適用・F-03管理停止を未実施として維持する。結果Promise受信やGate解放を保存許可とみなさない。
+- 実Provider API / APIキー / Domain変換、Linux / Raspberry Pi実機、TLS / Proxy、Calendar累積制限、実Providerサイズ・長期性能、PR-D / PR-Eは未実施。Linux CIのlocalhost試験とPi実機を混同しない。
+- 終了証拠が足りない場合は意図的にPendingとなる。EXP-08の原因・一般的再現性は未解決。追加Timeout・推測による解放を導入しない。
+- 任意Runtimeがnativeと異なるError identityを返す場合はTimeout / Abortと断定せず、確認されたnetwork_error / body_errorまたは終了未確認の保留として扱う。対応Runtimeの拡大は因果・終了根拠の検証を伴う。
+- 実装PRは未Merge・レビュー待ち、Issue #16・PR-C全体は継続中。
