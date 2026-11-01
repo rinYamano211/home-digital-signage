@@ -10,3 +10,6 @@ coverage/
 # Local copies of operational config/credentials must not be committed.
 /config/backend.env
 /secrets/
+
+# Personal Claude Code settings. Excluding this file from Git does not enforce permissions.
+/.claude/settings.local.json
