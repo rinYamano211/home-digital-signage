@@ -2848,3 +2848,13 @@ Commit成功後に例外が通知される場合を考えると、無条件Retry
 - 既存Stateの欠損・不正は単調増加時計で保守的に待ち、待機後も再Readする。時間経過は正常性の証明や不正Row修復の許可ではない。
 - Shutdown時は初回Authorizationを失効させ、新規発行・再発行・初回INSERTを禁止する。開始済み試行の正常既存RowへのUPDATEだけを、DB・Transaction正常、有効Evidence、DB安全性の停止なし、既存Lifecycleの終了待機内という全条件で許可可能とする。未保存のHTTP結果を理由に即時再送しない。
 - C-2の文書化とC-1整合修正のみ。C2受入条件は未実施、実装は未着手。Provider送信Permitの競合防止方式はC-3、継続Recovery・不正Row修復はPR-Eへ引き継ぐ。
+
+
+## 2026-11-01 C-Impl-5B-4：History TrustとRestart Recoveryの証拠を分ける
+
+- 起動境界からの窓別待機と、管理者承認後の隔離は起点・目的が異なる。経過時間を一つの「待った」という事実にまとめず、Process・Sequence範囲・窓に拘束する。
+- 壁時計が安定しても過去のTimestampや履歴完全性は回復したとは限らない。構造検証と保守的Quota評価を分離し、不明履歴の削除や固定trueによる迂回で解決しない。
+- CLEANはHTTP全件成功ではなく、DrainとRecovery適格性の両方を示す。隔離中の正常終了でCLEANを発行すると次回起動で隔離を迂回し得るため、終了可能性と自動復帰可能性を分ける。
+- FULLへの変更も物理故障・Provider計上遅延を完全保証しない。管理者のキー排他利用確認とレベルB残余リスク受容を技術的証明と混同しない。
+
+正本は[technology-stack.md](technology-stack.md#pr-c-c-impl-5b4-history-restart)、[受入計画](verification/c-impl-5b4-history-trust-restart-recovery.md)。今回の成果は詳細設計の文書化であり、Schema v3 / FULL / Lifecycle / 管理CLI・UDSの実装、受入試験・Pi実機検証は未実施。Issue #16とPR-C全体は継続中とする。
