@@ -14,6 +14,24 @@ export interface HttpRuntime {
   timeout(ms: number): AbortSignal;
   combine(signals: AbortSignal[]): AbortSignal;
 }
+// Capture the native brand-checking getter; an own `stream.locked` property
+// supplied by a callback/Fault Injection cannot serve as release evidence.
+const nativeLocked = Object.getOwnPropertyDescriptor(
+  ReadableStream.prototype,
+  "locked",
+)!.get!;
+interface CompletionEvidence {
+  transportEnded: boolean;
+  operationsEnded: boolean;
+  lockReleased: boolean;
+  verifyLock?: () => boolean;
+}
+const complete = (e: CompletionEvidence) =>
+  e.transportEnded &&
+  e.operationsEnded &&
+  e.lockReleased &&
+  (e.verifyLock?.() ?? true);
+
 type Settled = { ok: true } | { ok: false; error: unknown };
 function settled(p: Promise<unknown>): Promise<Settled> {
   return p.then(
@@ -82,20 +100,40 @@ export class NativeHttpAdapter implements HttpStartAdapter {
       // notify completion or guess that the Request never started.
       throw new Error("HTTP start outcome unconfirmed");
     }
+    const evidence: CompletionEvidence = {
+      transportEnded: false,
+      operationsEnded: false,
+      lockReleased: false,
+    };
+    let notified = false;
+    const notify = () => {
+      if (!complete(evidence) || notified) throw violation();
+      notified = true; // before callback: re-entry/throw cannot notify again
+      lifecycleEnded();
+    };
     return new Promise<HttpOutcome>((resolve, reject) => {
-      void this.collect(headers, signal, gateSignal, timeout).then(
+      void this.collect(headers, signal, gateSignal, timeout, evidence).then(
         (outcome) => {
           // collect only returns when all owned operations have terminated.
           // Freeze result/metadata BEFORE the one notification. No await or extra
           // callback between notification and result delivery.
           try {
-            lifecycleEnded();
+            notify();
             resolve(outcome);
           } catch {
             reject(violation());
           }
         },
-        () => reject(violation()),
+        () => {
+          // A cleanup exception is not a normal HttpOutcome. Notify only when
+          // transport, all owned operations AND native lock release are proven.
+          try {
+            if (complete(evidence)) notify();
+          } catch {
+            /* failed notification remains a sanitized internal failure */
+          }
+          reject(violation());
+        },
       ); // never leak original URL/error/credentials
     });
   }
@@ -104,14 +142,19 @@ export class NativeHttpAdapter implements HttpStartAdapter {
     signal: AbortSignal,
     gate: AbortSignal,
     timeout: AbortSignal,
+    evidence: CompletionEvidence,
   ): Promise<HttpOutcome> {
     let response: Response;
     try {
       response = await headers;
     } catch (error) {
-      return Object.freeze({
+      const outcome = Object.freeze({
         kind: this.failureKind(error, signal, gate, timeout, "network_error"),
       });
+      evidence.transportEnded = true;
+      evidence.operationsEnded = true;
+      evidence.lockReleased = true; // no Response/reader was acquired
+      return outcome;
     }
     const http: HttpMetadata = Object.freeze({
       status: response.status,
@@ -119,9 +162,37 @@ export class NativeHttpAdapter implements HttpStartAdapter {
         ? {}
         : { retryAfter: response.headers.get("retry-after")! }),
     });
-    if (!response.body)
-      return Object.freeze({ kind: "response", http, body: new Uint8Array() });
-    const reader = response.body.getReader();
+    const bodyStream = response.body;
+    if (!bodyStream) {
+      const outcome = Object.freeze({
+        kind: "response" as const,
+        http,
+        body: new Uint8Array(),
+      });
+      evidence.transportEnded = true;
+      evidence.operationsEnded = true;
+      evidence.lockReleased = true; // body absent: no reader ownership
+      return outcome;
+    }
+    const reader = bodyStream.getReader();
+    if (nativeLocked.call(bodyStream) !== true) throw violation();
+    evidence.verifyLock = () => {
+      try {
+        return nativeLocked.call(bodyStream) === false;
+      } catch {
+        return false;
+      }
+    };
+    const release = () => {
+      try {
+        reader.releaseLock();
+      } finally {
+        // Never infer release from return/throw position. Even a successful
+        // method return without the native stream becoming unlocked is invalid.
+        evidence.lockReleased = evidence.verifyLock!();
+      }
+      if (!evidence.lockReleased) throw violation();
+    };
     // Capture native closed BEFORE any releaseLock; artificial rejection from
     // releasing a reader must never be counted as transport completion.
     const closed = settled(reader.closed);
@@ -152,7 +223,9 @@ export class NativeHttpAdapter implements HttpStartAdapter {
         (stream.ok || stream.error !== cancellation.error)
       )
         return pending();
-      reader.releaseLock();
+      evidence.transportEnded = true;
+      evidence.operationsEnded = true; // cancel and closed settled; no pending read
+      release();
       return outcome;
     };
     if (tooLong) return tooLarge();
@@ -167,12 +240,15 @@ export class NativeHttpAdapter implements HttpStartAdapter {
         });
         const stream = await closed;
         if (stream.ok || stream.error !== error) return pending();
-        reader.releaseLock();
+        evidence.transportEnded = true;
+        evidence.operationsEnded = true; // read and matching native closed settled
+        release();
         return outcome;
       }
       if (read.done) {
         const stream = await closed;
         if (!stream.ok) return pending();
+        evidence.transportEnded = true;
         const body = new Uint8Array(size);
         let offset = 0;
         for (const chunk of chunks) {
@@ -184,7 +260,8 @@ export class NativeHttpAdapter implements HttpStartAdapter {
           http,
           body,
         });
-        reader.releaseLock();
+        evidence.operationsEnded = true; // read/closed and Byte assembly complete
+        release();
         return outcome;
       }
       if (!(read.value instanceof Uint8Array)) throw violation();

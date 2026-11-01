@@ -55,3 +55,78 @@ export function controlledBody() {
   });
   return { stream, controller: () => controller };
 }
+
+export type ReleaseRoute = "normal" | "body_error" | "size_cancel";
+export type ReleaseFault =
+  "before" | "after" | "no_release" | "relock" | "relock_microtask";
+export function releaseFaultFixture(route: ReleaseRoute, fault: ReleaseFault) {
+  const secret = "synthetic-private-release-error";
+  let cancelCalls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      if (route === "body_error")
+        c.error(new Error("synthetic-private-body-error"));
+      else {
+        c.enqueue(new Uint8Array(route === "size_cancel" ? 5 : 2));
+        if (route === "normal") c.close();
+      }
+    },
+    cancel() {
+      cancelCalls++;
+    },
+  });
+  const response = new Response(body, {
+    status: 429,
+    headers: { "retry-after": "12" },
+  });
+  const originalGet = body.getReader.bind(body);
+  const nativeLocked = Object.getOwnPropertyDescriptor(
+    ReadableStream.prototype,
+    "locked",
+  )!.get!;
+  let releaseCalls = 0,
+    closedSettled = false;
+  let releaseOriginal: (() => void) | undefined;
+  let extra: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  body.getReader = (() => {
+    const reader = originalGet();
+    void reader.closed.then(
+      () => {
+        closedSettled = true;
+      },
+      () => {
+        closedSettled = true;
+      },
+    );
+    releaseOriginal = reader.releaseLock.bind(reader);
+    reader.releaseLock = () => {
+      releaseCalls++;
+      if (fault !== "before" && fault !== "no_release") releaseOriginal!();
+      if (fault === "relock") {
+        extra = originalGet();
+        void extra.closed.catch(() => undefined);
+      }
+      if (fault === "relock_microtask")
+        queueMicrotask(() => {
+          extra = originalGet();
+          void extra.closed.catch(() => undefined);
+        });
+      if (fault !== "no_release") throw new Error(secret);
+    };
+    return reader;
+  }) as typeof body.getReader;
+  const f = adapterFixture(response, 4);
+  return {
+    ...f,
+    body,
+    secret,
+    closedSettled: () => closedSettled,
+    releaseCalls: () => releaseCalls,
+    cancelCalls: () => cancelCalls,
+    locked: () => nativeLocked.call(body) as boolean,
+    cleanup: () => {
+      if (extra) extra.releaseLock();
+      else releaseOriginal?.();
+    },
+  };
+}

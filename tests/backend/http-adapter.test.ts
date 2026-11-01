@@ -3,6 +3,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createHttpAdapter } from "../../src/backend/http/native-http-adapter.js";
 import {
   adapterFixture,
+  releaseFaultFixture,
+  type ReleaseRoute,
   controlledBody,
   deferred,
   checkpoint,
@@ -396,18 +398,21 @@ test("I12 unexpected internal Body contract failure is sanitized and does not as
 
 test("I05 read rejection without native closed proof remains Pending and does not releaseLock", async () => {
   const response = new Response("unused"),
-    read = deferred<ReadableStreamReadResult<Uint8Array>>(),
+    read = deferred<ReadableStreamReadResult<Uint8Array<ArrayBuffer>>>(),
     closed = deferred<void>();
   const releaseLock = vi.fn();
-  const reader = {
-    read: () => read.promise,
-    closed: closed.promise,
-    releaseLock,
-    cancel: () => Promise.resolve(),
+  // Keep the real Reader/Stream lock association; only operation settlement
+  // is controlled for this FI. A fake unlocked Reader is not release evidence.
+  const reader = response.body!.getReader();
+  void reader.closed.catch(() => undefined);
+  const originalRelease = reader.releaseLock.bind(reader);
+  vi.spyOn(reader, "read").mockImplementation(() => read.promise);
+  Object.defineProperty(reader, "closed", { value: closed.promise });
+  reader.releaseLock = () => {
+    releaseLock();
+    originalRelease();
   };
-  vi.spyOn(response.body!, "getReader").mockReturnValue(
-    reader as ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>>,
-  );
+  vi.spyOn(response.body!, "getReader").mockReturnValue(reader);
   const f = adapterFixture(response);
   const end = vi.fn();
   let delivered = false;
@@ -484,4 +489,86 @@ test("I10 configuration limit is snapshotted once so a changing getter cannot by
     "body_too_large",
   );
   expect(reads).toBe(1);
+});
+
+const releaseRoutes: ReleaseRoute[] = ["normal", "body_error", "size_cancel"];
+test.each(
+  releaseRoutes.flatMap((route) =>
+    ["before", "after"].map((fault) => ({
+      route,
+      fault: fault as "before" | "after",
+    })),
+  ),
+)(
+  "I05/I06/I08 $route release $fault throw requires all completion evidence",
+  async ({ route, fault }) => {
+    const f = releaseFaultFixture(route, fault);
+    const ended = vi.fn(() => {
+      f.gate.abort();
+      f.timeout.abort();
+    });
+    try {
+      const error = await f.adapter.start(f.gate.signal, ended).catch((e) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("HTTP adapter contract failure");
+      expect(error.stack).not.toContain(f.secret);
+      expect(error.cause).toBeUndefined();
+      expect(f.closedSettled()).toBe(true);
+      expect(f.releaseCalls()).toBe(1);
+      expect(f.locked()).toBe(fault === "before");
+      expect(ended).toHaveBeenCalledTimes(fault === "after" ? 1 : 0);
+      if (route === "size_cancel") expect(f.cancelCalls()).toBe(1);
+      f.gate.abort();
+      f.timeout.abort();
+      await checkpoint();
+      expect(ended).toHaveBeenCalledTimes(fault === "after" ? 1 : 0);
+    } finally {
+      f.cleanup();
+    }
+  },
+);
+test.each(["no_release", "relock", "relock_microtask"] as const)(
+  "I06 native lock evidence rejects %s",
+  async (fault) => {
+    const f = releaseFaultFixture("normal", fault);
+    const ended = vi.fn();
+    try {
+      await expect(f.adapter.start(f.gate.signal, ended)).rejects.toThrow(
+        "HTTP adapter contract failure",
+      );
+      expect(f.locked()).toBe(true);
+      expect(ended).not.toHaveBeenCalled();
+    } finally {
+      f.cleanup();
+    }
+  },
+);
+test("I06 own locked property cannot forge native release evidence", async () => {
+  const f = releaseFaultFixture("normal", "before");
+  Object.defineProperty(f.body, "locked", { value: false });
+  const ended = vi.fn();
+  try {
+    await expect(f.adapter.start(f.gate.signal, ended)).rejects.toThrow(
+      "HTTP adapter contract failure",
+    );
+    expect(f.locked()).toBe(true);
+    expect(ended).not.toHaveBeenCalled();
+  } finally {
+    f.cleanup();
+  }
+});
+test("I06 cleanup reject notifies once even if notification throws", async () => {
+  const f = releaseFaultFixture("normal", "after");
+  const ended = vi.fn(() => {
+    throw new Error(f.secret);
+  });
+  try {
+    await expect(f.adapter.start(f.gate.signal, ended)).rejects.toThrow(
+      /^HTTP adapter contract failure$/,
+    );
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect(f.locked()).toBe(false);
+  } finally {
+    f.cleanup();
+  }
 });

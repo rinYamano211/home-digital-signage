@@ -293,3 +293,13 @@ PASSは記載のNode.js / localhost / FI / Gate結合範囲であり、実Provid
 - 終了証拠が足りない場合は意図的にPendingとなる。EXP-08の原因・一般的再現性は未解決。追加Timeout・推測による解放を導入しない。
 - 任意Runtimeがnativeと異なるError identityを返す場合はTimeout / Abortと断定せず、確認されたnetwork_error / body_errorまたは終了未確認の保留として扱う。対応Runtimeの拡大は因果・終了根拠の検証を伴う。
 - 実装PRは未Merge・レビュー待ち、Issue #16・PR-C全体は継続中。
+
+### PR #50追加修正：Lifecycle終了条件の確定
+
+通知条件を、通信終了・Adapter所有処理完了・Reader lock解放の3条件がすべて確認できた場合に限定した。reader.closedのsettleだけでlock解放とはみなさない。Bodyを取得した経路では、native ReadableStreamのbrand-checking locked getterで解放を確認し、通知直前にも再確認する。解放前throw、解放しないreturn、再lock、確認不能は通知せずFlightを保持する。
+
+正常読了・Bodyエラー・サイズ超過の各経路で、read / cancel / 本来のclosedの終了と、lock解放を別々に扱う。実際の解放後throwで3条件が成立した場合のみ最大1回通知し、結果は元例外・秘密情報を含まないsanitized ErrorでRejectする。正常なHttpOutcome・429 Metadata・Timeout / Abortの分類と優先順位は変更しない。通知済み状態はCallback前に固定し、再入・追加Abort / Timeout・通知例外でも再通知しない。
+
+追加18件：Adapter FI11件、実Gate結合7件。3経路×解放前／後の6ケースを両層で検証し、通知0／1回・Flight保持／解放・sanitized Reject・Quota履歴保持・Control非更新を確認する。追加でnative lock状態の偽装拒否、解放なしreturn、同期／microtask再lock、通知例外、通知後の次回試行への再入を確認する。既存の終了未確認read / closedテストはnative Readerのlock関係を保つFIへ変更した。H5A-I05 / I06 / I08の追加境界を検証し、正式条件本文・IDは変更しない。
+
+Gateアルゴリズム、Quota、SQLite、Coordinator、Backoff、F-03と本番Trust配線は変更しない。故障注入による確認であり、実Provider・Pi実機での検証ではない。終了・所有権の根拠不足時のFail Closedと既存の後続範囲を維持する。最新の全体検証・Linux CI結果はPR #50へ記録する。

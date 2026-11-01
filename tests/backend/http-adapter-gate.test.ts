@@ -7,6 +7,8 @@ import { PermitRegistry } from "../../src/backend/send/internal/permits.js";
 import type { HttpOutcome } from "../../src/backend/http/outcome.js";
 import {
   adapterFixture,
+  releaseFaultFixture,
+  type ReleaseRoute,
   controlledBody,
   checkpoint,
   deferred,
@@ -313,4 +315,74 @@ test("I08 Stop while actual owned read is Pending keeps ABORT_REQUESTED until re
   expect(await result.response).toMatchObject({ kind: "aborted" });
   expect(h.gate.snapshot(provider).phase).toBe("IDLE");
   expect(h.f.rows()).toHaveLength(1);
+});
+
+const releaseRoutes: ReleaseRoute[] = ["normal", "body_error", "size_cancel"];
+test.each(
+  releaseRoutes.flatMap((route) =>
+    ["before", "after"].map((fault) => ({
+      route,
+      fault: fault as "before" | "after",
+    })),
+  ),
+)(
+  "I05/I06/I08 $route release $fault throw preserves Gate ownership",
+  async ({ route, fault }) => {
+    const f = releaseFaultFixture(route, fault);
+    const h = harness(f.adapter);
+    const r = reserve(h);
+    try {
+      const started = h.gate.start(r.attempt, r.result);
+      if (started.kind !== "started") throw new Error();
+      await expect(started.response).rejects.toThrow(
+        /^HTTP adapter contract failure$/,
+      );
+      expect(h.gate.snapshot(provider).phase).toBe(
+        fault === "after" ? "IDLE" : "IN_FLIGHT",
+      );
+      expect(f.locked()).toBe(fault === "before");
+      expect(h.f.rows()).toHaveLength(1);
+      expect(h.f.control()).toEqual([]);
+    } finally {
+      f.cleanup();
+    }
+  },
+);
+test("I06 confirmed cleanup failure permits notification re-entry into next attempt only once", async () => {
+  const f = releaseFaultFixture("normal", "after");
+  const next = adapterFixture(new Response("next"));
+  let calls = 0,
+    notifications = 0;
+  let nextResponse: Promise<unknown> | undefined;
+  const h = harness({
+    start(signal, end) {
+      if (++calls > 1) return next.adapter.start(signal, end);
+      return f.adapter.start(signal, () => {
+        notifications++;
+        end();
+        expect(h.gate.snapshot(provider).phase).toBe("IDLE");
+        h.f.advance(4_000_000_000n);
+        const r = reserve(h);
+        const started = h.gate.start(r.attempt, r.result);
+        if (started.kind !== "started") throw new Error();
+        nextResponse = started.response;
+        f.timeout.abort();
+      });
+    },
+  });
+  const r = reserve(h);
+  try {
+    const started = h.gate.start(r.attempt, r.result);
+    if (started.kind !== "started") throw new Error();
+    await expect(started.response).rejects.toThrow(
+      /^HTTP adapter contract failure$/,
+    );
+    expect(await nextResponse).toMatchObject({ kind: "response" });
+    expect(notifications).toBe(1);
+    expect(calls).toBe(2);
+    expect(h.gate.snapshot(provider).phase).toBe("IDLE");
+    expect(h.f.rows()).toHaveLength(2);
+  } finally {
+    f.cleanup();
+  }
 });
