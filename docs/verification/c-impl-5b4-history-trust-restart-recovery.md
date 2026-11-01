@@ -131,7 +131,7 @@ Schema v2→v3とNORMAL→FULLは今回明示された将来設計の変更点�
 | D-01：4 Tableと明示Migration       | 19〜21                         | v2の6 Table / Index / Quota履歴維持、4 Table追加・Gen 1・user_version=3をAtomic確定。書込み前WAL / FULL / FK、通常起動Upgradeなし。INTEGER PRIMARY KEYの自動IndexなしをValidatorで考慮 |
 | D-02：Preflight・全履歴検証案A     | 01・19〜21・27・32             | EX・厳密v3・FULL / FK・正常Connection・Lifecycle1行・OS Boot ID・親履歴Gen 2〜現在Gen連続・Provider集合を検証。全Consumption構造 / SequenceはBEGIN IMMEDIATE内で検証                   |
 | D-02：Startup Atomicity・結果不明  | 01・18・29〜32                 | 前回Lifecycle再検証→親INSERT→全Provider境界INSERT→集合完全一致→前回State / Boot / Gen拘束UPDATE1件→Commit。unknownは今回証拠不採用、再試行なし、次回独立検証                           |
-| D-02：Provider分類・F-01           | 04・24・27・28                 | UNPROVISIONED / NULLとPROVISIONED / 0を区別。不整合はFail Closed。F-01後はStartup境界を更新せずRuntime Cutoff 0、Commit unknownならRuntime境界なし                                     |
+| D-02：Provider分類・F-01           | 04・24・27・28                 | DDLでPROVISIONED / NULL拒否。Backendは状態・整数範囲・Metadata / Consumption一致を独立検証。F-01後はStartup境界不変・Runtime Cutoff 0、unknownなら発行なし                             |
 | D-03：永続Range・Runtime証拠分離   | 07〜10・33〜37・44             | 複合FK、非空範囲、cutoff < start <= end <= last、非重複・分類漏れなし。UPDATE / DELETE / 統合禁止、Provider / Gen内Range ID単調・再利用なし。待機・Valid区間は非永続                   |
 | D-03：Clock異常時の順序            | 08・12・33〜36                 | Clock失効→同期Gate閉鎖→Valid凍結→Drain→最終Sequence→全履歴分類→Tx内非重複検証→Range Commit→待機開始。Drain失敗 / Commit unknownはRange確定証拠なし                                     |
 | D-03：Runtime Validの競合          | 07〜10・14・27・34〜36         | Clock TrustとTx-Q Commit成功後のみValid証拠を生成し、Clock異常と同期制御。生成失敗 / unknownではValid扱いせずFail Closed。固定historyComplete=true禁止                                 |
@@ -139,7 +139,7 @@ Schema v2→v3とNORMAL→FULLは今回明示された将来設計の変更点�
 | D-03：再異常・Process停止          | 05・06・15〜17・25・35・37・44 | 単調時計継続なら既存待機保持可能、不明なら失効。回復だけで復活・Valid昇格しない。確定前停止はRUNNING、再起動は新cutoffの案Dへ                                                          |
 | D-01〜03と既存R-01〜03             | 11〜18・26・28〜32・38〜43     | CLEAN適格性・共有10秒Deadline / B_clean・Commit unknown・管理者隔離迂回禁止を維持。送信再開候補とCLEAN適格を同一視せずD-04へ接続                                                       |
 
-**追加受入観点の提案（未承認・新ID未付与）**：Generation上限と親履歴欠落、Provider境界集合過不足、PROVISIONED / NULL拒否、Range複合FK・Range ID再利用、Runtime F-01境界の失敗、Valid証拠生成とClock失効の競合を、上表の既存H54へどう割り当てるか実装前に確認する。独立した追加テストケースにするかはレビュー待ちであり、今回正式ID・実装方法を確定しない。
+**追加受入観点の提案（未承認・新ID未付与）**：Generation上限と親履歴欠落、Provider境界集合過不足、Range複合FK・Range ID再利用、Runtime F-01境界の失敗、Valid証拠生成とClock失効の競合を、上表の既存H54へどう割り当てるか実装前に確認する。独立した追加テストケースにするかはレビュー待ちであり、今回正式ID・実装方法を確定しない。
 
 ### 現行コードとの差とD-04への接続
 
@@ -159,7 +159,7 @@ D-04ではRecovery状態と具体API・型、承認・失効・再開候補の�
 ## 実装前の要確認事項と保証境界
 
 - **D-01〜D-03で解消した未決扱い**：4 Table DDL、lifecycle_key=1、Generationの+1・上限、Startup親子Atomicityと全ConsumptionのTx内検証案A、F-01後Runtime Cutoff、Range複合FK・永続境界とRuntime証拠の分離・再開案Aは確定済み。DDL未指定・Generation未定義という旧記述は適用しない。実装・テストは未完了。
-- **DDLとBackend検証の境界**：承認DDLを保持する。PROVISIONED / NULLはSQLiteのCHECKだけで排除されないため、上表のProvider境界契約で非NULL整数を必須検証する。DDLへのIS NOT NULL明示追加は未承認の追加判断事項として正本に記録した。
+- **DDLとBackend検証の境界**：PROVISIONED分岐のIS NOT NULL追加はChatレビューで承認済み・反映済み。PROVISIONED / NULLをDDLのCHECKでも拒否し、BackendでもProvider状態・cutoff整数範囲・Metadata / Consumption一致を独立検証する。DDL成立だけでStartup履歴の完全性を証明しない。上表のH54対応へ反映したが、NULL拒否の実行テストは未実施でありPASSとは扱わない。
 - **D-04と実装詳細**：Recovery状態設計の詳細、管理者承認Tokenの実装、具体API・型、Runtime証拠管理クラス、追加テストの実装詳細は未確定。Boot ID正規化・履歴Fingerprint・証拠の具体表現等も承認範囲を超えて推測しない。Current / Valid / Rangeの条件を満たす事実を生成せず固定trueでGuardを迂回しない。
 - **Shutdown開始余裕**：R-03のB_cleanはPi 5実機検証後に決定。単調時計Deadline Gateの具体配線・計測を確認し、B_cleanを同期COMMITの完了保証としない。
 - **管理操作**：Tokenの具体有効期間、UDSの配置・所有権・認可、cancelの詳細動作、再承認時の状態遷移は未確定。既存管理停止／ResumeとHistory復帰承認を混同しない。

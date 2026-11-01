@@ -3213,6 +3213,7 @@ CREATE TABLE startup_provider_boundaries (
         OR
         (
             provider_state = 'PROVISIONED'
+            AND cutoff_sequence IS NOT NULL
             AND cutoff_sequence >= 0
             AND cutoff_sequence <= 9007199254740991
         )
@@ -3229,7 +3230,7 @@ Startup境界は確定後不変とし、後からUPDATEしない。全管理対�
 | なし | あり | Fail Closed |
 | あり・構造不正 | 任意 | Fail Closed |
 
-**DDLとBackend検証の境界**：上記承認DDLを変更しない。SQLiteではCHECK式がNULLの場合も制約違反にならないため、PROVISIONED / NULLをこのCHECKだけで排除できるとはしない（[SQLite CHECK constraints](https://www.sqlite.org/lang_createtable.html)）。Backendは上表どおりPROVISIONEDでは非NULLの妥当な整数cutoff=last_sequenceを必須検証し、不正をFail Closedとする。DDLへ明示的なIS NOT NULLを追加するかは未承認の追加判断事項として残し、今回推測で変更しない。
+**DDLとBackend検証の境界**：PROVISIONED分岐へのcutoff_sequence IS NOT NULL追加は今回のChatレビューで承認済みの正式採用であり、未決定事項ではない。UNPROVISIONED / NULLは許容し、PROVISIONED / NULLはDDLのCHECK制約で拒否する。PROVISIONEDは非NULLかつ0〜9007199254740991、他のprovider_stateは既存の列CHECKで拒否する。SQLiteではCHECK式がNULLでも制約違反にならないため、明示的な非NULL条件を要求する（[SQLite CHECK constraints](https://www.sqlite.org/lang_createtable.html)）。BackendでもProvider状態・cutoffの整数範囲・MetadataとConsumptionとの一致を独立に検証し、不正をFail Closedとする。DDL制約の成立だけではStartup履歴の完全性を証明しない。
 
 Startup後F-01のCommit成功が確定した場合、永続Startup境界は更新せず、今回Process内にRuntime Provisioning境界cutoffSequence=0を生成する。F-01 Commit unknownではRuntime境界を発行せず対象ProviderをFail Closedとする。後続RangeのFKは元のStartup Provider境界を参照し、実効cutoffの評価だけRuntime境界を使用する。
 
