@@ -2768,6 +2768,135 @@ History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立�
 
 C-Impl-5以降へ実HTTP Client・Coordinator全取得フロー・Startup / Management Stop統合、PR-DへTx-A / Tx-P / Pending実連携、PR-EへDB Recovery / Restoreを引き継ぐ。管理停止の永続化・停止完了APIとF-03の実連携は後続Lifecycle工程とする。OS同期確認方法・RTC-only条件・History Trust管理回復手順は未確定。Pi実機の時計・RTC・遅延測定、暫定値の妥当性、Quota履歴長期性能は未検証。独立制御の設計確定を、これらの完成・PASSとみなさない。
 
+<a id="pr-c-c-impl-5a-http-lifecycle"></a>
+
+#### C-Impl-5A：Node.js 24 HTTP Adapter / Lifecycle詳細設計（案A、実装前）
+
+案AとしてHTTP AdapterがResponse BodyとLifecycleを単独所有する。Node.js 24標準fetch、HTTP全体10秒、同期開始、Provider最大1未終了Request、終了未確認時のFail Closedを維持する。AdapterはBackoff計算・Quota更新・Tx-A / Tx-P・Domain変換を行わない。本節は詳細契約と実装前の要確認事項の記録であり、本番Adapter・受入試験・本番結線の完了ではない。実測の証拠・制約・H5A対応は[専用検証文書](verification/c-impl-5a-http-adapter-lifecycle.md)を参照する。
+
+**結果型と公開境界**
+
+次を設計基準として採用する。Headers受信で取得できた安全なHttpMetadataをBody処理結果から独立して保持する。statusと未解釈のretryAfterだけを扱い、秒数・HTTP-dateの解釈はCoordinator側で行う。bodyは設定上限内のByte列とし、生のResponse・Stream・Reader・認証情報・例外オブジェクトは結果として渡さない。
+
+```typescript
+export interface HttpMetadata {
+  status: number;
+  retryAfter?: string;
+}
+export type HttpOutcome =
+  | {
+      kind: "response";
+      http: HttpMetadata;
+      body: Uint8Array;
+    }
+  | {
+      kind: "body_error" | "body_too_large";
+      http: HttpMetadata;
+    }
+  | {
+      kind: "network_error" | "timeout" | "aborted";
+      http?: HttpMetadata;
+    };
+
+export interface HttpStartAdapter {
+  start(
+    signal: AbortSignal,
+    lifecycleEnded: () => void
+  ): Promise<unknown>;
+}
+```
+
+responseはBody読了またはBodyなしが確認された結果であり、2xxだけでなく429・500等も含む。Headersだけで終端確定・response配送しない。Headers前の通信失敗はnetwork_error、通常のBody読込失敗はbody_error、サイズ超過はbody_too_largeとする。Headers取得済みならtimeout / aborted等でも取得できたhttpを保持でき、body_error / body_too_largeではhttpを必須とする。204等はbodyなしのHTTP結果であり、Domain Dataの妥当性を保証しない。
+
+| 最初に成立・確定した終端結果 | HttpOutcomeとCoordinatorの処理 |
+|---|---|
+| 429、Body正常終了 | response + http.status=429。有効Retry-Afterを適用 |
+| 429、Body通常読込失敗 | body_error + 429メタデータ。有効Retry-Afterを適用 |
+| 429、Bodyサイズ超過 | body_too_large + 429メタデータ。有効Retry-Afterを適用 |
+| 500、Body失敗 | HTTPメタデータを保持し、通常失敗として扱う |
+| 429受信後にTimeoutによる終了が先に確定 | timeoutを優先。429メタデータがあっても通常Timeout Backoff |
+| 429受信後に制御Abortによる終了が先に確定 | abortedを優先。Control State非更新 |
+| 終端確定後のAbort / Timeout | 確定済みの分類・メタデータを変更しない |
+
+**今回の追加設計判断**として、通常Body失敗・サイズ超過でも429メタデータを保持し、有効Retry-AfterをCoordinatorが適用する優先順位を確定した。従来のC-2にこのBody失敗時優先順位まで明記されていたとは扱わない。待機計算そのものは23.3・23.10を維持し、通常Backoffと有効Retry-Afterの遅い方まで待つ。30分超も尊重し、欠損・不正値は通常Backoffとする。Adapterは解釈・計算・Tx-A・Quota・Control更新を行わない。
+
+Timeout通知・Abort要求・Headers受信だけでは終端確定としない。実際に成立を確認した最初の終端結果を一度だけ確定し、分類と採用済みメタデータを固定する。サイズ超過後の後片付けAbortで結果を上書きせず、因果確認できない例外をsignal.abortedだけでtimeout / abortedへ変換しない。
+
+正常な伝送失敗はHttpOutcomeによるFulfillで通知する。予期しない内部契約違反のRejectと混同せず、RejectはLifecycle終了や保存許可の根拠にしない。内部違反をRejectする場合も生のProvider情報・Secret・元の例外詳細を外部へ漏らさず、診断ログは必要な機密除去を行う。Body以外の副作用を増やさない。
+
+**同期startとPromiseの意味**
+
+GateはPermit検証・消費後にFlightをSTARTING登録し、同じ同期呼出しでAdapter.startを呼ぶ。Adapterはその同期区間でfetchを呼び、Promiseを返す。async startの最初のawaitより後にfetchを開始しない。生成時にURL・設定・Byte上限等を検証し、呼出しごとの最小Signal準備とfetch呼出しの間にもawaitを入れない。Headers以降の処理は内部の非同期処理として分離する。
+
+Promise<HttpOutcome>はPromise<unknown>と型として整合し、現行Gateのinstanceof Promise判定・返却Promiseのcatchとは整合する。GateはそのPromiseの成否をFlight解放に使わない。ただし既存HttpStartAdapterのコメント・C-Impl-4説明には「fetchのPromiseを返す」という、native Headers Promiseそのものの返却と読める表現がある。案Aではnative fetch PromiseをAdapter内部で所有し、外部へは終了確認後のHttpOutcome Promiseを返すという意味へ明確化する必要がある。公開のstartシグネチャと同期fetch開始・Gateアルゴリズムは変更しない。実装時のInterfaceコメント・関連説明の整合修正事項として追跡し、今回はコードを編集しない。
+
+**同期例外・再入・Gateの実際の後片付け**
+
+- 生成時の設定不正はGate.start前に拒否する。start中にfetch呼出し前の失敗を扱う場合も、fetchを未呼出しであり所有処理が存在しないことを証明できる場合に限り終了確認が可能である。単なるcatchやnative fetch同期throwから未送信を推測しない。
+- fetch開始済みの可能性が否定できない場合、既存http_start_failed・Abort要求・ABORT_REQUESTED・Flight保持を維持する。後日、全所有処理の終端を確認できた場合だけ通知可能とし、Promiseを作れなかったことを終了証明にしない。確認不能なら保持する。
+- 現行finish()はstarting中にはfinishedを記録するだけで、Flightを解除しない。正常にPromiseを返してstarting=falseになった後、finishedなら解除・Attempt cleanupする。同期終了通知があってもstartの返却前に未登録状態には戻らない。
+- startの同期throw時はcatchがstarting=false、ABORT_REQUESTED、Abort要求、Attempt失効・cleanupを行う。finishedが未通知ならFlightは残る。先に適法な同期終了通知があった場合だけfinishによる解除へ進む。通知前の再入はSTARTINGの占有で拒否される。
+- Attempt cleanupはcleanupAttemptedで重複を抑止し、失敗はProvider停止理由に残る。Flightが解除されてもcleanup失敗・Trust・他停止理由が残れば新規送信を許可しない。AdapterがAttempt cleanupやQuota履歴削除を代行しない。
+
+これらはコード読取りによる照合であり、C-Impl-5Aの実Gate結合テストを実施した結果ではない。現行Gateアルゴリズムを安全上必須で変更する根拠は今回確認していないが、同期通知・throw・再入・cleanup異常は実装時に結合検証する。
+
+**HTTP終端の内部確定・Lifecycle・結果配送・Tx-A再判定の4段階**
+
+U-08 / HTTP-02・03の「最初に成立を確認・確定した終端結果」はAdapter内部の一度限りの確定として保持する。Headers受信やAbort要求・Timeout発火は終端確定そのものではない。正常Body読了、実際のfetch / readの終了、確認済みサイズ超過等に基づいて分類し、後続イベントで書き換えない。結果分類が確定しても未解決のBody / cancel等があれば処理終了とはしない。
+
+通常の終了確認済み経路は、次の4段階を設計契約とする。
+
+1. **HTTP終端結果の内部確定**：Adapterが成立を確認した最初の結果を一度だけ確定し、後続イベントで分類・メタデータを変更しない。
+2. **Lifecycle終了確認とGate通知**：Adapter所有のBody読込・Cancel等の終端を確認し、lifecycleEndedを最大1回通知する。Gateは既存規則でFlightを解放する。
+3. **HttpOutcome Promiseの配送**：通常の確認済み経路では通知後にPromiseをFulfillし、Gateが返した同じ結果Promiseを経由してCoordinatorが受信する。
+4. **Tx-A開始可否の再判定**：Coordinatorが停止状態・DB安全性・Evidence・必要なAuthorization・取得順序を再確認する。停止判定とTx-A開始登録・トークン消費を非同期処理が割り込まない境界で行い、BEGIN IMMEDIATEを試みる直前というF-03 / C-2の開始境界を維持する。
+
+通知前に結果・drain状態を確定し、通知後からFulfillまで外部Callbackやawait等の追加処理を入れない。通知に失敗した内部違反を通常成功へ変換しない。内部確定・Gate解放・Promise受信を同一視せず、Promise受信だけでTx-A開始を許可しない。
+
+現行Gateではstartから戻った後のfinish通知はFlightを同期解除し、Quota Attempt cleanupも行う。そのため通知後からPromise Fulfill／Coordinatorの継続処理までに、新しい取得が他経路から始まる可能性を排除できない。Gateの占有はHTTP多重起動防止であり、取得結果の新旧判定・Tx-A保存許可・State直列化の代替ではない。C-2の独立した取得試行・Evidence・Authorization、F-03の管理停止とTx-A開始競合、PR-Dの採用条件を維持する。
+
+内部確定時点をPromise配送時点へ置き換えず、次の管理停止競合を扱う。
+
+| 管理停止の成立境界 | 処理 |
+|---|---|
+| HTTP内部終端確定前 | 停止後に確定した結果から新規Tx-Aを開始しない |
+| 内部確定後、Lifecycle通知前 | 終端結果は変更しない。新規Tx-Aは禁止 |
+| Lifecycle通知後、Promise配送前 | Gate解放を保存許可とせず、新規Tx-Aは禁止 |
+| Promise配送後、Tx-A開始前 | Coordinatorの停止再確認で新規Tx-Aを禁止 |
+| 停止前に適法なTx-A開始登録・トークン消費済み | F-03の既存条件で結果確定を許容。Shutdown・DB安全性は優先 |
+
+HTTP内部確定はAdapter、Lifecycle通知はAdapterからGate、結果PromiseはAdapterからGate経由でCoordinatorへ、停止再確認とTx-A開始競合制御はC-Impl-5CのCoordinator統合側が担当する。F-03のSUSPENDED Commit・厳格な停止完了追跡・開始済みTx-A / Tx-P / Pending再公開はC-Impl-5C以降の統合責務を維持する。新しい公開Callback、永続Table、独自の終端時刻Tokenは追加しない。具体的なCoordinator実装構造は今回固定しない。
+
+終了未確認の場合、結果の候補・内部確定状態があってもlifecycleEndedを呼ばず、通常のHttpOutcome PromiseはPendingを維持する。これによりCoordinator await・Scheduler stopが完了しない可能性があるが、勝手なTask Timeoutや10秒後のFlight自動解放を追加しない。既存Shutdown全体10秒・異常終了・OS側の責務は維持する。
+
+**終了通知の根拠と禁止事項**
+
+| 経路 | 通知に必要な確認 |
+|---|---|
+| Body正常読了 | readerのdone:true、本来のStream終了と必要なBody処理完了、保留read / cancelなし |
+| Bodyなし | Response.bodyがnullで、所有HTTP処理の終端を確認 |
+| Abort / Timeout | Signal失効だけでなく、実際のfetch / readおよび所有する取消し処理の終端を確認 |
+| Cancel / サイズ超過 | cancelの呼出しとPromise完了を分離し、保留read・本来のclosed状態・後片付けを確認 |
+| 未解決・終端根拠不明 | 通知禁止・Pending維持・Gate占有継続 |
+
+Headersだけ、abort()返却だけ、Timeout Signalだけ、reader.cancel()呼出しだけでは通知しない。releaseLockで人為的に生じたreader.closed拒否はTransport終了証拠ではない。Cancel PromiseのRejectも無条件に終了証拠にせず、実際のStreamエラーと残る所有処理を確認する。通知は一度だけとし、二重通知を実装で防ぐ。確認するのはApplication所有Lifecycleであり、TCP物理切断・Provider処理終了・Quota取消しを保証しない。
+
+**Timeout・Body上限**
+
+AbortSignal.timeout(10_000)とGate SignalのAbortSignal.any合成を基本案とし、同期start内でfetch開始に近接して用意する。同一SignalをHeaders後の必要Body読込みまで保持し、Headers受信時にTimeoutを解除・取り直さない。Timeout後も終端未確認ならFlightを保持し、Commit済みQuota履歴を取り消さない。Timeout・制御Abortの因果と最初の実際の終端を確認してU-08に従う。Timer・同期処理・Event Loop遅延による非厳密性、同期JSON解析の強制中断不能を区別する。
+
+Bodyの最大Byte数はAdapter生成時の設定で検証する。本番の具体値は根拠不足のため未確定。Content-Lengthは早期拒否の補助であり、信用して読込み検証を省略しない。実受信Uint8Array.byteLengthを累積し、超過chunkを採用bufferへ追加せずbody_too_largeを保持してAbort / Cancel・終端確認を行う。圧縮展開・内部buffer等も含む総メモリ保証とはしない。BodyはAdapterのみが所有し、Response / Readerを外部へ渡さず、clone / tee / 二重消費を導入しない。JSON ParseとDomain Schema / Semantic Validationは後続責務とする。
+
+**実測と実装前の未決事項**
+
+Node.js 24.14.0 / Undici 7.21.0でEXP-01〜18（variant・Fault Injectionを含む35ケース）と独立Timeout追試3ケースを観測した。EXP-08では合成Signalの10秒失効後もread / closedが未解決となり、観測上限後の実験Server切断でTypeError拒否した。独立3ケースではTimeoutErrorで終了し、同じ未終了を再現していない。原因未特定であり、Node / Undiciの一般的欠陥や特定の修正策を断定しない。Signalだけで解放せず、未解決時に保持する設計を採用する。観測用の追加1秒上限は本番のTimeout・解放条件ではない。
+
+C-Impl-5Aの正式なInterface受入条件はH5A-I01〜H5A-I12とし、既存SG-01〜09、HTTP-01〜07、TQ-04等、F03、C1・C2・SCH条件も正式契約として維持する。H5A-01〜23は正式本文がGitHubで確認できない過去の検討観点であり、独立した正式受入IDとはしない。検討内容は破棄せず、確認可能な観点を専用文書で正式条件へ対応付け、不明な個別対応は未照合とする。既存の正式IDの削除・再採番・意味変更をしない。
+
+今回、HttpMetadataによるBody失敗時の429通知と分類優先順位、4段階の責務・停止競合、正式Interface受入条件を確定し、これらの未決扱いは解消した。本番Body Byte上限はC-Impl-5A実装前の設定検討、EXP-08の原因・Node / Undiciでの一般的再現性、Linux / Pi・実Provider / TLS / Proxy挙動は後続環境検証へ残す。Signal原因と実際の終了の因果を確認する実装条件は、上記の優先順位を守ってC-Impl-5AのFI・HTTP単体／Gate結合で検証する。Clock / History Trust本番配線はC-Impl-5B、Coordinatorの具体構造・Quota / SQLite・Tx-A開始・F-03統合はC-Impl-5C以降とし、推測で実装確定しない。
+
+C-Impl-5A Adapter単体とGate結合、C-Impl-5B Trust本番配線、C-Impl-5CのCoordinator / Quota・SQLite / Tx-A / F-03統合、後続の実機・Provider検証を分ける。実Provider通信・Domain変換・本番Factoryの送信可能化・PR-D / PR-Eの実装は今回の対象外である。
+
 <a id="pr-c-c3-02-tx-q"></a>
 
 #### C-3/02：Tx-Q
