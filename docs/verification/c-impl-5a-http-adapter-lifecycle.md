@@ -11,7 +11,23 @@
 
 ## Interface・結果・所有権
 
-HttpStartAdapter.start(signal, lifecycleEnded): Promise<unknown>は維持し、実Adapterの結果PromiseをHttpOutcomeに特殊化する基準案を正本へ記録した。HTTP 429・500もresponse、retryAfterは未解釈Header、bodyは設定上限内のUint8Array。失敗はnetwork_error / timeout / aborted / body_error / body_too_largeである。Response・Reader・Stream・Secret・元の例外を結果にしない。JSON Parse・Domain Validation・Backoff・Tx-A / Tx-P・Quota更新は責務外である。
+HttpStartAdapter.start(signal, lifecycleEnded): Promise<unknown>とGateアルゴリズムは維持する。実Adapterの結果Promiseは正本のHttpOutcomeを返す。Headers受信で得たHttpMetadata（status、未解釈文字列retryAfter）をBody結果とは独立して保持し、responseはhttpと上限内Byte列、body_error / body_too_largeはhttp必須、network_error / timeout / abortedは取得済みならhttpを保持できる。HTTP 429・500もresponseに含む。Response・Reader・Stream・Secret・元の例外を結果にせず、JSON Parse・Domain Validation・Backoff・Tx-A / Tx-P・Quota更新は責務外とする。
+
+### 今回確定したHTTPメタデータと429優先順位
+
+| シナリオ | HttpOutcome・後続処理 |
+|---|---|
+| 429、Body正常終了 | response + http.status=429。Coordinatorが有効Retry-Afterを適用 |
+| 429、Body通常読込失敗 | body_error + 429メタデータ。有効Retry-Afterを適用 |
+| 429、Bodyサイズ超過 | body_too_large + 429メタデータ。有効Retry-Afterを適用 |
+| 500、Body失敗 | HTTPメタデータを保持し通常失敗 |
+| 429受信後、Timeoutによる終了が先に確定 | timeoutを優先。通常Timeout Backoffであり429待機へ置き換えない |
+| 429受信後、制御Abortによる終了が先に確定 | abortedを優先。Control State非更新 |
+| HTTP終端確定後のAbort / Timeout | 分類・確定メタデータを変更しない |
+
+通常Body失敗・サイズ超過でも429メタデータを採用する優先順位は、今回追加確定した判断である。従来C-2にこの優先順位まで明記されていたとは記録しない。待機計算は既存23.3・23.10を維持し、CoordinatorがHeaderの秒数・HTTP-dateを解釈して、通常Backoffと有効Retry-Afterの遅い方を使う。30分超も尊重し、欠損・不正値は通常Backoff。Adapterは解釈や保存をしない。
+
+Headers受信・Timeout通知・Abort要求だけでは終端確定しない。最初に成立を確認した終端を一度だけ確定し、分類とメタデータを固定する。Signal失効だけで後続の任意エラーをtimeout / abortedと断定せず、実終了との因果を確認する。
 
 生のfetchはHeaders時点のPromiseを返すが、案Aはそれを内部所有し、Body処理の完了を待つ結果Promiseを外部へ返す。現行GateはPromise<unknown>を受け、成否でFlightを解放しないため、型と制御は整合する。一方、Interfaceの既存コメントにある「そのfetchのPromiseを返す」という表現は、結果Promiseとの同一性を要求するようにも読める。実装時にコメント・説明を明確化する要修正事項であり、今回はGateコードやシグネチャを変更していない。架空の別公開Interface・永続Tableは追加しない。
 
@@ -36,17 +52,26 @@ HttpStartAdapter.start(signal, lifecycleEnded): Promise<unknown>は維持し、�
 
 ## U-08・C-2・F-03との順序整合
 
-次の3段階を分ける。
+次の4段階を設計契約とする。
 
-1. Adapter内部で最初のHTTP終端結果を確定する。Headers、Timeout通知、Abort要求だけでは確定しない。
-2. 全所有処理の終端を確認してlifecycleEndedを最大1回通知する。
-3. HttpOutcome PromiseをFulfillしCoordinatorが結果を受け取る。
+1. **HTTP終端結果の内部確定**：Adapterが最初の実際の終端を一度だけ確定し、後続イベントで分類・メタデータを変更しない。
+2. **Lifecycle終了確認とGate通知**：Adapter所有のBody読込・Cancel等の終了を確認し、lifecycleEndedを最大1回呼ぶ。Gateは既存の規則でFlightを解放する。
+3. **HttpOutcome Promise配送**：通常の終了確認済み経路ではGate通知後にPromiseをFulfillし、AdapterからGate経由でCoordinatorへ結果を渡す。
+4. **Tx-A開始可否の再判定**：Coordinatorが停止状態・DB安全性・Evidence・必要なAuthorization・取得順序を再確認する。停止判定と保存試行開始登録・トークン消費を同期的に競合制御し、BEGIN IMMEDIATEを試みる直前というC-2 / F-03境界を維持する。
 
-通常経路では1→2→3とし、結果確定後の後片付けAbortで結果を変更しない。終了未確認なら2・3を行わず、結果候補があってもPromise Pending・Gate保持を維持する。予期しない内部契約違反のRejectは正常なHttpOutcome通知と区別し、終了確認の代用にしない。
+内部確定・Gate解放・Promise受信は別時点である。通知前に結果とdrain状態を固め、通知後からFulfillまで追加の外部Callbackやawaitを挟まない。結果確定後の後片付けAbortで結果を変更しない。終了未確認ならLifecycle通知も通常の結果Promise完了も行わず、Pending・Flight保持を維持する。Reject・Timeout Signal・Abort要求は終了証明ではない。予期しない内部契約違反のRejectはHttpOutcomeによる通常失敗通知と区別する。
 
-Gate解放時刻はHTTP終端の内部確定時刻でもCoordinatorの受信時刻でもない。finishは同期解除・Quota Attempt cleanupを伴うため、通知とPromise配送の間に、別の正常試行が開始できる可能性がある。これを結果の古さ・保存許可・Tx-A開始許可として扱わず、C-2の取得試行直列化・新旧判定・Evidence / Authorization、F-03の停止境界、PR-Dの公開条件を独立に維持する。
+finishはFlightの同期解除とQuota Attempt cleanupを伴う。通知とPromise配送の間に管理停止や別の正常試行が入る可能性があるため、Gateの空き・Promise受信を保存許可とせず、C-2のState直列化・新旧判定・Evidence / AuthorizationとPR-D公開条件を維持する。
 
-停止前に内部確定しても、停止後の新規Tx-Aを許可しない。Promise受信を内部確定に読み替えず、必要な信頼された試行記録・停止との順序をCoordinator統合前に照合する。既に適法に開始済みのTx-AだけをF-03で扱い、AdapterがTx-Aを開始しない。内部確定記録の具体Interfaceは未固定で、HttpOutcomeに推測で情報を追加しない。F-03のTx-A開始境界・Commit分類・Pending・厳格な停止完了は変更しない。
+| 管理停止の成立境界 | 期待結果 |
+|---|---|
+| HTTP内部終端確定前 | 停止後に確定した結果から新規Tx-Aを開始しない |
+| 内部確定後、Lifecycle通知前 | 終端結果を変更しない。新規Tx-Aは禁止 |
+| Lifecycle通知後、Promise配送前 | Gate解放を保存許可とせず、新規Tx-Aは禁止 |
+| Promise配送後、Tx-A開始前 | Coordinatorの停止再確認で新規Tx-Aを禁止 |
+| 停止前に適法なTx-A開始登録・トークン消費済み | F-03の既存条件で結果確定を許容。Shutdown・DB安全性を優先 |
+
+内部確定はAdapter、終了通知はAdapter→Gate、結果配送はAdapter→Gate→Coordinator、停止再確認とTx-A開始競合制御はC-Impl-5C側が担当する。F-03の厳格な停止完了追跡・SUSPENDED Commit・開始済みTx-A / Tx-P / PendingはC-Impl-5C以降の統合責務を維持する。新しい公開Callback・永続Table・独自の終端時刻Tokenを追加しない。Coordinatorの具体的な実装構造は未固定のままである。
 
 ## 前回のNode.js 24実測を再確認した証拠
 
@@ -107,81 +132,80 @@ Work成果物http-lifecycle-20261101のreport.md・timelines.md・results.json�
 
 実測ログはApplicationの観測であり、Server側Request / Response Closeは補助証拠に留める。Request closeはRequest受信完了でも発生し、Response BodyやClientの終了証明ではない。標準APIの意味は[Node.js 24.14.0 Globals](https://nodejs.org/download/release/v24.14.0/docs/api/globals.html)・[Web Streams](https://nodejs.org/download/release/v24.14.0/docs/api/webstreams.html)も参照し、仕様説明を本番実測成功へ置き換えない。
 
-## H5A-01〜23：既存条件の分類・追跡状態
+## 受入条件の正本と過去の検討観点
 
-最新main・指定資料・repository検索と前回成果物には正式な条件本文を確認できなかった。前回のH5A表も番号だけを保持した「正式ID判定未検証」であり、今回それを確定条件として流用しない。ユーザーへ本文または参照先を照会済み。次のIDを保持するが、未取得の意味を推測してHTTP単体等へ割り振らない。
+C-Impl-5Aの正式なInterface受入条件は下記H5A-I01〜H5A-I12とする。既存SG-01〜09、HTTP-01〜07、TQ-04および関連TQ、F03-01以降、関連C1・C2・SCHも正式契約として維持し、IDを削除・再採番・意味変更しない。
 
-| ID | 分類 | 状態 | 理由・対応 |
-|---|---|---|---|
-| H5A-01 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-02 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-03 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-04 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-05 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-06 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-07 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-08 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-09 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-10 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-11 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-12 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-13 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-14 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-15 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-16 | Gate / Quota・SQLite結合（集合として確認） | 未検証（正式ID判定） | 依頼の範囲指定で結合観点であることは確認。各IDの個別定義・割当は本文照合待ち。HTTP単独でPASSにしない。 |
-| H5A-17 | Gate / Quota・SQLite結合（集合として確認） | 未検証（正式ID判定） | 依頼の範囲指定で結合観点であることは確認。各IDの個別定義・割当は本文照合待ち。HTTP単独でPASSにしない。 |
-| H5A-18 | Gate / Quota・SQLite結合（集合として確認） | 未検証（正式ID判定） | 依頼の範囲指定で結合観点であることは確認。各IDの個別定義・割当は本文照合待ち。HTTP単独でPASSにしない。 |
-| H5A-19 | Gate / Quota・SQLite結合（集合として確認） | 未検証（正式ID判定） | 依頼の範囲指定で結合観点であることは確認。各IDの個別定義・割当は本文照合待ち。HTTP単独でPASSにしない。 |
-| H5A-20 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-21 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-22 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
-| H5A-23 | 分類保留 | 未検証（正式ID判定） | 正式条件本文未取得。HTTP単体・Gate結合・Quota / SQLite結合・後続Coordinatorの個別割当を推測しない。 |
+H5A-01〜23は正式本文をGitHubで確認できない過去の検討観点であり、独立した正式受入IDとして扱わない。従来の23行の本文未取得表は本節へ集約した。観点自体は破棄せず、確認できる内容を次の正式条件へ対応付ける。元の各番号との一対一対応は未照合であり、推測で再定義しない。追加条件が必要と判明した場合は正式IDを上書きせず追加候補として報告する。
 
-正式本文の確認後、HTTP単体／Gate結合／Quota・SQLite結合／後続Coordinator統合へ分類し、H5A-I表とEXP証拠へ対応付ける。今回既存23条件の置換・番号再定義は行わない。実測で確認した個別観点と、本番受入条件への正式対応は区別する。
+| 確認可能な過去の検討内容 | 正式な追跡先 | 照合状態 |
+|---|---|---|
+| 同期fetch開始・開始例外・安全側保持 | H5A-I01〜03、SG-01〜05 | 観点は確認済み。旧H5A個別番号との対応は未照合 |
+| Body所有・終了確認・通知最大1回 | H5A-I04〜06・08、HTTP-01〜03、SG-01 | 観点とEXP証拠を保持。旧個別番号は未照合 |
+| 終端競合・通知順序・保存許可 | H5A-I07、HTTP-02・07、F03-01・02等 | 正式順序は今回確定。旧個別番号は未照合 |
+| 429 / 500・Retry-After・サイズ制限・返却境界 | H5A-I09・10・12、HTTP-04、SCH-02・03 | 観点を保持。新しい429優先順位は今回追加判断 |
+| Gate・SQLite・Quota結合（旧16〜19の集合的範囲） | H5A-I07・11、SG、TQ-04、C2、F03 | 集合としての範囲情報のみ。個別番号割当は未照合、HTTP単独PASSなし |
+| 上記以外の旧H5A-01〜23の個別本文 | 未照合 | 不明な内容を新しい正式条件として作らない |
 
-## H5A-I01〜12：追加のInterface設計受入条件
+## H5A-I01〜12：正式なInterface設計受入条件
 
-すべて**実Adapterの実装・受入テストは未実施**。前回の実測、既存Gate Fake試験の記録、今後の本番結合を区別する。同じ観点は既存SG・HTTP・TQ等の試験を拡張・再利用でき、ID数だけ独立テスト関数を増やす義務ではない。
+各行の状態は**設計確定／C-Impl-5A実Adapter未実装／受入テスト未検証**である。既存Gate・Quota等の実装済み範囲や既存試験記録、前回HTTP実測とは別管理とし、この修正で新規テストPASSを作らない。後続工程欄はC-Impl-5A単体完成の未完了と本番統合の未完了を混同しないための区分である。同じ観点は既存SG・HTTP・TQ試験を拡張・再利用でき、ID数だけ独立テスト関数を増やす義務ではない。
 
-| ID | 分類 | 条件・期待結果 | 既存契約対応 | 証拠・未完了範囲 |
+| ID | 工程 | 条件・期待結果 | 既存契約対応 | 証拠・後続範囲 |
 |---|---|---|---|---|
-| H5A-I01 | HTTP単体＋Gate結合 | 有効startの同一同期呼出し内でfetchを開始し、native Promise互換の結果Promiseを返す | SG-02・05 | EXP-16は入力Reject・FIのみ。実AdapterとGate結合は未実装 |
-| H5A-I02 | HTTP単体＋Gate結合 | Permit消費からfetch呼出しまでawait・非同期開始遅延なし | SG-02・07 | 呼出し順序計測と同期再入試験を追加予定。未実施 |
-| H5A-I03 | HTTP単体＋Gate結合 | 同期throwは未開始証明と部分開始不明を分離。http_start_failed / ABORT_REQUESTED維持 | SG-01・03・05、TQ-04 | EXP-16は部分検証。native同期throwは未再現。既存GateのFake試験を実Adapterへ拡張する |
-| H5A-I04 | HTTP単体 | AdapterだけがBody / reader / cancelを所有し二重消費・外部Stream流出なし | HTTP-01、SG-01 | EXP-01〜13は実験ハーネスの観測。本番所有権は未実装 |
-| H5A-I05 | HTTP単体＋Gate結合 | Headers・Abort・Timeout・cancel呼出しだけでは通知せず、全所有処理の終端を要求 | HTTP-01〜03、SG-01 | EXP-02・07・08・10・17・18。EXP-08は未解決現象、結合未検証 |
-| H5A-I06 | HTTP単体＋Gate結合 | 正常・異常・近接競合・再入を通じLifecycle通知は最大1回 | HTTP-02・03、SG-01・05 | 実験の結果ラッチと本番通知の一度限りを区別。本番未検証 |
-| H5A-I07 | Gate結合＋後続Coordinator統合 | 内部結果確定→drain確認→通知→Promise Fulfill。通知による同期解放と間隙の再開始を検証 | HTTP-02・07、SG-01・02・05、F-03 | 実装前の重要結合条件。停止時刻・結果配送・Tx-A許可を混同しない。未実施 |
-| H5A-I08 | HTTP単体＋Gate結合 | 終了未確認Timeout / AbortはPending・占有維持。10秒経過やRejectだけで通常完了としない | HTTP-01〜03、SG-01・06・09 | EXP-08とEXP-18が保持の必要性を示す。実Gate結合は未実施 |
-| H5A-I09 | HTTP単体＋後続Coordinator統合 | 429 / 500をresponseとして返し、retryAfterを未解釈で渡す。Body障害時メタデータは要確認 | HTTP-04、SCH-02・03 | EXP-04・05でHeaders・Body確認。Backoff / Retry-After保存の結合なし |
-| H5A-I10 | HTTP単体 | Content-Length早期拒否と実Byte累積、body_too_largeとcleanup完了を分離 | HTTP-01・02、SG-01 | EXP-11・12は32-byte合成上限。本番値・圧縮等は未確定／未検証 |
-| H5A-I11 | Gate結合＋Quota / SQLite結合＋後続Coordinator統合 | AdapterはBackoff・Quota・Tx-A / Tx-Pを操作しない。停止・拒否・Abort等でも永続消費維持 | TQ-04、SG-03・04・08・09、HTTP-04〜07 | 今回DB・Quotaを実行せず。HTTP単独からPASSとしない |
-| H5A-I12 | HTTP単体＋公開境界レビュー | HttpOutcomeだけを公開しResponse / Stream / Reader / Secret / 元例外の漏洩なし | HTTP-07、SG-02 | 型・返却値・診断ログの検証は本番実装時。未実施 |
+| H5A-I01 | C-Impl-5A Adapter単体・Gate結合 | 有効startの同一同期呼出し内でfetchを開始し結果Promiseを返す | SG-02・05 | EXP-16は入力Reject・FIのみ。実Adapter結合は未検証 |
+| H5A-I02 | C-Impl-5A Adapter単体・Gate結合 | Permit消費からfetch呼出しまでawait・非同期開始遅延なし | SG-02・07 | 呼出し順序計測・同期再入は実装時検証 |
+| H5A-I03 | C-Impl-5A Adapter単体・Gate結合 | 同期throwは未開始証明と部分開始不明を分離。http_start_failed / ABORT_REQUESTED維持 | SG-01・03・05、TQ-04 | EXP-16部分検証。native同期throw未再現。実Adapter結合は未検証 |
+| H5A-I04 | C-Impl-5A Adapter単体 | AdapterだけがBody / reader / cancelを所有し二重消費・Stream流出なし | HTTP-01、SG-01 | EXP-01〜13はハーネスの観測。本番所有権は未検証 |
+| H5A-I05 | C-Impl-5A Adapter単体・Gate結合 | Headers・Abort・Timeout・cancel呼出しだけでは通知せず全所有処理終端を要求 | HTTP-01〜03、SG-01 | EXP-02・07・08・10・17・18。実Adapter結合は未検証 |
+| H5A-I06 | C-Impl-5A Adapter単体・Gate結合 | 正常・異常・近接競合・再入を通じLifecycle通知は最大1回 | HTTP-02・03、SG-01・05 | 実験ラッチと本番通知を区別。実Adapter受入は未検証 |
+| H5A-I07 | C-Impl-5A Gate結合・C-Impl-5C | 内部終端確定→Lifecycle確認・Gate通知→Promise配送→CoordinatorのTx-A再判定。通知と配送の間の管理停止・別試行を検証し、Gate解放を保存許可にしない | HTTP-02・07、SG-01・02・05、F03-01・02・12 | 5Aは順序・間隙のFake結合、実Coordinator・停止とTx-A開始登録は5Cで検証。後続統合未実施 |
+| H5A-I08 | C-Impl-5A Adapter単体・Gate結合 | 終了未確認Timeout / AbortはPending・Flight保持。Signal失効・Rejectだけで通常完了にしない | HTTP-01〜03、SG-01・06・09 | EXP-08・18。実Adapter結合は未検証 |
+| H5A-I09 | C-Impl-5A Adapter単体・C-Impl-5C | 429 / 500のresponse、Body失敗・超過時のhttp保持、未解釈Retry-Afterを検証。429 Body失敗にも有効Retry-After、Timeout終了先行ならTimeout優先、制御Abort終了先行ならControl非更新、確定後変更なし | HTTP-02〜04、SCH-02・03、C2-22 | EXP-04・05は正常Body範囲のみ。新しいBody失敗時優先順位は今回設計確定・未検証。待機計算・Tx-A結合は5C |
+| H5A-I10 | C-Impl-5A Adapter単体 | Content-Length早期拒否と実Byte累積、body_too_largeとcleanup完了を分離 | HTTP-01・02、SG-01 | EXP-11・12は合成上限32。本番値・圧縮等は未確定／未検証 |
+| H5A-I11 | C-Impl-5A Gate結合・C-Impl-5C | AdapterはBackoff・Quota・Tx-A / Tx-Pを操作しない。停止・拒否・Abort等でも消費維持 | TQ-04、SG-03・04・08・09、HTTP-04〜07 | 5Aは副作用なしの結合検証、実Quota / SQLite・Tx-Aは5C。HTTP単独でPASSにしない |
+| H5A-I12 | C-Impl-5A Adapter単体・公開境界レビュー | HttpOutcomeだけを公開しResponse / Stream / Reader / Secret / 元例外の漏洩なし | HTTP-07、SG-02 | 型・返却値・ログは実Adapter実装時に検証 |
+
+### 工程別の検証責務・状態
+
+| 工程 | 主な検証対象 | 実装・検証状態 |
+|---|---|---|
+| C-Impl-5A Adapter単体 | 同期開始、Body単独所有、Timeout / Abort、HttpMetadata / Outcome、Body上限、H5A-I01〜06・08〜10・12 | 詳細設計確定、実Adapter未実装・受入未検証。前回EXPの限定的実測は上記に分離 |
+| C-Impl-5A Gate結合 | Flight保持・解放、再入、同期throw、通知順序、停止競合、H5A-I01〜08・11 | 既存Gate制御は実装済みで既存文書にFake試験記録あり。実Adapter結合は未実装・未検証 |
+| C-Impl-5B | Clock / History Trustの本番配線、停止理由・通知との接続 | 後続工程。既存Trust coreの単体実装と本番確認事実の供給を区別 |
+| C-Impl-5C | Coordinator、Quota / SQLite、Tx-A開始競合、429 Backoff適用、H5A-I07・09・11、F-03 | 後続工程・具体実装構造未確定。5A単独から統合PASSにしない |
+| 後続実機・Provider検証 | Linux / Pi、実API、TLS / Proxy、運用・復旧、暫定値の妥当性 | 未検証。PR-D / PR-Eの既存責務も維持 |
 
 ### 実装時の重点結合シナリオ
 
 - Gate.start前／Adapter内fetch前の証明済み失敗、native Promise Reject、fetch開始後の同期throwを分ける。終了通知なしではABORT_REQUESTEDを保持する。
 - 適法なfinishがstartの返却前に発生する経路、finish後に内部例外が出る経路、Abort listenerやcleanupから再入する経路を検証する。finished / startingとcleanupAttemptedの意味を維持する。
 - 通知による同期Flight解除後、Promise Fulfill／Coordinator継続前に別試行が来るスケジュールを作り、旧結果の保存許可・新旧判定をGateの空き状態から推論しない。
-- 内部終端確定→通知→配送の各間に管理停止を置く。後続Abortで確定済み結果を変更せず、停止後の新規Tx-Aは開始しない。上位Shutdown・DB保護は優先する。
+- 内部終端確定前、確定後／Lifecycle通知前、通知後／Promise配送前、配送後／Tx-A開始前の各境界に管理停止を置く。後続Abortで分類・メタデータを変更せず、新規Tx-Aは禁止。停止前に適法な開始登録・トークン消費済みのTx-Aだけ既存F-03で継続し、上位Shutdown・DB保護を優先する。
 - timeout / Abort / cancelに未解決Promiseを注入し、結果Promise Pending・Flight保持を確認する。観測Timeoutで強制Fulfill／finishしない。
-- 429 / 500、Bodyなし、Bodyエラー、サイズ超過、取消しReject、lock解放による人工的closed拒否を区別する。Content-Lengthなし・不正・圧縮等の実Byte検証とメモリ境界は追加試験へ残す。
+- 429のBody正常・通常読込失敗・サイズ超過の各結果でメタデータ保持と有効Retry-After引継ぎを検証する。500 Body失敗、429後のTimeout終了先行・制御Abort終了先行、確定後の後続通知も組み合わせ、H5A-I09の優先順位を検証する。待機計算とControl保存は5C側で確認する。
+- Bodyなし、取消しReject、lock解放による人工的closed拒否を区別する。Content-Lengthなし・不正・圧縮等の実Byte検証とメモリ境界は追加試験へ残す。
 - 送信失敗・未送信・AbortでもTQ-04の消費維持、AdapterからControlやDBへ副作用がないことを実Gate／Quota結合で確認する。ローカルHTTP単独を結合PASSとはしない。
 
-## 未決事項・実装前確認
+## 解消した事項・残る未決事項
 
-1. H5A-01〜23の正式条件本文・個別分類・既存受入との対応。
-2. 設定する本番Body Byte上限。実験用32 bytesを流用しない。圧縮・展開済みByte・内部buffer・JSON展開の総メモリを保証しない。
-3. 合成SignalのEXP-08未終了の最小再現・原因と、Node 24別patch／Linux／Piでの追加検証。未解決時保持の安全条件は緩和しない。
-4. Signal原因と実際のfetch / readエラーの対応を確認する実装条件。Signal失効だけで後続の任意エラーをtimeout / abortedへ分類しない。
-5. HttpOutcomeのbody_error / body_too_largeではstatus・retryAfterが消える。429 Body失敗時にも既存C-2の有効Retry-After尊重を維持する引継ぎが必要。機密を含まないHTTPメタデータを信頼された経路で保持する修正案をレビューするが、今回勝手な型拡張・C-2変更はしない。
-6. 内部終端確定記録・停止順序とCoordinatorの接続。Promise配送時刻への読み替え禁止、Gate占有をTx-A許可として利用しないこと。
-7. 生fetch Promiseを返すように読める既存コメントの明確化。型・Gateアルゴリズムは維持し、結果Promise・Body所有権へ説明を合わせる。
+今回、HttpMetadataの独立保持と429 Body失敗時優先順位、4段階の通知／保存境界、正式受入H5A-I01〜12への正本整理を確定し、従来の「Body失敗メタデータは要確認」「内部確定記録のInterface未固定を理由に順序全体を未決」とした説明を更新した。新たな公開Callback・永続Table・独自終端時刻Tokenは不要とする。実装済み・テストPASSを意味しない。
 
-上記を実装前にレビューし、不明な意味論をCodexが独断で補完しない。今回の文書でC-Impl-5A全体が実装可能と無条件に承認されたとは扱わない。C-Impl-5以降のCoordinator / HTTP Client本番配線、F-03の厳格な停止完了、Startup / Management Stop、PR-D・PR-E、実Provider・Pi検証は後続工程へ維持する。
+| 未決事項・注意点 | 確認工程 |
+|---|---|
+| 本番Body Byte上限の具体値。実験用32 bytesを流用せず、圧縮・buffer・JSON展開の総メモリ保証としない | C-Impl-5A実装前の設定検討・単体検証 |
+| EXP-08の原因、Node / Undici一般的再現性、最小再現 | C-Impl-5Aの追加検証および後続環境検証。未解決時の保持は維持 |
+| Linux / Pi、実Provider・TLS・ProxyのLifecycle挙動 | 後続実機・Provider検証。Windowsローカル実測だけで保証しない |
+| Signal原因と実際のfetch / readエラーの因果を確認する実装条件 | C-Impl-5AのFI・HTTP単体／Gate結合で、確定した優先順位を検証 |
+| Coordinatorの具体構造、停止再確認・Tx-A開始登録の同期競合制御、厳格な停止完了追跡 | C-Impl-5C以降。既存F-03境界を変えずに統合 |
+| Clock / History Trust本番配線・確認事実の供給 | C-Impl-5B。既存core単体と本番確認を区別 |
+| 生fetch Promise返却と読めるソースコメントの明確化 | C-Impl-5A実装時。シグネチャ・Gateアルゴリズムは維持 |
+| 旧H5A-01〜23の確認不能な個別本文・番号対応 | 過去観点として未照合。正式受入の必須IDへ推測で昇格しない |
+
+PR-Dの公開・Pending、PR-Eの継続Recovery / Backup、F-03の厳格な停止完了とStartup / Management Stop統合は既存境界を維持する。AdapterにDB・Backoff更新を移さず、不明な意味論をCodexが独断で補完しない。
 
 ## 今回の文書確認
 
-GitHubの最新mainとOpen PR一覧を取得して関連PRなしを確認。コード・既存テスト・検証文書を読み取り、前回Workの実測ログを再確認した。設計正本はC-Impl-5A小節の追加のみ、既存C-1 / C-2 / F-01〜03 / U-12・SG・HTTP・TQの本文・IDを維持する。Architectureは既存の所有権境界が成立するため変更しない。
+PR #48初回作成時に最新main・関連PR・実装と前回実測ログを確認した。今回の修正は既存PR #48の最新Head・差分と関連契約を再確認し、対象2文書のC-Impl-5A説明のみを更新する。既存C-1 / C-2 / F-01〜03 / U-12・SG・HTTP・TQの本文・IDは維持し、Body失敗時の429優先順位を今回の追加確定事項として区別する。Architectureは既存の所有権境界が成立するため変更しない。
 
-本番コード・テストコード・DDL・Migration・依存・Workflow・Issue #16は変更しない。今回はHTTP実験・既存テスト再実行・実機・実Provider通信は行っていない。文書専用PRを作成し、Mergeしない。
+本番コード・テストコード・DDL・Migration・依存・Workflow・Issue #16は変更しない。今回はHTTP実験・既存テスト再実行・実機・実Provider通信は行っていない。PR #48の既存ブランチへ追加Commitし、新規PR作成・main直接Push・Mergeは行わない。
