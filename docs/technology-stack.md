@@ -3006,7 +3006,7 @@ History TrustはUNVERIFIED / TRUSTED / SUSPENDED等の論理状態として扱�
 
 #### C-Impl-5B-4：History Trust / Restart Recovery詳細設計（P0・P1整合レビュー反映）
 
-本節はC-Impl-5B-4の設計正本とする。基準main `8544d988db6af29ca7eb105f18bed271bcd4b6f8`を読み取り、今回のP0・P1合意を詳細化した。**設計確定・実装と受入試験は未実施**であり、C-Impl-5Bの本番Trust配線・Restart Recoveryが実装済みという意味ではない。既存F-01〜F-03・U-12、C-1 / C-2、Tx-Q/A/P/C、PR-D / PR-Eの責務は維持する。現行実装との差・受入対応は[専用検証計画](verification/c-impl-5b4-history-trust-restart-recovery.md)に記録する。過去節のHistory管理回復手順「未確定」は本節の採用範囲について更新し、OS同期取得の具体方式・RTC-only送信許可等の未決事項は残す。
+本節はC-Impl-5B-4の設計正本とする。基準main `8544d988db6af29ca7eb105f18bed271bcd4b6f8`を読み取り、今回のP0・P1合意と追加採用済みR-01〜R-03を詳細化した。**設計確定・実装と受入試験は未実施**であり、C-Impl-5Bの本番Trust配線・Restart Recoveryが実装済みという意味ではない。既存F-01〜F-03・U-12、C-1 / C-2、Tx-Q/A/P/C、PR-D / PR-Eの責務は維持する。現行実装との差・受入対応は[専用検証計画](verification/c-impl-5b4-history-trust-restart-recovery.md)に記録する。過去節のHistory管理回復手順「未確定」は本節の採用範囲について更新し、OS同期取得の具体方式・RTC-only送信許可等の未決事項は残す。
 
 **基本不変条件と残余リスク**
 
@@ -3027,7 +3027,7 @@ Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有Backen
 
 各窓の証拠は独立し、Backend Process再起動で全失効する。通常復帰では窓別待機が未完了でも、旧履歴全件を各窓へ計上する保守的Quota評価を許容する。これは通常復帰の他の安全条件を省略する許可ではない。
 
-異常終了・OS再起動・Lifecycle Marker不明等で自動復帰条件を満たさない場合は、管理者復帰へ進む。管理者承認成立後に**別起点の25時間隔離**を開始し、Provider HTTP・新規Tx-Qを禁止する。承認と隔離証拠は今回Processのメモリのみで保持し、再起動で失効する。案D待機の経過を管理者承認として流用せず、管理者隔離の経過を案Dの起動境界証拠として流用しない。
+前回RUNNINGや異なるOS Bootなど、R-01の判定で自動復帰条件を満たさない場合は管理者復帰へ進む。Marker不正・欠損・DB不整合はFail Closedとし、正常なRUNNINGと同一視しない。管理者承認成立後に**別起点の25時間隔離**を開始し、Provider HTTP・新規Tx-Qを禁止する。承認と隔離証拠は今回Processのメモリのみで保持し、再起動で失効する。案D待機の経過を管理者承認として流用せず、管理者隔離の経過を案Dの起動境界証拠として流用しない。
 
 管理者復帰は、有効な承認 AND 管理者隔離25時間完了 AND 案Dの1分・65分・25時間すべて完了 AND 起動境界・単調時計・DB・Clock・History・Providerキー排他利用の再検証成功を要求する。通常Quota Guard・Tx-Q・Send Gate判定は迂回せず、管理停止SUSPENDED等の独立停止も解除しない。
 
@@ -3043,9 +3043,17 @@ Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有Backen
 
 今回ProcessのTimestamp信頼性が失われたら、(1)新規Tx-Q・Provider HTTP禁止、(2)進行中Quota予約・HTTPをDrain、(3)Drain完了後に影響履歴のSequence境界を固定、(4)単調時計で1分・65分・25時間の窓別待機を開始、(5)各窓の待機中は対象全件を計上し、完了した窓だけ除外可能、(6)Clock回復後もDB・History・Quotaを再検証、の順とする。Abort要求だけでDrain完了とせず、HTTP Adapter所有処理とQuota Transactionの終了を確認する。Drain不能・Commit unknown等で境界を確定できなければ証拠を発行せずFail Closed。
 
-複数のClock異常では、影響するSequence範囲と起点・窓別完了証拠を対応付ける。旧区分・信頼済み区分との重複、未分類の抜け、同一Consumptionの二重計上を防ぐ。新たな異常に過去の待機証拠を流用しない。範囲を安全に分離・照合できない場合もFail Closedとし、範囲管理の具体データ構造は実装前詳細化事項とする。Consumptionは削除・修正しない。
+**R-02：複数Clock異常範囲（採用確定）**
 
-窓wごとに `C_w = C_old,w + C_uncertain,w + C_trusted,w` を計算する。旧履歴・不確実履歴の構造・完全性確認とTimestampを使う窓評価を分離する。Timestampが窓評価に不適格でも、構造不正まで許容する意味ではない。安全に評価可能というHistoryの証拠を生成せず、既存QuotaTrust.historyComplete等を固定trueに置換して通過させてはならない。Timestampの信頼を主張できない区分は、窓別の保守的評価証拠として扱うため、既存Guard / Trust受渡しの拡張が実装時に必要である。
+H_new_uncertainは範囲ごとに、Provider識別子、Process Generation、Range ID、startSequence、endSequence、待機開始の単調時計証拠、1秒・60分・24時間の窓別待機状態を保持する。具体的な型名は固定しないが、`cutoffSequence < startSequence <= endSequence`、不確実範囲相互の非重複、全Consumptionの一意な区分所属、分類漏れ・二重計数禁止を必須とする。確定した境界を後から都合よく変更せず、異なる範囲の証拠を流用しない。
+
+異常時はClock Trust失効通知 → Gate閉鎖・新規Tx-Q / HTTP禁止 → 進行中Quota / HTTPのDrain → Drain後の確定済みSequence境界取得 → 影響Consumptionの分類 → 境界固定後に単調時計の窓別待機開始の順とする。検出時lastSequenceを最終境界にせず、Tx-Q Commitと検出の競合をDrain後に解決する。Drain・境界確定に失敗すればFail Closed。
+
+実際のClock異常発生は検出より前の可能性がある。最後に信頼性を確認できたSequenceとの対応が保証される場合のみ、その対応を開始境界に使う。保証できなければ未確定の影響範囲を保守的に拡大し、壁時計Timestampの逆算だけでValid扱いしない。既存の固定範囲を変更・統合して辻褄を合わせず、安全な非重複分類を構築できなければ停止する。
+
+各範囲は1分・65分・25時間を独立に待ち、未完了窓は範囲内全件を計上、完了窓だけ除外可能とする。履歴自体は保持し、待機完了・Clock回復でTimestampがValidになったとはせず、過去の不確実履歴をValidへ再分類しない。再発で新しい不確実Consumptionがあれば新範囲を作り、新規Consumptionがなければ空範囲を作らない。MVPでは範囲統合を行わない。単調時計継続性不明なら該当証拠失効、Process再起動では全範囲別証拠を失効し、次回Startupの案Dで全旧履歴を評価する。管理者25時間隔離はこれらと別条件である。
+
+窓wごとに `C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w` を計算する。旧履歴・不確実履歴の構造・完全性確認とTimestampを使う窓評価を分離する。Timestampが窓評価に不適格でも、構造不正まで許容する意味ではない。安全に評価可能というHistoryの証拠を生成せず、既存QuotaTrust.historyComplete等を固定trueに置換して通過させてはならない。Timestampの信頼を主張できない区分は、窓別の保守的評価証拠として扱うため、既存Guard / Trust受渡しの拡張が実装時に必要である。
 
 MVPではOS Suspendをサポートしない。単調時計の逆行・取得失敗・継続性不明、Suspend/Resume検出時は証拠を失効してFail Closed。Process再起動で待機を引き継がない。systemdによるSleep/Suspend抑止・監視・異常検出、Pi 5での時計挙動は実装・実機受入事項とする。監視間隔だけでSuspendの完全検出を保証しない。
 
@@ -3059,16 +3067,66 @@ OperationallyDrainedは、HTTP開始前のQuota予約Commit確定、Adapter所�
 
 RecoveryCleanEligibleは、管理者承認待ち・隔離25時間待機中・隔離後再検証待ち、History UNVERIFIED / SUSPENDED、Clock異常履歴の隔離未完了、DB・Quota・Lifecycle未解決のいずれでもfalseとする。管理者隔離完了後に再検証成功・History復帰した場合のみ候補とする。**隔離中の正常ShutdownでCLEANを発行し、同一OS Bootの次回起動で隔離を迂回することを禁止する**。通常復帰時の案D待機未完了は、旧履歴全件計上を含む評価とRecovery適格性を確認するもので、管理者隔離中の許可へ拡張しない。
 
-Shutdownは次の順序とする。
+**R-01：CLEAN Transaction・結果不明・次回起動（採用確定）**
 
-1. RuntimeをSTOPPINGへ遷移しSend Gateを閉鎖する。
-2. Scheduler、新規Tx-Q、新規HTTP開始を禁止する。HTTP開始権限取得と停止確定は同じ同期境界で直列化する。
-3. In-flightをDrainし、HTTPと永続予約の対応・未解決Transaction不存在を確認する。
-4. RecoveryCleanEligibleを含むCanMarkCleanを確認する。
-5. 適格な場合だけLifecycle Markerを専用TransactionでCLEANへ更新し、Commit成功を確認する。
-6. 既存BackendStoreの所有権に従ってDB Close、最後にExclusive Lockを解放する。
+CanMarkCleanを満たさなければCLEAN更新Transactionを開始しない。Runtime=STOPPING、Gate閉鎖、新規Tx-Q / HTTP禁止、Adapter所有処理Drain、Provider影響処理に未解決なし、必要なQuota予約永続化済み、Connection / Transaction正常、History / Recovery / Clock適格、今回ProcessのBoot ID・Generation一致を要求する。適格性確認からCommitまで新規送信が入り込まない停止境界を維持する。承認待ち・隔離中・再検証待ち・History UNVERIFIED / SUSPENDED・Clock不確実履歴未解決・DB / Quota / Lifecycle unknownでは禁止し、隔離中は正常DrainでもRUNNINGを維持する。
 
-PR-A installShutdown()・Fastify Lifecycleと既存Shutdown全体10秒を継続利用し、別のSignal Handler・追加待機枠を作らない。CLEAN Commit unknownを正常終了確認済みとしない。CLEAN不適格でもBackend自体は安全に終了可能とし、MarkerはRUNNINGのまま保持する。期限内にDrainできない場合は既存異常終了経路へ進み、CLEANを救済発行しない。同期SQLite処理はJS Timerで強制中断できない既存制約を維持する。Startup / Shutdown / Recoveryは同じCanMarkClean・証拠失効条件を参照する。
+共有Connection CoordinationとLifecycle所有権に従い、専用Transactionで今回ProcessのRUNNINGからCLEANへ条件付き更新する。設計例は以下とし、`:lifecycle_key`の具体値・DDL制約を新たに固定するものではない。開始には後述R-03のDeadline Gateも要求する。
+
+```sql
+BEGIN IMMEDIATE;
+UPDATE backend_lifecycle
+SET state = 'CLEAN'
+WHERE lifecycle_key = :lifecycle_key
+  AND state = 'RUNNING'
+  AND boot_id = :process_boot_id
+  AND generation = :process_generation;
+-- 更新行数が正確に1件であることを検証してからCOMMITする。
+COMMIT;
+```
+
+更新行数が0件・複数件、Boot ID / Generation不一致なら成功扱いせず、既存の安全なRollback・結果不明保護に従う。
+
+| CLEAN保存結果 | 今回Processの扱い |
+|---|---|
+| Commit成功確定 | CLEAN成立。HTTP送信許可とは別 |
+| Rollback確定 | CLEAN不成立、RUNNING維持 |
+| Commit unknown | 正常終了未確定。無条件再試行・RUNNINGへの書戻し禁止。可能なら既存規則の安全な照合を行い、照合不能で成功推測しない |
+| Connection / Transaction状態不明 | 新規Transaction禁止、Fail Closed |
+
+次回Startup Transaction内では、前回ProcessのCommit戻り値ではなくDB上の前回Markerと既存の全自動復帰条件を検証する。
+
+| 前回Markerと条件 | 次回起動の扱い |
+|---|---|
+| CLEAN + 同一OS Boot + Lifecycle / History / Quota / Clock等の全条件成立 | 自動復帰候補。前回Commit unknownでもDB検証を根拠に候補とできる |
+| CLEAN + 異なるOS Boot | 管理者復帰 |
+| RUNNING | 管理者復帰 |
+| Marker不正・欠損・DB不整合 | Fail Closed。正常なRUNNINGと同一視しない |
+| CLEANでもHistory / Quota / Clock等の条件不成立 | 自動復帰禁止 |
+| 今回Startup TransactionがCommit unknown | 今回の起動境界・証拠を採用せずFail Closed |
+
+CLEANだけでHTTPを許可せず、案D・Quota / Clock / History・独立停止の検証を維持する。Startup前Markerの検証と今回RUNNING境界の確定を分離し、今回ProcessのCLEAN結果不明を次回の無条件拒否・無条件許可のどちらにも変換しない。
+
+**R-03：Shutdown Deadline Gate（採用確定）**
+
+Shutdown開始時（既存PR-Aと同じくJSが終了要求を処理する時点）、単調時計で絶対Deadlineを定め、既存Shutdown全体10秒を共有する。HTTP / DB / Lifecycleごとの新しい10秒枠・Signal Handlerは追加しない。順序は以下とする。
+
+1. RuntimeをSTOPPINGへ遷移しSend Gateを閉鎖、新規Tx-Q / HTTPを禁止する。
+2. Scheduler・HTTP・DBをDrainし、永続予約対応・Transaction正常性を確認する。
+3. CLEAN適格性を再検証する。
+4. Shutdown Deadline Gateを判定する。
+5. 条件成立時だけCLEAN Transactionを開始する。
+6. 既存BackendStoreの所有権に従ってDB Close、最後に排他Lockを解放する。
+
+`CanStartCleanTx = CanMarkClean AND DeadlineValid AND ConnectionHealthy AND NoPendingTransaction AND ShutdownOwnershipValid`
+
+DeadlineValidは単に現在が期限内という判定ではなく、CLEAN Transaction・DB Close・Lock解放の開始余裕`B_clean`を要求する。B_cleanの具体値はPi 5実機検証後に決定し、未評価の固定値を置かない。単調時計・Deadline・必要余裕を検証できなければCLEAN開始を許可しない。
+
+開始余裕不足・開始前Deadline超過・Drain未完了・Recovery未完了・単調時計異常・DB不明ではCLEANを開始せずRUNNINGを維持し、既存DB Close・Lock解放を可能な範囲で進める。全体Deadlineは延長せず、期限内終了不能なら既存異常終了経路へ進む。CLEAN成功後のDB Close失敗はCLEAN成立とClose失敗を区別して記録し、Markerを無条件に書き戻さない。
+
+better-sqlite3の同期処理・開始後の同期COMMITが長時間停止し得る。JS Timerで安全に強制中断できるとせず、B_cleanを10秒以内完了の保証にしない。危険な強制Rollback・無条件再試行・成功推測は禁止し、Commit unknownはR-01に従う。現行installShutdown()のTimerと、今回採用する単調時計Deadline / CLEAN開始判定は実装状態を区別する。
+
+HTTP開始権限取得とSTOPPINGを同じ同期境界で直列化し、開始先行ならIn-flightとしてDrain、STOPPING先行なら新規開始拒否とする。Quota Commit済み・HTTP未開始なら消費を保持して未送信終了できる。Fastify Lifecycle、Connection Coordination、DB所有権、F-03停止完了条件は維持し、Startup / Shutdown / Recoveryは同じ適格性・証拠失効条件を参照する。
 
 **P1-1：Lifecycle MarkerとSchema v3（未実装）**
 
@@ -3076,7 +3134,7 @@ PR-A installShutdown()・Fastify Lifecycleと既存Shutdown全体10秒を継続�
 
 Migration書込み前にWAL + synchronous=FULLを設定・検証する。C-Impl-5B-4で利用する共有ConnectionもFULLを要求し、現行NORMAL実装のままで耐久条件を満たしたとしない。既存v2の6 Table・Index・Quota履歴は保持し、履歴初期化・自動修復を行わない。通常Backend起動でSchema Migrationを自動実行しない。旧Releaseとの非互換、Backup・Rollback管理、Schema前後検証・Commit unknown照合は既存12.4に従う。FULLもmicroSD故障・管理外Restoreを完全防止する保証ではない。
 
-Lifecycle RepositoryはBackendStoreの単一Connectionを借用し、connection-coordination.tsのbusy / connectionUnresolved / blockedと整合させる。未解決ConnectionでStartup・CLEAN更新・別Repositoryの新Transactionを開始しない。起動境界Commit unknownなら通常復帰しない。CLEANと同一boot_idは自動復帰判断の必要な証拠であり、それだけでHistory完全性・Clock・独立管理停止等の検証を省略しない。Startup前Markerの評価と今回RUNNING境界の確定を取り違えない。Lifecycle Tableの具体DDL・制約、generation更新・上限・Startup保存結果の詳細契約は、依頼にない値を推測せず実装前確認に残す。
+Lifecycle RepositoryはBackendStoreの単一Connectionを借用し、connection-coordination.tsのbusy / connectionUnresolved / blockedと整合させる。未解決ConnectionでStartup・CLEAN更新・別Repositoryの新Transactionを開始しない。起動境界Commit unknownなら通常復帰しない。CLEANと同一boot_idは自動復帰判断の必要な証拠であり、それだけでHistory完全性・Clock・独立管理停止等の検証を省略しない。Startup前Markerの評価と今回RUNNING境界の確定を取り違えない。R-01でCLEAN条件付き更新・保存結果と次回起動の分岐を確定した。Lifecycle Tableの具体DDL・制約、generation更新・上限、Startupの具体SQLは、依頼にない値を推測せず実装前確認に残す。
 
 **P1-2：ローカル管理承認**
 
@@ -3096,7 +3154,7 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 
 **反映状態と実装前確認**
 
-今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。自動復帰条件の完全な判定表、Startup Transaction / Lifecycleの具体SQL・DDL、複数異常範囲の実装、Token・UDS仕様、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
+今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。R-01の全条件を生成する具体的な検証・StartupのSQLとLifecycle DDL、R-02範囲記録の具体型・Guardへの接続、R-03のB_clean値、Token・UDS仕様、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
 
 
 <a id="pr-c-c3-f02-delay-margin"></a>

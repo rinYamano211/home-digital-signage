@@ -2858,3 +2858,12 @@ Commit成功後に例外が通知される場合を考えると、無条件Retry
 - FULLへの変更も物理故障・Provider計上遅延を完全保証しない。管理者のキー排他利用確認とレベルB残余リスク受容を技術的証明と混同しない。
 
 正本は[technology-stack.md](technology-stack.md#pr-c-c-impl-5b4-history-restart)、[受入計画](verification/c-impl-5b4-history-trust-restart-recovery.md)。今回の成果は詳細設計の文書化であり、Schema v3 / FULL / Lifecycle / 管理CLI・UDSの実装、受入試験・Pi実機検証は未実施。Issue #16とPR-C全体は継続中とする。
+
+
+### C-Impl-5B-4 R-01〜R-03：結果不明・範囲証拠・終了期限を分ける
+
+- R-01：前回Commitの戻り値だけで次回復帰を永続的に拒否する方式ではなく、今回の正常終了未確定と、次回StartupのDB上CLEAN・同一Boot・全条件検証を分ける。unknownを成功と推測せず、RUNNINGへの書戻し・無条件再試行を禁止する。隔離中CLEAN禁止は維持する。
+- R-02：Clock回復で不確実履歴をValidへ戻す方式や、複数範囲の統合は採用しない。検出が実際の異常より遅れるため、開始境界は信頼確認Sequenceとの対応を根拠にし、不明なら保守的に拡大する。Drain後の固定境界・範囲別窓待機で二重計数と証拠流用を防ぐ。
+- R-03：段階別の10秒待機追加ではなく、Shutdown開始時の単調時計絶対Deadlineを全体で共有する。B_cleanで開始余裕を要求するが、同期COMMITの中断や完了時間の保証ではない。CLEAN成立と後続Close失敗を別の事実として記録する。
+
+これらは採用確定した設計判断であり、実装・試験済みではない。B_cleanの具体値はPi 5での検証待ち、Provider計上遅延上限不明は既存レベルBの残余リスクとして維持する。[正本R-01〜R-03](technology-stack.md#pr-c-c-impl-5b4-history-restart)と[H54受入計画](verification/c-impl-5b4-history-trust-restart-recovery.md)で追跡する。
