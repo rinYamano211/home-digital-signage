@@ -2848,3 +2848,22 @@ Commit成功後に例外が通知される場合を考えると、無条件Retry
 - 既存Stateの欠損・不正は単調増加時計で保守的に待ち、待機後も再Readする。時間経過は正常性の証明や不正Row修復の許可ではない。
 - Shutdown時は初回Authorizationを失効させ、新規発行・再発行・初回INSERTを禁止する。開始済み試行の正常既存RowへのUPDATEだけを、DB・Transaction正常、有効Evidence、DB安全性の停止なし、既存Lifecycleの終了待機内という全条件で許可可能とする。未保存のHTTP結果を理由に即時再送しない。
 - C-2の文書化とC-1整合修正のみ。C2受入条件は未実施、実装は未着手。Provider送信Permitの競合防止方式はC-3、継続Recovery・不正Row修復はPR-Eへ引き継ぐ。
+
+
+## 2026-11-01 C-Impl-5B-4：History TrustとRestart Recoveryの証拠を分ける
+
+- 起動境界からの窓別待機と、管理者承認後の隔離は起点・目的が異なる。経過時間を一つの「待った」という事実にまとめず、Process・Sequence範囲・窓に拘束する。
+- 壁時計が安定しても過去のTimestampや履歴完全性は回復したとは限らない。構造検証と保守的Quota評価を分離し、不明履歴の削除や固定trueによる迂回で解決しない。
+- CLEANはHTTP全件成功ではなく、DrainとRecovery適格性の両方を示す。隔離中の正常終了でCLEANを発行すると次回起動で隔離を迂回し得るため、終了可能性と自動復帰可能性を分ける。
+- FULLへの変更も物理故障・Provider計上遅延を完全保証しない。管理者のキー排他利用確認とレベルB残余リスク受容を技術的証明と混同しない。
+
+正本は[technology-stack.md](technology-stack.md#pr-c-c-impl-5b4-history-restart)、[受入計画](verification/c-impl-5b4-history-trust-restart-recovery.md)。今回の成果は詳細設計の文書化であり、Schema v3 / FULL / Lifecycle / 管理CLI・UDSの実装、受入試験・Pi実機検証は未実施。Issue #16とPR-C全体は継続中とする。
+
+
+### C-Impl-5B-4 R-01〜R-03：結果不明・範囲証拠・終了期限を分ける
+
+- R-01：前回Commitの戻り値だけで次回復帰を永続的に拒否する方式ではなく、今回の正常終了未確定と、次回StartupのDB上CLEAN・同一Boot・全条件検証を分ける。unknownを成功と推測せず、RUNNINGへの書戻し・無条件再試行を禁止する。隔離中CLEAN禁止は維持する。
+- R-02：Clock回復で不確実履歴をValidへ戻す方式や、複数範囲の統合は採用しない。検出が実際の異常より遅れるため、開始境界は信頼確認Sequenceとの対応を根拠にし、不明なら保守的に拡大する。Drain後の固定境界・範囲別窓待機で二重計数と証拠流用を防ぐ。
+- R-03：段階別の10秒待機追加ではなく、Shutdown開始時の単調時計絶対Deadlineを全体で共有する。B_cleanで開始余裕を要求するが、同期COMMITの中断や完了時間の保証ではない。CLEAN成立と後続Close失敗を別の事実として記録する。
+
+これらは採用確定した設計判断であり、実装・試験済みではない。B_cleanの具体値はPi 5での検証待ち、Provider計上遅延上限不明は既存レベルBの残余リスクとして維持する。[正本R-01〜R-03](technology-stack.md#pr-c-c-impl-5b4-history-restart)と[H54受入計画](verification/c-impl-5b4-history-trust-restart-recovery.md)で追跡する。

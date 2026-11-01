@@ -1485,7 +1485,7 @@ Gateは本番の信頼済みHTTP開始Adapterを使い、最終判定・一度�
 
 Clock / History Trust監視・判定側は失効をGateへ通知し、Gateが同期的に閉鎖・Send Epoch更新・旧権限失効を行う。Gateの最終確認で異常・鮮度切れを検出した場合も同じ制御とする。対象Providerに未終了HTTPがあればGateがAbortを要求し、Lifecycle終了までは占有を維持する。各Trustの判定責務が自身の停止理由・解除条件を所有し、他の停止理由を解除せず、回復後も旧Attempt / Permitを復活させない。これは検出・通知後のApplication内制御であり、監視間隔中の未検出の外部変化を即時に把握する保証ではない。
 
-今回確定したStep 1〜6、Permit・Trust・F-02境界・テスト計画は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-4-send-gate-trust)を正本とする。C-Impl-4の実装・テストは未実施。OS同期取得方法、RTC-only送信許可、History Trustの管理確認・回復手順は未確定で、確認不能なら送信しない。独立制御の完成と、実Provider Client・Coordinator・Startup / Management Stop・Recoveryを含む本番統合の完成を区別する。今回コード・DB操作・実APIアクセス・実機検証は行わない。
+今回確定したStep 1〜6、Permit・Trust・F-02境界・テスト計画は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-4-send-gate-trust)を正本とする。C-Impl-4の実装・テストは未実施。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](technology-stack.md#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期取得方法・RTC-only送信許可は未確定で、確認不能なら送信しない。独立制御の完成と、実Provider Client・Coordinator・Startup / Management Stop・Recoveryを含む本番統合の完成を区別する。今回コード・DB操作・実APIアクセス・実機検証は行わない。
 
 ### 16.4 Validation・Transaction分離・公開
 
@@ -1608,7 +1608,7 @@ Database HealthとBackend Service Healthを区別する。L1は一時SQL失敗�
 HEALTHY / DEGRADED / RECOVERING / BLOCKEDは概念状態であり、全Service共通の具体型ではない。SQLite利用可能後原則1分以内のPublish / Read再開を初期目標とする。外部API成功・最新Data取得はDB復旧条件に含めない。
 
 WAL・Checkpoint・Connection設定、Backup API・頻度・世代数等の採用状況はtechnology-stack.md第12・13章に従う。
-WAL肥大化は原因調査後に必要時手動対応し、定期強制TRUNCATEは行わない。突然の電源断では直近Commit喪失の可能性を許容するが、不完全Snapshotは公開しない。
+WAL肥大化は原因調査後に必要時手動対応し、定期強制TRUNCATEは行わない。従来NORMALでの直近Commit喪失許容をQuota / Lifecycle耐久性の根拠にしない。C-Impl-5B-4では共有Connectionと明示v3 Migration書込み前のWAL / FULLを設計要求とし、実装は未対応である。不完全Snapshotは公開せず、FULLでもStorage故障の完全保証とはしない。
 BackupはWALと整合する方法で取得し、作成後に整合性確認する。稼働中DB本体だけの単純コピーは採用しない。
 同一microSD内のBackupや2世代Snapshotは物理故障対策ではなく、MVPでmicroSD物理故障からの自動Recoveryを保証しない。
 Backup実行時刻・Path・Scheduler・再試行・復元コマンド、Lock / Checkpoint異常の詳細運用は未決定である。
@@ -1633,7 +1633,7 @@ Shellが専用ファイルをFDで開き、EX取得成功後にexecでNode.jsへ
 3. ShellのexecでNode.jsへ同じLock FDを継承する。
 4. Node.jsでConfig・必要なSecretを既存PR-Aの検証契約に従って検証し、Loggerを生成する。
 5. Fastify構築・必要なLifecycle Hookを登録し、SQLite Connection取得・初期化とListenより前に既存の`installShutdown()`でSIGTERM / SIGINTのHandlerを登録する。
-6. 既存SQLite DBを`fileMustExist: true`でOpenし、WAL / NORMAL等の設定・Version・DDL構造を検証する。必要なAllowlist MigrationだけをEX保持中に実行する。
+6. 既存SQLite DBを`fileMustExist: true`でOpenし、設定・Version・DDL構造を検証する。現行はWAL / NORMAL・Schema v2。C-Impl-5B-4ではWAL / FULL・Schema v3を設計要求とし、v2→v3は通常起動の自動Migrationではなく、停止・EX保持下の明示管理操作に限定する。詳細は[技術スタック選定23.11](technology-stack.md#pr-c-c-impl-5b4-history-restart)に従う。
 7. DB正常時はBackendStoreを利用可能にし、必要なPublished Stateを検証・復元する。
 8. Published State API Route登録後、Fastify Listenを行う。
 
@@ -1650,6 +1650,10 @@ Store所有権のLifecycle Hookへの引継ぎ前は起動処理が取得済みC
 終了順序はHTTP受付停止 → SQLite Connection Close → Node.js Process終了 → 最終Lock FD CloseによるEX解放とする。正常終了・SIGTERMは既存Shutdown経路に従う。SIGKILLはHookを実行できないためOSのFD Closeにより解放され、別ProcessがFDを保持して残らない構成を要求する。起動途中の失敗もConnectionとFDを後始末する。
 
 PR-CでSchedulerを導入する際は、既存installShutdown()とFastify Lifecycleを継続利用し、専用Signal Handlerは追加しない。Shutdown開始後は新規Task・新規HTTP送信・Timer再予約を禁止し、冪等なstop()でTimer取消し・実行中Task終了待機を行った後、既存BackendStoreの所有権に従って通常DB Closeを行う。Shutdown前から進行中の取得試行の正常既存Control Rowへの通常UPDATEのみ、DB・Connection・Transaction正常、有効Evidenceあり、Global停止理由にDB安全性の問題なし、PR-Aの既存終了待機内、既存Lifecycleの終了処理という全条件で許可可能とする。DB利用不能・Transaction未解決・Schema非互換・共有DB整合性不明では新規Tx-Aを禁止する。初回AuthorizationはShutdown開始で失効し、新規発行・再発行・初回INSERTは禁止する。中止した初回保存のHTTP結果を理由に即時再送せず、再起動後にState分類・必要な5分待機・Quota等を再評価する。詳細は[技術スタック選定 23.10](technology-stack.md#pr-c-c2-acquisition-control)に従う。既存Shutdown全体10秒制限はSchedulerに追加の10秒枠を与えず、期限内に終了しなければ既存異常終了経路へ移る。Scheduler独自のTask全体Timeoutは設けない。同期DB処理がShutdownを妨げる制約は[技術スタック選定 12.5](technology-stack.md#125-lifecycleの技術的制約と後続工程)に従う。
+
+C-Impl-5B-4のRestart Recoveryでは、案Dの起動後窓別待機と管理者承認後25時間隔離を独立管理する。壁時計Trustのみの失効と単調時計継続性喪失を分け、Clock回復だけでHistoryを復帰させない。ShutdownはSTOPPING・Gate閉鎖→新規Tx-Q / HTTP禁止→Drain→CLEAN適格性・Deadline Gate確認→専用TransactionでCLEAN確定→DB Close→EX解放とする。CanMarkCleanはOperationallyDrained AND RecoveryCleanEligibleであり、隔離・再検証中は正常に終了してもRUNNINGを維持する。Timeout結果だけでCLEANを禁止せず、Adapter未終了・予約Commit unknown・Recovery未解決では禁止する。既存全体10秒・所有権・F-03停止完了を変更せず、詳細は[技術スタック選定23.11](technology-stack.md#pr-c-c-impl-5b4-history-restart)を参照する。今回の詳細設計と既存実装を区別し、PR-Eの継続Recovery全体を実装済みとはしない。
+
+R-01〜R-03では、CLEAN結果不明の今回終了判定と次回StartupのDB検証を分離し、同一BootのCLEANでも全条件成立時のみ復帰候補とする。複数Clock異常は固定した非重複Sequence範囲ごとに独立待機し、Clock回復でValid再分類・範囲統合を行わない。Shutdownは開始時の単調時計絶対Deadlineを全工程で共有し、CanMarkCleanに加えてDeadline・開始余裕B_clean・Connection・Transaction・所有権を確認してからCLEANを開始する。B_clean値はPi実測待ちで、同期SQLite中断や10秒以内完了の保証ではない。CLEAN確定後のClose失敗は別に記録する。詳細は同正本のR-01〜R-03に従う。
 
 #### 工程の責務
 
