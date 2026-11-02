@@ -60,6 +60,9 @@ export interface HistoryClassification {
     consumptions: readonly Readonly<QuotaConsumption>[];
   }>[];
 }
+/** Classification-model assessment only. TRUSTED is not authenticated History
+ * Trust, a Monitor confirmation, Quota Trust or permission to send.
+ */
 export type HistoryEvaluation =
   | { readonly evaluation: "BLOCKED"; readonly reason: string }
   | {
@@ -80,7 +83,9 @@ const sameScope = (a: HistoryScope, b: HistoryScope): boolean =>
   a.processInstanceId === b.processInstanceId &&
   a.cutoffSequence === b.cutoffSequence;
 
-/** Pure classification/assessment. Never call Monitor.confirm(), QuotaGuard or
+/** Pure classification-model assessment: even TRUSTED authenticates no Runtime
+ * evidence or History Trust and grants no send permission.
+ * Never call Monitor.confirm(), QuotaGuard or
  * Tx-Q here. CONSERVATIVE requires full counting of old/uncertain contributions
  * in every Window until independently verified wait evidence permits exclusion;
  * no waiting/exclusion/Quota/HTTP authorization is implemented by this function.
@@ -155,6 +160,12 @@ export function evaluateHistoryFacts(
     });
     if (rows.some((row, i) => row.sequence !== i + 1))
       return blocked("sequence_mismatch");
+    let previousTimestamp = metadata.initializedAtMs;
+    for (const row of rows) {
+      if (row.reservedAtMs < previousTimestamp)
+        return blocked("invalid_history_timestamp");
+      previousTimestamp = row.reservedAtMs;
+    }
     const validSequences = new Set<number>();
     for (const record of valid) {
       if (

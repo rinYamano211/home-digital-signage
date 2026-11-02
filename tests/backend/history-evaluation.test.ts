@@ -446,3 +446,51 @@ test("History assessment does not erase independent SUSPENDED Provider status", 
     reason: "provider_suspended",
   });
 });
+
+test("Consumption before Metadata initialization is BLOCKED", () => {
+  const f = model();
+  const result = evaluateHistoryFacts({
+    ...f,
+    history: {
+      ...f.history,
+      metadata: { ...f.history.metadata!, initializedAtMs: 11 },
+    },
+  });
+  expect(result).toEqual({
+    evaluation: "BLOCKED",
+    reason: "invalid_history_timestamp",
+  });
+});
+for (const cutoff of [0, 2, 4])
+  test(`Timestamp reversal in Sequence order is BLOCKED (cutoff ${cutoff})`, () => {
+    const f = model(cutoff);
+    const result = evaluateHistoryFacts({
+      ...f,
+      history: {
+        ...f.history,
+        consumptions: f.history.consumptions.map((r) =>
+          r.sequence === 4 ? { ...r, reservedAtMs: 25 } : r,
+        ),
+      },
+      valid: f.valid.map((r) =>
+        r.sequence === 4 ? { ...r, reservedAtMs: 25 } : r,
+      ),
+    });
+    expect(result).toEqual({
+      evaluation: "BLOCKED",
+      reason: "invalid_history_timestamp",
+    });
+  });
+test("Timestamp equal to initialization or preceding Consumption is accepted", () => {
+  const f = model();
+  const result = evaluateHistoryFacts({
+    ...f,
+    history: {
+      metadata: { ...f.history.metadata!, initializedAtMs: 10 },
+      consumptions: f.history.consumptions.map((r) =>
+        r.sequence === 2 ? { ...r, reservedAtMs: 10 } : r,
+      ),
+    },
+  });
+  expect(result.evaluation).toBe("CONSERVATIVE");
+});
