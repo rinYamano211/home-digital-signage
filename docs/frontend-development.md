@@ -26,7 +26,11 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 
 - Backend（`src/backend/`、出力先`dist/backend/`）とはディレクトリと設定を分ける。
 - FrontendからBackendのコード（`src/backend/time/`等）をimportしない。実行環境（BrowserとNode.js）が異なるため。
-- Frontendの依存はすべて`devDependencies`に置く。FrontendはDevelopment PCでBuildし、成果物だけをRaspberry Piへ配置するため（[技術スタック選定 第8章](technology-stack.md#8-frontend-build実行場所)）。Piの`npm ci --omit=dev`には影響しない。
+- Frontend専用の依存（React等）はすべて`devDependencies`に置く。理由は次のとおり。
+  - FrontendはDevelopment PCでVite Buildを行い、React等の依存を成果物へ組み込む（[技術スタック選定 第8章](technology-stack.md#8-frontend-build実行場所)）。
+  - Raspberry Piでは静的な成果物を配信するだけなので、Frontend専用のnpm依存をインストールする必要がない。Piの`npm ci --omit=dev`には含まれない。
+  - 単一Package構成のまま、BackendのProduction依存（`dependencies`）とFrontend専用の依存を区別する。
+- この分類は本プロジェクトのBuild・Deploy構成に基づく判断であり、npmの一般的な依存分類の考え方を変えるものではない。
 
 ## 3. 開発基盤
 
@@ -52,7 +56,7 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 
 - TypeScript（D3）：`tsconfig.frontend.json`を追加する。BrowserのDOM型、`jsx: react-jsx`、Bundler向けのModule解決を使う。既存の`tsconfig.json`・`tsconfig.backend.json`のBackend設定（NodeNext）は維持し、`tests/frontend/`は既存の`tsconfig.json`の対象から外してFrontend側で検証する。`npm run typecheck`は両方の設定で型チェックを行う。
 - ESLint（D4）：`src/frontend/`と`tests/frontend/`に限り、React HooksのルールとBrowserのglobalsを追加する。それ以外のReact向けPluginは追加しない。
-- テスト（D5）：既存のVitestをNode環境のまま利用し、時計の表示文字列の生成・更新判定・時刻利用可否による表示の切替を、純粋な関数として単体テストする。現在時刻はFake Timer等で固定する。Componentの描画テスト（jsdom等）は導入しない。
+- テスト（D5）：既存のVitestをNode環境のまま利用し、時計の表示文字列の生成・更新判定・時刻利用可否による表示の切替を、純粋な関数として単体テストする。現在時刻はFake Timer等で固定する。jsdom・React Testing Library等の描画テスト環境は導入しない。そのため、Reactコンポーネントの実際の描画結果は自動テストでは保証できず、Browserでの目視確認で補う（5.3・第7章）。
 - Build：Vite Buildは型チェックを行わない。Buildの成功を型チェックの完了とみなさない（[技術スタック選定 第6章](technology-stack.md#6-開発環境)）。Production BuildはCIでは行わず、手元で実行して確認する。
 
 新しく追加する設定・ソース・テストは`.gitattributes`でLF改行に固定する（既存運用）。
@@ -64,7 +68,11 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 ### 5.1 レイアウト
 
 - 1280×800のpx固定で作る（D10）。Responsive対応は先行実装しない（[アーキテクチャ 6.3](architecture.md#63-display-component--layout--contentswitcher)）。
-- 開発PCのBrowserでは、画面全体をCSS `transform`で比例縮小して全体を確認できるようにする。Raspberry Piの1280×800では等倍で表示する。
+- 開発PCのBrowserでは、画面全体をCSS `transform`で比例縮小して全体を確認できるようにする。倍率は`scale = min(viewportWidth / 1280, viewportHeight / 800, 1)`とする。
+  - 表示領域が1280×800より小さい場合は、縦横比を保って縮小する。
+  - 表示領域が十分に大きい場合は等倍とし、拡大しない。Raspberry Piの1280×800では等倍になる。
+  - 余白が生じる場合は、画面全体を中央に配置する。スクロールバーは発生させない。
+  - 縮小は画面全体の倍率だけを変える。Responsiveレイアウトやブレークポイントは追加しない。
 - 左45%に時計タイル、右55%にコンテンツ領域を置く（L1）。#7のコンテンツ領域は空のタイルとし、文言やダミーデータは表示しない。
 - 全画面表示では、スクロールバー・余白・マウスカーソル・文字選択が出ないようにする。
 - 色は[UI設計 3.3](ui-design.md#33-カラー目安)のとおりCSS変数で一か所に定義する。
@@ -81,8 +89,11 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 - 時計タイルは、時刻の利用可否を`available` / `unavailable`の状態として外から受け取る（D6）。ReactのPropsなど単純な方法で渡し、専用のServiceや抽象化は設けない。
 - `unavailable`のときは日付と時刻を表示せず、[UI設計 6.3](ui-design.md#63-時刻未同期)の未同期表示を出す。`available`へ変わったら、操作なしで日付と時刻をフェードで表示する。
 - #7では、OS・RTC・時刻同期の状態に基づく正式な判定を実装しない。判定元がないため、通常の画面では常に`available`として扱う。正式な判定は別Issueで扱う（第9章）。
-- 未同期表示と状態切替は、Vitestで検証する。
-- URLのクエリパラメータ等で未同期表示へ強制的に切り替える機能を、本番の成果物に恒久的に残さない。
+- 未同期表示と状態切替の検証は、次の3段階で行う。
+  - Vitest（Node環境）：表示内容を決める純粋関数を単体テストする。Componentの実際の描画結果までは保証しない。
+  - 開発PCのBrowser：`available`と`unavailable`それぞれの表示と、その切替を目視で確認する。
+  - Raspberry Pi：本番Build相当の成果物で未同期表示を確認する（第7章）。
+- URLのクエリパラメータ等で未同期表示へ強制的に切り替える機能を、本番の成果物に恒久的に残さない。実機確認・Browser確認で使う切替手段は未確定とする（第8章）。
 
 #7で時計を実装しても、MVP全体として時刻の正当性を保証したことにはならない。R-01の「正しい時刻を取得できていない場合はローカル時刻を表示しない」は、正式な判定の実装と実機確認（Issue #13）をもって満たす。
 
@@ -94,7 +105,9 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 
 ## 6. PCでのプレビュー
 
-開発PCでVite Development Serverを起動し、Browserで表示を確認する。5.1の比例縮小により、ウィンドウの大きさに関係なく1280×800の画面全体を確認できる。
+開発PCでVite Development Serverを起動し、Browserで表示を確認する。5.1の比例縮小により、ウィンドウが1280×800より小さくても画面全体を縮小して確認できる。大きいウィンドウでは等倍で中央に表示する。
+
+時刻利用可否の`available`と`unavailable`の表示・切替も、ここで目視確認する（5.3）。
 
 具体的なnpm scriptsとコマンドは、実装時に本書へ追記する。
 
@@ -114,12 +127,16 @@ Issue #7の完了条件（Piのディスプレイへの表示、現在時刻の�
 6. 確認後、一時サーバーとChromiumを停止する。確認結果は`docs/verification/`へ記録する。
 
 - 一時HTTPサーバーに使うコマンドは実装時に確認する。本番の配信（nginx）・自動起動・Deployの手順はIssue #12で扱う。
-- 実機で未同期表示を確認する必要があるが、そのための切替手段は未確定である（第8章）。
+- 実機でも未同期表示を確認する必要がある。ただし、そのための切替手段は未確定である（第8章）。
 - 約3mからの判読性・長時間稼働などMVPの受入確認はIssue #13で行う。
 
 ## 8. 未解決事項
 
-- 実機で未同期表示へ切り替える手段。恒久的な本番仕様を増やさない方法を、実装前に比較して決める（例：検証専用の一時的な状態注入、開発・検証時のみ有効な切替機構）。
+- 開発PCのBrowserと実機で未同期表示へ切り替える手段。本番の成果物に恒久的な強制切替機能を残さない前提で、実装着手前に候補（例：検証専用の一時的な状態注入、開発・検証時のみ有効な切替機構）を次の観点で比較して決める。
+  - 実機確認の容易さ
+  - 本番コード・本番成果物への影響
+  - 実装量
+  - 検証後の扱い
 - OS・RTC・時刻同期の状態に基づく、正式な時刻利用可否の判定（第9章の別Issue）。
 - 依存パッケージのバージョンと互換性（第3章）。
 - 一時HTTPサーバーのコマンド、npm scriptsの名前（第6・7章）。
