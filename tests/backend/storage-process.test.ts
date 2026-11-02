@@ -88,6 +88,13 @@ async function provision(dir: string) {
   const job = command(dir);
   expect(await job.done, job.output()).toBe(0);
 }
+async function provisionV3(dir: string) {
+  await provision(dir);
+  const job = command(dir, "migrate-v3", {
+    SIGNAGE_V3_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+  });
+  expect(await job.done, job.output()).toBe(0);
+}
 async function port() {
   const server = createServer();
   server.listen(0, "127.0.0.1");
@@ -200,7 +207,7 @@ linux.each(["SIGTERM", "SIGINT", "SIGKILL"] as const)(
   "%s releases EX after real backend lifetime",
   async (signal) => {
     const dir = await directory();
-    await provision(dir);
+    await provisionV3(dir);
     const job = await backend(dir);
     expect(job.output()).toContain('"state":"HEALTHY"');
     const response = await fetch(`http://127.0.0.1:${job.port}/ping`);
@@ -298,7 +305,7 @@ linux.each([
 });
 linux("Listen failure closes Store and releases EX", async () => {
   const dir = await directory();
-  await provision(dir);
+  await provisionV3(dir);
   const server = createServer();
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -318,10 +325,10 @@ linux.each(["SIGTERM", "SIGINT"] as const)(
   "startup %s before handoff closes acquired Connection without Listen",
   async (signal) => {
     const dir = await directory();
-    await provision(dir);
+    await provisionV3(dir);
     const job = harness(
       dir,
-      `import {startBackend} from ${moduleUrl("main")}; import {BackendStore} from ${moduleUrl("storage/store")}; import fs from 'node:fs'; import {setTimeout as delay} from 'node:timers/promises'; await startBackend(process.env,undefined,{initializeStore:async(lock)=>{const store=BackendStore.open(lock);const close=store.close.bind(store);store.close=()=>{close();fs.appendFileSync(process.env.SIGNAGE_DATA_DIR+'/closed','1');};fs.writeFileSync(process.env.SIGNAGE_DATA_DIR+'/acquired','');while(!fs.existsSync(process.env.SIGNAGE_DATA_DIR+'/continue'))await delay(10);return store;}});`,
+      `import {startBackend} from ${moduleUrl("main")}; import {BackendStore} from ${moduleUrl("storage/store")}; import fs from 'node:fs'; import {setTimeout as delay} from 'node:timers/promises'; await startBackend(process.env,undefined,{initializeStore:async(lock)=>{const h=BackendStore.openV3ForStartup(lock);const store={...h,close:()=>{h.close();fs.appendFileSync(process.env.SIGNAGE_DATA_DIR+'/closed','1');}};fs.writeFileSync(process.env.SIGNAGE_DATA_DIR+'/acquired','');while(!fs.existsSync(process.env.SIGNAGE_DATA_DIR+'/continue'))await delay(10);return store;}});`,
     );
     await expect
       .poll(
@@ -414,10 +421,10 @@ linux(
   "PR-A 10 second deadline forces exit and releases lock during stalled handoff",
   async () => {
     const dir = await directory();
-    await provision(dir);
+    await provisionV3(dir);
     const job = harness(
       dir,
-      `import {startBackend} from ${moduleUrl("main")};import {BackendStore} from ${moduleUrl("storage/store")};await startBackend(process.env,undefined,{initializeStore:async(lock)=>{BackendStore.open(lock);console.log('handoff_stalled');setInterval(()=>{},1000);await new Promise(()=>{});}});`,
+      `import {startBackend} from ${moduleUrl("main")};import {BackendStore} from ${moduleUrl("storage/store")};await startBackend(process.env,undefined,{initializeStore:async(lock)=>{BackendStore.openV3ForStartup(lock);console.log('handoff_stalled');setInterval(()=>{},1000);await new Promise(()=>{});}});`,
     );
     await expect
       .poll(job.output, { timeout: 5000 })
@@ -442,7 +449,12 @@ linux(
     );
     expect(await job.done, job.output()).toBe(0);
     expect(job.output()).toContain("sidecars_checked");
-    await backend(dir);
+    const upgrade = command(dir, "migrate-v3", {
+      SIGNAGE_V3_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+    });
+    expect(await upgrade.done, upgrade.output()).toBe(0);
+    const running = await backend(dir);
+    expect(running.output()).toContain('"state":"HEALTHY"');
     for (const suffix of ["", "-wal", "-shm"]) {
       const stat = await lstat(join(dir, "signage.db" + suffix));
       expect(stat.mode & 0o7777).toBe(0o600);
@@ -527,7 +539,7 @@ linux(
 );
 
 linux(
-  "v1 startup refuses automatic upgrade; explicit EX migration requires acknowledgement and v2 restarts",
+  "v1 startup refuses automatic upgrade; explicit EX v2 migration retains data but production still requires v3",
   async () => {
     const dir = await directory();
     const create = harness(
@@ -562,13 +574,14 @@ linux(
     );
     db.close();
     const running = await backend(dir);
+    expect(running.output()).toContain('"state":"BLOCKED"');
     running.child.kill("SIGTERM");
     expect(await running.done).toBe(0);
   },
 );
 
 linux(
-  "PR-C-2A offline EX v3 upgrade uses actual Linux Boot ID; old runtime refuses v3",
+  "PR-C-2A offline EX v3 upgrade uses actual Linux Boot ID; v3 runtime performs Gen2 Startup",
   async () => {
     const dir = await directory();
     await provision(dir);
@@ -601,12 +614,12 @@ linux(
     job = command(dir, "migrate-v3", ack);
     expect(await job.done).toBe(1); // no same-version repair/replay
     const running = await backend(dir);
-    expect(running.output()).toContain('"state":"BLOCKED"');
+    expect(running.output()).toContain('"state":"HEALTHY"');
     const d = new Database(path, { readonly: true });
     try {
       expect(
         d.prepare("SELECT generation FROM backend_lifecycle").get(),
-      ).toEqual({ generation: 1 });
+      ).toEqual({ generation: 2 });
     } finally {
       d.close();
     }
@@ -739,6 +752,95 @@ linux(
       expect(
         db.prepare("SELECT * FROM history_uncertain_ranges").all(),
       ).toEqual([]);
+    } finally {
+      db.close();
+    }
+    expect(await probe(dir)).toBe(0);
+  },
+);
+
+linux(
+  "PR-C-2B-4A production v3 Startup restarts Gen1 -> 2 -> 3 with ping and no Provider capability",
+  async () => {
+    const dir = await directory();
+    await provisionV3(dir);
+    for (const generation of [2, 3]) {
+      const job = await backend(dir);
+      expect(job.output()).toContain('"state":"HEALTHY"');
+      expect(
+        job.output().match(/"event":"storage_startup_committed"/g),
+      ).toHaveLength(1);
+      const response = await fetch(`http://127.0.0.1:${job.port}/ping`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ message: "pong" });
+      expect((await fetch(`http://127.0.0.1:${job.port}/health`)).status).toBe(
+        404,
+      );
+      job.child.kill("SIGTERM");
+      expect(await job.done, job.output()).toBe(0);
+      expect(job.output().match(/"event":"database_closed"/g)).toHaveLength(1);
+      const db = new Database(join(dir, "signage.db"), { readonly: true });
+      try {
+        expect(
+          db.prepare("SELECT generation,state FROM backend_lifecycle").get(),
+        ).toEqual({ generation, state: "RUNNING" });
+        expect(
+          db.prepare("SELECT * FROM provider_quota_metadata").all(),
+        ).toEqual([]);
+        expect(
+          db.prepare("SELECT * FROM provider_quota_consumptions").all(),
+        ).toEqual([]);
+      } finally {
+        db.close();
+      }
+      expect(await probe(dir)).toBe(0);
+    }
+  },
+);
+linux(
+  "PR-C-2B-4A v2 remains BLOCKED with Connectivity, no implicit upgrade or Lifecycle creation",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const job = await backend(dir);
+    expect(job.output()).toContain('"state":"BLOCKED"');
+    expect(job.output()).not.toContain("storage_startup_committed");
+    expect((await fetch(`http://127.0.0.1:${job.port}/ping`)).status).toBe(200);
+    job.child.kill("SIGTERM");
+    expect(await job.done).toBe(0);
+    const db = new Database(join(dir, "signage.db"), { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(2);
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_schema WHERE name='backend_lifecycle'",
+          )
+          .all(),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+  },
+);
+linux.each(["SIGTERM", "SIGINT"] as const)(
+  "PR-C-2B-4A %s queued during Atomic Startup prevents routes/Listen and closes once",
+  async (signal) => {
+    const dir = await directory();
+    await provisionV3(dir);
+    const code = `import {startBackend} from ${moduleUrl("main")};import {StartupTransactionService} from ${moduleUrl("storage/startup-transaction")};const execute=StartupTransactionService.prototype.execute;StartupTransactionService.prototype.execute=function(request){process.kill(process.pid,${JSON.stringify(signal)});return execute.call(this,request);};await startBackend(process.env);`;
+    const job = harness(dir, code);
+    expect(await job.done, job.output()).toBe(0);
+    expect(job.output()).toContain("storage_startup_committed");
+    expect(job.output()).not.toContain('"event":"startup_complete"');
+    expect(job.output()).not.toContain('"event":"database_status"');
+    expect(job.output().match(/"event":"database_closed"/g)).toHaveLength(1);
+    expect(job.output()).toContain("shutdown_complete");
+    const db = new Database(join(dir, "signage.db"), { readonly: true });
+    try {
+      expect(
+        db.prepare("SELECT generation,state FROM backend_lifecycle").get(),
+      ).toEqual({ generation: 2, state: "RUNNING" });
     } finally {
       db.close();
     }
