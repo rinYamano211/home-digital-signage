@@ -3017,7 +3017,7 @@ Clock TrustとHistory Trustを独立して評価する。壁時計が正常と�
 
 **P0-1：Startup境界と2系統の待機**
 
-Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有BackendStore Connectionと既存排他規約の下でStartup Transactionにより起動境界を確定する。Providerごとの履歴Snapshot・cutoffSequenceと履歴Fingerprintを今回Process・boot_id・generationに拘束する。Commit未確定の境界は採用しない。Transaction確定後、今回Processの単調時計を起点として案Dの待機を開始する。`sequence <= cutoffSequence`を再起動前Consumptionとし、RowのTimestampだけで新旧を分類しない。
+Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有BackendStore Connectionと既存排他規約の下でStartup Transactionにより起動境界を確定する。Providerごとの履歴Snapshot・cutoffSequenceと履歴Fingerprintを今回Process・boot_id・generationに拘束する。Commit未確定の境界は採用しない。Transaction確定後も、固定履歴境界・単調時計連続性・Window別開始時点の証拠を確認して初めて案D待機を開始する（D-04のR55-04）。`sequence <= cutoffSequence`を再起動前Consumptionとし、RowのTimestampだけで新旧を分類しない。
 
 | 対象Quota窓 | 案Dの保守的待機 | 待機前後の計上 |
 |---|---|---|
@@ -3265,7 +3265,7 @@ Lifecycle更新・Startup親・全Provider境界はAtomicに確定する。Times
 
 同一ProcessでStartupを無条件再試行しない。次回StartupではLifecycle・Startup親子・Quota履歴を独立検証する。前回RUNNING、または前回CLEANでも異なるOS Bootなら管理者Recovery対象。前回CLEAN・同一OS BootはClock / History / Quota / Recovery等の全安全条件成立時のみ自動復帰候補とする。DB / Lifecycle不整合はFail Closed。R-01の「前回CLEAN Commit unknownと次回DB検証の独立性」を維持する。
 
-案Dの旧履歴はStartup Commit成功後の単調時計を使い、1分・65分・25時間を窓別独立管理する。Process再起動では待機証拠を引き継がない。管理者隔離25時間は別起点・別証拠のまま維持する。
+案Dの旧履歴はStartup Commit成功に加え、固定境界・単調時計連続性・各Window開始時点の証拠を確認し、1分・65分・25時間を窓別独立管理する。証拠失効時は該当待機を未完了とする。Process再起動では待機証拠を引き継がない。管理者隔離25時間は別起点・別証拠のまま維持する。
 
 <a id="pr-c-c-impl-5b4-d03"></a>
 
@@ -3384,6 +3384,53 @@ Startup前には、保存された過去BoundaryのSnapshot・cutoffと、その
 
 **D-01〜D-03 DDLとの接続**：PR #52のstartup_provider_boundaries定義にはSnapshot・history_fingerprintの物理定義がまだない。D04-R05で同TableにMetadata Snapshotとhistory_fingerprintを保持する要件は追加承認済みだが、Snapshotの物理カラム名・型・NULL制約・不在表現、history_fingerprintの型・CHECK等の具体DDLは未指定である。新Tableを追加せず、Snapshotをメモリだけで済ませず、現在のDDLが保存要件を実装可能な完全版だとも扱わない。今回、未承認のカラム定義・Migration SQLを創作しない。
 
+**R55-01：Snapshot保存先の最小DDL案（未承認・確定DDLではない）**
+
+不整合は、承認済みの保存要件に対してPR #52のBoundary DDLに物理カラムがない点である。既存4 Table構成と保存先startup_provider_boundariesを維持する。最小案は同Tableへの次の3カラム追加であり、以下のカラム名・型・制約はすべて**承認待ちの提案**とする。D-01〜D-03の既存CREATE TABLE定義は変更しない。
+
+| 提案カラム | 保存内容・理由 |
+|---|---|
+| history_status_snapshot | 過去MetadataのACTIVE / SUSPENDEDを再現するTEXT。現在値で代用しない |
+| initialized_at_ms_snapshot | 過去Metadataのinitialized_at_msを再現するINTEGER。BackendでもTimestamp妥当性を検証 |
+| history_fingerprint | 同じ過去Snapshot・cutoffに対応する小文字64桁Hex。既承認の保存先・表現を維持 |
+
+provider_keyは既存PKの値を使用し、cutoff時点last_sequenceは既存cutoff_sequenceを使用する。Versionは既承認のquota-history-v1に従い、この最小案ではVersion列・last_sequence重複列・新Tableを提案しない。
+
+次は既存CREATE TABLEへ追加するカラム・Table制約の**提案断片**であり、単独実行用SQL・承認済みMigrationではない。
+
+```sql
+history_status_snapshot TEXT,
+initialized_at_ms_snapshot INTEGER,
+history_fingerprint TEXT NOT NULL
+    CHECK (
+        length(history_fingerprint) = 64
+        AND history_fingerprint NOT GLOB '*[^0-9a-f]*'
+    ),
+CHECK (
+    (
+        provider_state = 'UNPROVISIONED'
+        AND history_status_snapshot IS NULL
+        AND initialized_at_ms_snapshot IS NULL
+    )
+    OR
+    (
+        provider_state = 'PROVISIONED'
+        AND history_status_snapshot IS NOT NULL
+        AND history_status_snapshot IN ('ACTIVE', 'SUSPENDED')
+        AND initialized_at_ms_snapshot IS NOT NULL
+        AND typeof(initialized_at_ms_snapshot) = 'integer'
+        AND initialized_at_ms_snapshot >= 0
+        AND initialized_at_ms_snapshot <= 9007199254740991
+    )
+)
+```
+
+既存provider_state・cutoffのCHECK、PK / FKはそのまま併用する案である。UNPROVISIONEDはcutoff=NULL・Snapshot2項目=NULLとし、Metadata不在を符号化したFingerprintを保存する案とする。PROVISIONED / 0はMetadata2項目を必須とし、Consumption 0件でもMetadata不在と区別する。Fingerprint列は両状態とも非NULLとする提案であり、NULLで不在Digestを代用しない。BackendでもProvider状態・整数 / Timestamp範囲・全履歴とcutoff / Metadata一致を独立検証し、SQL制約だけで完全性を証明しない。
+
+**Migrationへの影響（案）**：承認後、明示v2→v3 Migrationが作るBoundary Table定義に組み込み、v2の6 Table・Quota履歴は保持する。Migration Gen 1ではStartup Boundaryを作らないため、最初の通常Startup Gen 2で実際のSnapshot・cutoff・Fingerprintを同じStartup Transactionで保存する。既存Metadataから過去Snapshotを推測して埋める案は採用しない。旧案のv3を適用済みのDBが存在する場合は、自動的な同Version修復・ALTER・Backfillを行わず、別途明示対応を確認・承認する必要がある。今回DB / Migrationは操作しない。
+
+**承認が必要な判断**：3カラム名・型・分岐CHECKの採否、TimestampのSQL範囲とBackend検証の分担、UNPROVISIONEDでも非NULLの不在Metadata Digestを保存する案、必要に応じた既適用v3の扱い。型タグ値等の未指定符号化は別途確定が必要である。承認されるまでR55-01の物理DDL確定を保留し、本案をSchema Validatorや実装へ転記しない。
+
 **相互運用性の未指定事項**：型タグの具体的バイト値・幅、NULL / Metadata不在タグの長さと値の表現、Metadataグループ・Consumption件数の符号化との具体対応は追加確認が必要である。JSON化・区切り文字・独自タグ番号等を推測で採用しない。これらを確定するまでは、異なる実装間で同じDigestになることを検証済みとはしない。Fingerprint独立テストベクトルの作成・照合も未実施である。
 
 FingerprintはDB内の履歴整合性確認に用いる。外部Senderの不存在、実際のHTTP送信回数、Provider側計上完了を証明しない。既存の管理外Restore検出限界・キー排他利用確認・レベルB残余リスクを変更しない。
@@ -3414,9 +3461,9 @@ CONSERVATIVEでもD-03の未完了範囲を各Windowへ全件計上し、二重�
 |---|---|
 | U03-01 | status / inspect / approve / cancelとBackend内RecoveryAdminServiceを維持。CLIはSQLiteを直接変更しない |
 | U03-02 | ISOLATED / APPROVED_WAITING / REVALIDATING / RECOVEREDの復旧状態を用いる |
-| U03-03 | inspectで短時間有効・一回限りの確認Tokenを発行する。具体TTLを今回追加設定しない |
-| U03-04 | TokenをProcess / OS Boot / Startup Generation / Provider Boundaryに拘束し、既存cutoff・Fingerprint・診断・期限も再確認する |
-| U03-05 | ローカルUDSで管理者を認可する。APIキー等のSecretを診断情報・ログへ含めず、確認Tokenも監査ログへ出力しない |
+| U03-03 | inspectで暗号学的乱数32バイトの一回限りTokenを発行。初期有効期間5分を単調時計で判定し、再発行時は旧Token失効。approveの検証試行時に消費し、失敗後も再利用禁止 |
+| U03-04 | TokenをProcess Instance ID、OS Boot ID、Startup Generation、Provider Key、cutoffSequence、History Fingerprint、diagnosisRevisionに拘束し、期限・境界を再確認する |
+| U03-05 | ローカルUDSで管理者を認可。CLIのToken入力はコマンドライン引数に含めずstdinを優先。Token・APIキー等のSecretを監査ログへ記録しない |
 | U03-06 | 管理者承認後の独立25時間隔離、Plan Dの窓別待機、再検証を要求する |
 | U03-07 | cancelのRecovery承認に関する責務と、Provider永続管理停止SUSPENDEDを分離する。取消しをResume・SUSPENDED解除として扱わない |
 | U03-08 | Token・承認はProcessメモリのみ。再起動・異常で失効し、確認不能ならFail Closed |
@@ -3428,7 +3475,20 @@ CONSERVATIVEでもD-03の未完了範囲を各Windowへ全件計上し、二重�
 | REVALIDATING | 必要な隔離・待機条件後にDB / Clock / History / Quota / Boundary / Providerキー排他利用を再検証する |
 | RECOVERED | 必要な再検証が成立した復旧状態。Quota / Send Gate・他の停止理由・CLEAN適格性を迂回する許可ではない |
 
-Plan DはStartup境界Commit確定後、管理者隔離25時間は認可済みapprove成立後に開始し、起点・証拠を独立保持する（D04-R03）。承認だけで送信しない。cancel・失効・再承認時にも独立SUSPENDEDを維持し、他責務の停止理由を解除しない。再起動で承認・Tokenを引き継がず、StartupとRecoveryを再評価する。
+**R55-03：cancelと復旧確定の競合**
+
+| cancel時の現在状態 | 結果 |
+|---|---|
+| ISOLATED | ISOLATEDを維持し、Tokenを失効 |
+| APPROVED_WAITING | ISOLATEDへ戻す |
+| REVALIDATING | ISOLATEDへ戻す |
+| RECOVERED | cancelを拒否 |
+
+cancelとRECOVERED確定処理を直列化し、競合しても誤って送信可能と判定しない。ISOLATEDへ戻った後に古い再検証結果・承認を使ってRECOVERED確定を継続しない。RECOVERED後のProvider停止は既存SUSPENDEDを使用し、Recovery cancelで代用しない。cancelはQuota履歴の削除・初期化を行わず、進行中HTTPの取消し完了も保証しない。CLIは認可された要求をRecoveryAdminServiceへ渡し、DB直接変更・独自の承認確定を行わない。
+
+**R55-04：Plan Dの待機開始証拠**
+
+Plan DはStartup境界Commit成功だけでは開始しない。対象履歴の固定境界確定、単調時計の連続性確認、対象Windowの待機開始時点確定の証拠を要求する。証拠が失効したWindowの待機は未完了として扱い、経過時間を推測・復活させない。管理者隔離25時間は正当なapprove成立後に開始し、Plan Dと起点・証拠を独立保持する（D04-R03）。承認だけで送信しない。cancel・失効・再承認時にも独立SUSPENDEDを維持し、他責務の停止理由を解除しない。再起動で承認・Tokenを引き継がず、StartupとRecoveryを再評価する。
 
 UDSの接続成功・ローカル接続という事実だけで管理者と認めない。Peer Credentials取得とOS権限設定の実装可能性・失敗時動作を確認し、未確認・取得不能・認可不成立なら管理操作を許可しない（D04-R06）。Peer Credentialsの具体API、Socket配置・所有権、権限値は今回推測で固定せず、実装・実機検証事項とする。
 
@@ -3446,7 +3506,7 @@ UDS Peer CredentialsとOS権限、Suspend検出・単調時計のPi挙動、B_cl
 
 ローカルCLI + Unix Domain Socketを採用し、status / inspect / approve / cancelを稼働中BackendのRecoveryAdminServiceへ委譲する。CLIがSQLiteを直接更新してHistory Trustを変更してはならない。独立した常駐Serviceは追加しない。
 
-inspectで短時間有効・一度限りの確認Tokenを発行し、今回Process、boot_id、generation、cutoffSequence、起動境界履歴Fingerprint、有効期限、管理者確認対象の診断情報に拘束する。approveで再検証し、古いToken・再利用・二重承認を拒否する。管理者はProviderキー排他利用とレベルB残余リスクを明示確認する。申告を外部キー利用の技術的証明とみなさない。承認・TokenはProcessメモリ内のみとし、再起動で失効する。journaldへ監査イベントを記録するが、APIキー・Tokenを出力しない。D-04のU-03で復旧4状態・UDS管理者認可・cancelとSUSPENDEDの分離を採用した。Token有効期間の具体値、UDS配置・権限・Peer Credentials取得方法、具体APIは実装・技術検証事項とし、未確認の経路で承認やGate開放を行わない。
+inspectで短時間有効・一度限りの確認Tokenを発行し、今回Process、boot_id、generation、cutoffSequence、起動境界履歴Fingerprint、有効期限、管理者確認対象の診断情報に拘束する。approveで再検証し、古いToken・再利用・二重承認を拒否する。管理者はProviderキー排他利用とレベルB残余リスクを明示確認する。申告を外部キー利用の技術的証明とみなさない。承認・TokenはProcessメモリ内のみとし、再起動で失効する。journaldへ監査イベントを記録するが、APIキー・Tokenを出力しない。D-04のU-03で復旧4状態・UDS管理者認可・cancelとSUSPENDEDの分離を採用した。Tokenの暗号学的乱数32バイト・初期5分単調時計期限・使い捨て・再発行失効・拘束項目はR55-02として採用済み。UDS配置・権限・Peer Credentials取得方法、具体APIは実装・技術検証事項とし、未確認の経路で承認やGate開放を行わない。
 
 **P1-4：F-01とRestart Recoveryの分離**
 
