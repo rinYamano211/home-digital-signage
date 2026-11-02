@@ -496,6 +496,17 @@
       .sun {
         color: #e8a39d;
       }
+      .clock-in {
+        animation: clock-in var(--fade-ms) ease;
+      }
+      @keyframes clock-in {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
       .nosync-ic {
         font-size: 150px;
         color: #4a4752;
@@ -572,6 +583,7 @@
             <option value="empty">予定なし</option>
             <option value="stale">更新待ち</option>
             <option value="na">取得できません</option>
+            <option value="loading">取得中（未試行）</option>
           </select>
         </label>
         <label
@@ -581,6 +593,7 @@
             <option value="stale">更新待ち</option>
             <option value="unknown">天気コード不明</option>
             <option value="na">取得できません</option>
+            <option value="loading">取得中（未試行）</option>
           </select>
         </label>
         <label
@@ -593,6 +606,7 @@
             <option value="stale">更新待ち（10分未満）</option>
             <option value="stale10">更新待ち（10分以上・予報非表示）</option>
             <option value="na">取得できません</option>
+            <option value="loading">取得中（未試行）</option>
           </select>
         </label>
         <label
@@ -601,6 +615,7 @@
             <option value="ok">正常</option>
             <option value="stale">更新待ち</option>
             <option value="na">取得できません</option>
+            <option value="loading">取得中（未試行）</option>
           </select>
         </label>
         <label
@@ -609,6 +624,7 @@
             <option value="ok">正常</option>
             <option value="stale">更新待ち</option>
             <option value="na">取得できません</option>
+            <option value="loading">取得中（未試行）</option>
           </select>
         </label>
         <label
@@ -649,7 +665,8 @@
           >まとめて
           <span class="row"
             ><button id="b-allok">すべて正常</button
-            ><button id="b-allna">すべて取得不可</button></span
+            ><button id="b-allna">すべて取得不可</button
+            ><button id="b-allload">起動直後（取得中）</button></span
           >
         </label>
       </div>
@@ -754,21 +771,31 @@
           shownKey = null;
 
         // ---- availability (E2) ----
+        // "loading": no data and no acquisition attempt finished yet (lastAttemptAt null)
+        const gone = (v) => v === "na" || v === "loading";
+        const allLoading = () =>
+          ["sched", "cur", "rain", "hourly", "weekly"].every(
+            (k) => st[k] === "loading",
+          );
         function available(k) {
           // without a usable system time, expiry and "today" cannot be evaluated
           if (st.sync !== "ok") return false;
-          if (k === "S") return st.sched !== "na";
-          if (k === "K") return st.weekly !== "na";
+          if (k === "S") return !gone(st.sched);
+          if (k === "K") return !gone(st.weekly);
           // today weather: available if any part shows real data
           return (
-            st.cur !== "na" ||
-            st.hourly !== "na" ||
-            !["na", "stale10"].includes(st.rain)
+            !gone(st.cur) ||
+            !gone(st.hourly) ||
+            !["na", "stale10", "loading"].includes(st.rain)
           );
         }
 
         // ---- clock ----
+        let lastSync = null;
         function renderClock() {
+          const fadeIn =
+            lastSync !== null && lastSync !== "ok" && st.sync === "ok";
+          lastSync = st.sync;
           const cur = order[idx];
           const anyAvail = order.some(available);
           const dots = order
@@ -779,7 +806,7 @@
             .join("");
           $("clock").innerHTML =
             st.sync === "ok"
-              ? `<div class="date">11月2日（月）</div><div class="time">${hm(NOW)}</div><div class="dots">${dots}</div>`
+              ? `<div class="${fadeIn ? "clock-in" : ""}"><div class="date">11月2日（月）</div><div class="time">${hm(NOW)}</div></div><div class="dots">${dots}</div>`
               : `<i class="ti ti-clock-pause nosync-ic"></i><div class="syncmsg" style="font-size:40px;margin-top:28px">時刻を合わせています</div><div class="syncmsg" style="font-size:26px;margin-top:4px">ネットにつながると自動で表示します</div><div class="dots">${dots}</div>`;
         }
 
@@ -842,14 +869,15 @@
         // ---- today weather ----
         function weatherHTML() {
           let now;
-          if (st.cur === "na") {
+          if (st.cur === "loading") {
+            now = `<div class="tile now">${naBox("ti-hourglass", "現在の天気を取得しています")}</div>`;
+          } else if (st.cur === "na") {
             now = `<div class="tile now">${naBox("ti-cloud-off", "現在の天気を取得できません")}</div>`;
           } else {
             const unknown = st.cur === "unknown";
-            const hilo =
-              st.weekly !== "na"
-                ? `<div class="hilo nw"><span class="sub">最高</span> ${weekly[0][4]}°<br><span class="sub">最低</span> ${weekly[0][5]}°</div>`
-                : "";
+            const hilo = !gone(st.weekly)
+              ? `<div class="hilo nw"><span class="sub">最高</span> ${weekly[0][4]}°<br><span class="sub">最低</span> ${weekly[0][5]}°</div>`
+              : "";
             now = `<div class="tile now ${st.cur === "stale" ? "stale" : ""}">${st.cur === "stale" ? badge() : ""}
         <i class="ti ${unknown ? "ti-question-mark" : "ti-cloud"} ic"></i><span class="temp">18°</span>
         <span class="cond nw">${unknown ? "天気不明" : "くもり"}</span>${hilo}</div>`;
@@ -877,11 +905,14 @@
               "14:12時点",
             ],
             na: ["muted", "ti-cloud-off", "雨の予報を取得できません", ""],
+            loading: ["muted", "ti-hourglass", "雨の予報を取得しています", ""],
           };
           const r = rainMap[st.rain];
           const rain = `<div class="rain ${r[0]}"><i class="ti ${r[1]}"></i><span>${r[2]}</span>${r[3] ? `<span class="rt">${r[3]}</span>` : ""}</div>`;
           let hr;
-          if (st.hourly === "na") {
+          if (st.hourly === "loading") {
+            hr = `<div class="tile hourly">${naBox("ti-hourglass", "時間ごとの天気を取得しています")}</div>`;
+          } else if (st.hourly === "na") {
             hr = `<div class="tile hourly">${naBox("ti-cloud-off", "時間ごとの天気を取得できません")}</div>`;
           } else {
             const cell = (
@@ -918,6 +949,11 @@
       <span style="font-size:24px">自動で再試行しています</span></div></div></div>`;
         }
 
+        function allLoadingHTML() {
+          return `<div class="panel" style="grid-template-rows:1fr"><div class="tile"><div class="na" style="flex-direction:column;gap:18px">
+      <i class="ti ti-hourglass" style="font-size:56px"></i>予定と天気を取得しています</div></div></div>`;
+        }
+
         // ---- render with transition ----
         function timeWaitHTML() {
           return `<div class="panel" style="grid-template-rows:1fr"><div class="tile"><div class="na" style="flex-direction:column;gap:18px">
@@ -928,6 +964,7 @@
         function htmlFor(k) {
           if (k === "NA") return allNaHTML();
           if (k === "TIME") return timeWaitHTML();
+          if (k === "LOAD") return allLoadingHTML();
           return k === "S"
             ? scheduleHTML()
             : k === "W"
@@ -979,7 +1016,8 @@
             return;
           }
           if (!order.some(available)) {
-            if (shownKey !== "NA") show("NA", animate);
+            const k = allLoading() ? "LOAD" : "NA";
+            if (shownKey !== k) show(k, animate);
             else renderClock();
             return;
           }
@@ -996,7 +1034,7 @@
             return;
           }
           if (!order.some(available)) {
-            show("NA", false);
+            show(allLoading() ? "LOAD" : "NA", false);
             return;
           }
           if (!available(order[idx])) {
@@ -1054,11 +1092,11 @@
                   weekly: "ok",
                 }
               : {
-                  sched: "na",
-                  cur: "na",
-                  rain: "na",
-                  hourly: "na",
-                  weekly: "na",
+                  sched: v,
+                  cur: v,
+                  rain: v,
+                  hourly: v,
+                  weekly: v,
                 };
           Object.assign(st, map);
           $("c-sched").value = map.sched;
@@ -1070,6 +1108,7 @@
         }
         $("b-allok").addEventListener("click", () => setAll("ok"));
         $("b-allna").addEventListener("click", () => setAll("na"));
+        $("b-allload").addEventListener("click", () => setAll("loading"));
 
         // ---- scale the 1280x800 screen to the frame ----
         function fit() {
