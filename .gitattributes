@@ -14,6 +14,7 @@
 /tsconfig.backend.json text eol=lf
 /config/backend.env.example text eol=lf
 /docs/backend-development.md text eol=lf
+/docs/frontend-development.md text eol=lf
 /scripts/*.sh text eol=lf
 /AGENTS.md text eol=lf
 /CLAUDE.md text eol=lf

@@ -33,6 +33,7 @@ PR作成・更新前は`npm ci`と`npm run check`を実行し、diffを確認す
 - TypeScript：`src/backend/**/*.ts`と`tests/**/*.ts`。空の対象で成功させず、検証用コードを実際に型チェックする。
 - Vitest：既存のSmoke Testと`tests/backend/`のConfig・Secrets・HTTP・Lifecycleテスト。実Credential・外部APIには依存しない。HTTPはLoopbackを利用する。Processテスト内でtscによるBackendのCompileと起動を検証し、成果物は配布・Deployしない。Linux固有のPermission・Signal確認はUbuntu CIで実行する。詳細は[Backend開発手順](backend-development.md)を参照。
 - `node_modules/`、`dist/`、`coverage/`、TypeScriptの生成キャッシュはLint / Format対象外。新しい生成物が増えた際は除外設定も更新する。
+- Frontend（Issue #7で追加予定）：`src/frontend/`と`tests/frontend/`を同じ`npm run check`の対象に加える。Backendの既存の検証対象・設定は弱めない。Production BuildはCIで実行しない。構成と設定方針は[Frontend開発手順](frontend-development.md)を参照。
 
 新規の設定・テスト・本手順書は`.gitattributes`でLF改行に固定し、WindowsでのCheckout後もPrettierとの改行差を避ける。既存設計文書の改行設定は変更しない。
 
@@ -60,7 +61,7 @@ PRのChecksまたはActionsタブから、失敗したStepのログと対象フ�
 
 ## 後続Issueへの引き継ぎ
 
-- #7：Frontend追加時にReact / TSX用Lintルール、Browser環境、Frontend用型チェック・テストを追加する。Vite Buildと型チェックを分離する。
+- #7：Frontend追加時にReact / TSX用Lintルール、Browser環境、Frontend用型チェック・テストを追加する。Vite Buildと型チェックを分離する。方針は[Frontend開発手順](frontend-development.md)で確定済み（単一Package、`tsconfig.frontend.json`、React HooksとBrowser globals、既存Vitest）。
 - #16：PR-AのBackend起動・Config・Secretsは検証対象へ追加済み。SQLite・Scheduler・Recovery等のテストは後続PRで具体化する。外部サービスは実APIやSecretをCIへ持ち込まずに検証できるようにする。
 - Package構成が決まった時点で各対象の設定とルートの検証コマンドを拡張する。現段階ではWorkspacesや空のアプリケーションディレクトリを作らない。
 - #6 / #12 / #13：Pi環境、Deploy運用、実機性能・72時間試験は別途実施する。今回のCI成功とは区別する。
