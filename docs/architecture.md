@@ -1655,6 +1655,8 @@ C-Impl-5B-4のRestart Recoveryでは、案Dの起動後窓別待機と管理者�
 
 R-01〜R-03では、CLEAN結果不明の今回終了判定と次回StartupのDB検証を分離し、同一BootのCLEANでも全条件成立時のみ復帰候補とする。複数Clock異常は固定した非重複Sequence範囲ごとに独立待機し、Clock回復でValid再分類・範囲統合を行わない。Shutdownは開始時の単調時計絶対Deadlineを全工程で共有し、CanMarkCleanに加えてDeadline・開始余裕B_clean・Connection・Transaction・所有権を確認してからCLEANを開始する。B_clean値はPi実測待ちで、同期SQLite中断や10秒以内完了の保証ではない。CLEAN確定後のClose失敗は別に記録する。詳細は同正本のR-01〜R-03に従う。
 
+D-01〜D-03ではSchema v3のLifecycle・Startup親・Provider境界・Clock異常Rangeの4 Tableを設計確定した。Startupは前回Lifecycle証拠、今回Generationの+1、全管理Provider境界を、全Consumptionの構造・Sequenceを検証する単一TransactionでAtomic確定する。Clock異常Rangeは永続化した固定境界とProcess内の待機・Valid証拠を分離する。未完了Rangeの全件計上で安全な再開候補を評価できても管理者隔離・CLEAN適格性は別条件とし、D-04のRecovery状態詳細は未確定のまま残す。DDLと詳細検証契約は[設計正本D-01](technology-stack.md#pr-c-c-impl-5b4-d01)・[D-02](technology-stack.md#pr-c-c-impl-5b4-d02)・[D-03](technology-stack.md#pr-c-c-impl-5b4-d03)を参照し、実装・試験完了とは扱わない。
+
 #### 工程の責務
 
 | 工程 | 担当範囲 |

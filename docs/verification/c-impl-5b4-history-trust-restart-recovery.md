@@ -1,8 +1,8 @@
 # C-Impl-5B-4 History Trust / Restart Recovery：詳細設計・受入計画
 
-設計正本は[technology-stack.md §23.11](../technology-stack.md#pr-c-c-impl-5b4-history-restart)。基準mainは`8544d988db6af29ca7eb105f18bed271bcd4b6f8`（[PR #50](https://github.com/rinYamano211/home-digital-signage/pull/50)のC-Impl-5A実装反映済み）。親[Issue #16](https://github.com/rinYamano211/home-digital-signage/issues/16)はOpenで継続する。
+設計正本は[technology-stack.md §23.11](../technology-stack.md#pr-c-c-impl-5b4-history-restart)。今回の基準mainは`96e29396b95a1ea02ee06589331230656ef77fd0`（[PR #51](https://github.com/rinYamano211/home-digital-signage/pull/51)の設計Merge済み、PR #50のC-Impl-5A実装を含む）。親[Issue #16](https://github.com/rinYamano211/home-digital-signage/issues/16)はOpenで継続する。
 
-本書はP0・P1横断整合性レビューと採用済みR-01〜R-03の文書反映、既存コードの読取り結果、未実施の受入計画を区別する。現行mainにC-Impl-5B-4専用設計・Lifecycle Repositoryはなく、今回の合意から設計を追加した。既存ADR専用ファイル・ディレクトリは確認できず、既存方式に従いtechnology-stack.mdを正本とする。コード・テストコード・DB・Issueは変更しない。以下の受入条件はすべて**設計確定・テスト未実施**である。
+PR #51はMerge Commit `96e29396b95a1ea02ee06589331230656ef77fd0`でmainへ反映済み。本更新は同Commitを基準に、採用確定したD-01〜D-03を追記する。P0・P1 / R-01〜R-03の文書反映、既存コードの読取り結果、未実施の受入計画を区別し、設計文書の存在をLifecycle Repository実装済みとは扱わない。既存ADR専用ファイル・ディレクトリは確認できず、既存方式に従いtechnology-stack.mdを正本とする。コード・テストコード・DB・Issueは変更しない。以下の受入条件はすべて**設計確定・テスト未実施**である。
 
 ## レビュー指摘と反映先
 
@@ -121,11 +121,46 @@ Schema v2→v3とNORMAL→FULLは今回明示された将来設計の変更点�
 | H54-43 | Boot ID / Generation不一致、更新0件・複数件ではCLEAN成功としない。適格性確認からCommitまで新規送信禁止                      | R-01、H54-13・29               |
 | H54-44 | 異常再発でも新Consumptionがなければ空範囲なし。待機完了 / Clock回復で過去不確実履歴をValid再分類しない                      | R-02、H54-09・10               |
 
+## D-01〜D-03確定設計とH54の対応（未実装・未検証）
+
+詳細DDLは正本の[D-01](../technology-stack.md#pr-c-c-impl-5b4-d01)・[D-02](../technology-stack.md#pr-c-c-impl-5b4-d02)・[D-03](../technology-stack.md#pr-c-c-impl-5b4-d03)に一元化する。本書には重複掲載しない。既存H54-01〜44の番号・本文を維持し、以下を承認済み設計との対応として整理する。新しい正式受入IDや独立テスト関数の追加義務は設定しない。
+
+| 設計・検証契約                     | 対応する既存H54                | 期待結果・後続実装への引継ぎ                                                                                                                                                           |
+| ---------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D-01：Singleton・Generation・CLEAN | 18〜21・29〜32・43             | Migration Gen 1→初回Startup Gen 2、通常Startupで正確に+1、上限拒否。CLEANは増分なし・Boot / Gen拘束・更新1件。自動生成・修復・巻戻しなし                                               |
+| D-01：4 Tableと明示Migration       | 19〜21                         | v2の6 Table / Index / Quota履歴維持、4 Table追加・Gen 1・user_version=3をAtomic確定。書込み前WAL / FULL / FK、通常起動Upgradeなし。INTEGER PRIMARY KEYの自動IndexなしをValidatorで考慮 |
+| D-02：Preflight・全履歴検証案A     | 01・19〜21・27・32             | EX・厳密v3・FULL / FK・正常Connection・Lifecycle1行・OS Boot ID・親履歴Gen 2〜現在Gen連続・Provider集合を検証。全Consumption構造 / SequenceはBEGIN IMMEDIATE内で検証                   |
+| D-02：Startup Atomicity・結果不明  | 01・18・29〜32                 | 前回Lifecycle再検証→親INSERT→全Provider境界INSERT→集合完全一致→前回State / Boot / Gen拘束UPDATE1件→Commit。unknownは今回証拠不採用、再試行なし、次回独立検証                           |
+| D-02：Provider分類・F-01           | 04・24・27・28                 | DDLでPROVISIONED / NULL拒否。Backendは状態・整数範囲・Metadata / Consumption一致を独立検証。F-01後はStartup境界不変・Runtime Cutoff 0、unknownなら発行なし                             |
+| D-03：永続Range・Runtime証拠分離   | 07〜10・33〜37・44             | 複合FK、非空範囲、cutoff < start <= end <= last、非重複・分類漏れなし。UPDATE / DELETE / 統合禁止、Provider / Gen内Range ID単調・再利用なし。待機・Valid区間は非永続                   |
+| D-03：Clock異常時の順序            | 08・12・33〜36                 | Clock失効→同期Gate閉鎖→Valid凍結→Drain→最終Sequence→全履歴分類→Tx内非重複検証→Range Commit→待機開始。Drain失敗 / Commit unknownはRange確定証拠なし                                     |
+| D-03：Runtime Validの競合          | 07〜10・14・27・34〜36         | Clock TrustとTx-Q Commit成功後のみValid証拠を生成し、Clock異常と同期制御。生成失敗 / unknownではValid扱いせずFail Closed。固定historyComplete=true禁止                                 |
+| D-03：Range別計数・再開案A         | 02〜07・09・10・27・33・37・44 | C_old + C_valid + 各Rangeの計数。未完了範囲は窓に全件計上し、待機未完了でも保守的Quotaと独立条件成立なら再開候補。管理者隔離25時間は別条件                                             |
+| D-03：再異常・Process停止          | 05・06・15〜17・25・35・37・44 | 単調時計継続なら既存待機保持可能、不明なら失効。回復だけで復活・Valid昇格しない。確定前停止はRUNNING、再起動は新cutoffの案Dへ                                                          |
+| D-01〜03と既存R-01〜03             | 11〜18・26・28〜32・38〜43     | CLEAN適格性・共有10秒Deadline / B_clean・Commit unknown・管理者隔離迂回禁止を維持。送信再開候補とCLEAN適格を同一視せずD-04へ接続                                                       |
+
+**追加受入観点の提案（未承認・新ID未付与）**：Generation上限と親履歴欠落、Provider境界集合過不足、Range複合FK・Range ID再利用、Runtime F-01境界の失敗、Valid証拠生成とClock失効の競合を、上表の既存H54へどう割り当てるか実装前に確認する。独立した追加テストケースにするかはレビュー待ちであり、今回正式ID・実装方法を確定しない。
+
+### 現行コードとの差とD-04への接続
+
+| ファイル                                | 必要な後続対応（今回コード変更なし）                                                                       |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| src/backend/storage/schema.ts           | v3の4 Table・PK / 複合FK・Index構造検証は未実装。INTEGER PRIMARY KEYに既存PK Index必須チェックを適用しない |
+| src/backend/storage/store.ts            | 現行WAL + NORMAL。v3 / FULLの設定・検証とLifecycle所有権への接続が必要                                     |
+| src/backend/storage/quota-repository.ts | Startup / Range / Runtime Valid証拠とTx-Q Commit・unknown保護の連携が必要                                  |
+| src/backend/quota/quota-guard.ts        | 全Timestampによる評価から、構造検証とH_old / Valid / Rangeの保守的窓計数を分離する必要                     |
+| src/backend/send/internal/trust.ts      | Range状態・Clock異常時の凍結と証拠失効・History判定への接続が必要                                          |
+| src/backend/send/provider-send-gate.ts  | Startup / Recovery条件と本番Gateの閉鎖・再開候補の連携が必要。固定trueを供給しない                         |
+| src/backend/shutdown.ts                 | CLEAN Transaction・共有Deadline Gate・B_clean確認は未実装                                                  |
+| src/backend/main.ts                     | Startup / Lifecycle / Recoveryの本番統合が必要                                                             |
+
+D-04ではRecovery状態と具体API・型、承認・失効・再開候補の遷移を詳細化する。D-03の待機未完了でも可能な保守的再開と、独立した管理者隔離・CLEAN禁止を取り違えない。既存PR-Dの公開・Pending、PR-Eの継続DB Recovery / Restore責務を変更しない。
+
 ## 実装前の要確認事項と保証境界
 
-- **自動復帰の具体検証**：R-01のMarker別分岐・CLEAN結果分類は採用確定。History / Quota / Clock等の全条件の検証手段、generation更新・上限、Fingerprint・cutoff保存／照合、起動中失敗の具体処理は実装前詳細化。前回Commit unknownだけで復帰可否を決めず、条件不成立時は安全側停止とする。
-- **Schema v3の具体DDL・SQL**：依頼はTable名・4管理項目・初期値を確定している。列型・制約・lifecycle_key値、通常Startupの具体SQLは未指定でありDDLを創作しない。CLEAN更新はR-01のBoot / Generation拘束・正確に1件・結果不明規約を採用済み。NORMALからFULLへの適用・検証順序、旧Release非互換・新規DB Provisioningのv3対応も実装前に確認する。
-- **履歴の証拠表現**：R-02でRangeの概念項目、非重複・固定境界・独立待機・統合禁止・再分類禁止を採用確定。実装型・レジストリ構造・信頼確認Sequenceとの対応証拠、QuotaTrustから保守的窓評価へのAPIは詳細化待ち。固定trueで迂回せず、完全性を待機だけで回復させない。
+- **D-01〜D-03で解消した未決扱い**：4 Table DDL、lifecycle_key=1、Generationの+1・上限、Startup親子Atomicityと全ConsumptionのTx内検証案A、F-01後Runtime Cutoff、Range複合FK・永続境界とRuntime証拠の分離・再開案Aは確定済み。DDL未指定・Generation未定義という旧記述は適用しない。実装・テストは未完了。
+- **DDLとBackend検証の境界**：PROVISIONED分岐のIS NOT NULL追加はChatレビューで承認済み・反映済み。PROVISIONED / NULLをDDLのCHECKでも拒否し、BackendでもProvider状態・cutoff整数範囲・Metadata / Consumption一致を独立検証する。DDL成立だけでStartup履歴の完全性を証明しない。上表のH54対応へ反映したが、NULL拒否の実行テストは未実施でありPASSとは扱わない。
+- **D-04と実装詳細**：Recovery状態設計の詳細、管理者承認Tokenの実装、具体API・型、Runtime証拠管理クラス、追加テストの実装詳細は未確定。Boot ID正規化・履歴Fingerprint・証拠の具体表現等も承認範囲を超えて推測しない。Current / Valid / Rangeの条件を満たす事実を生成せず固定trueでGuardを迂回しない。
 - **Shutdown開始余裕**：R-03のB_cleanはPi 5実機検証後に決定。単調時計Deadline Gateの具体配線・計測を確認し、B_cleanを同期COMMITの完了保証としない。
 - **管理操作**：Tokenの具体有効期間、UDSの配置・所有権・認可、cancelの詳細動作、再承認時の状態遷移は未確定。既存管理停止／ResumeとHistory復帰承認を混同しない。
 - **Sleep / 時刻**：systemd Sleep抑止・監視・Suspend検出の具体方式とPi単調時計の実挙動は未検証。観測周期だけでSuspend完全検出とはしない。Clock Trust本番確認・RTC-only許可を今回新たに固定しない。

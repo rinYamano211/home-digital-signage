@@ -3006,7 +3006,7 @@ History TrustはUNVERIFIED / TRUSTED / SUSPENDED等の論理状態として扱�
 
 #### C-Impl-5B-4：History Trust / Restart Recovery詳細設計（P0・P1整合レビュー反映）
 
-本節はC-Impl-5B-4の設計正本とする。基準main `8544d988db6af29ca7eb105f18bed271bcd4b6f8`を読み取り、今回のP0・P1合意と追加採用済みR-01〜R-03を詳細化した。**設計確定・実装と受入試験は未実施**であり、C-Impl-5Bの本番Trust配線・Restart Recoveryが実装済みという意味ではない。既存F-01〜F-03・U-12、C-1 / C-2、Tx-Q/A/P/C、PR-D / PR-Eの責務は維持する。現行実装との差・受入対応は[専用検証計画](verification/c-impl-5b4-history-trust-restart-recovery.md)に記録する。過去節のHistory管理回復手順「未確定」は本節の採用範囲について更新し、OS同期取得の具体方式・RTC-only送信許可等の未決事項は残す。
+本節はC-Impl-5B-4の設計正本とする。基準main `8544d988db6af29ca7eb105f18bed271bcd4b6f8`を読み取り、P0・P1合意と採用済みR-01〜R-03を詳細化し、PR #51でmainへ反映した。今回D-01〜D-03を同PRのMerge Commit `96e29396b95a1ea02ee06589331230656ef77fd0`に基づいて追加確定する。**設計確定・実装と受入試験は未実施**であり、C-Impl-5Bの本番Trust配線・Restart Recoveryが実装済みという意味ではない。既存F-01〜F-03・U-12、C-1 / C-2、Tx-Q/A/P/C、PR-D / PR-Eの責務は維持する。現行実装との差・受入対応は[専用検証計画](verification/c-impl-5b4-history-trust-restart-recovery.md)に記録する。過去節のHistory管理回復手順「未確定」は本節の採用範囲について更新し、OS同期取得の具体方式・RTC-only送信許可等の未決事項は残す。
 
 **基本不変条件と残余リスク**
 
@@ -3038,16 +3038,16 @@ Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有Backen
 | 履歴区分 | 識別根拠 | 各Quota窓での評価 |
 |---|---|---|
 | H_old | Startup Snapshot以前、sequence <= cutoffSequence | 案Dの該当窓待機完了まで全件計上。完了後のみその窓から除外可能 |
-| H_new_valid | 今回ProcessでTimestamp信頼性を確認できるConsumption | Timestampと暫定2秒マージンで評価 |
+| H_new_valid | 今回ProcessでClock Trust・Tx-Q Commit成功に基づくRuntime Valid証拠があるConsumption | Timestampと暫定2秒マージンで評価 |
 | H_new_uncertain | 今回ProcessでTimestamp信頼性が不確実なConsumption | 固定したSequence範囲ごとの待機証拠により評価 |
 
-今回ProcessのTimestamp信頼性が失われたら、(1)新規Tx-Q・Provider HTTP禁止、(2)進行中Quota予約・HTTPをDrain、(3)Drain完了後に影響履歴のSequence境界を固定、(4)単調時計で1分・65分・25時間の窓別待機を開始、(5)各窓の待機中は対象全件を計上し、完了した窓だけ除外可能、(6)Clock回復後もDB・History・Quotaを再検証、の順とする。Abort要求だけでDrain完了とせず、HTTP Adapter所有処理とQuota Transactionの終了を確認する。Drain不能・Commit unknown等で境界を確定できなければ証拠を発行せずFail Closed。
+今回ProcessのTimestamp信頼性が失われた場合は[D-03](#pr-c-c-impl-5b4-d03)のClock失効通知・同期Gate閉鎖・Runtime Valid凍結・Drain・境界検証・Range Commit確定後の待機開始に従う。Abort要求だけでDrain完了とせず、HTTP Adapter所有処理とQuota Transactionの終了を確認する。Drain不能・Commit unknown等でRange確定証拠を発行できなければFail Closed。
 
 **R-02：複数Clock異常範囲（採用確定）**
 
-H_new_uncertainは範囲ごとに、Provider識別子、Process Generation、Range ID、startSequence、endSequence、待機開始の単調時計証拠、1秒・60分・24時間の窓別待機状態を保持する。具体的な型名は固定しないが、`cutoffSequence < startSequence <= endSequence`、不確実範囲相互の非重複、全Consumptionの一意な区分所属、分類漏れ・二重計数禁止を必須とする。確定した境界を後から都合よく変更せず、異なる範囲の証拠を流用しない。
+H_new_uncertainは範囲ごとにProvider識別子・Process Generation・Range ID・startSequence・endSequenceの永続記録と、待機開始の単調時計証拠・窓別待機状態のRuntime記録を分離する（[D-03](#pr-c-c-impl-5b4-d03)）。具体的な型名は固定しないが、`cutoffSequence < startSequence <= endSequence`、不確実範囲相互の非重複、全Consumptionの一意な区分所属、分類漏れ・二重計数禁止を必須とする。確定した境界を後から都合よく変更せず、異なる範囲の証拠を流用しない。
 
-異常時はClock Trust失効通知 → Gate閉鎖・新規Tx-Q / HTTP禁止 → 進行中Quota / HTTPのDrain → Drain後の確定済みSequence境界取得 → 影響Consumptionの分類 → 境界固定後に単調時計の窓別待機開始の順とする。検出時lastSequenceを最終境界にせず、Tx-Q Commitと検出の競合をDrain後に解決する。Drain・境界確定に失敗すればFail Closed。
+異常時はClock Trust失効通知 → Gate閉鎖・新規Tx-Q / HTTP禁止 → Runtime Valid証拠凍結 → Quota / HTTPのDrain → Drain後のSequence境界取得・分類検証 → Range Transaction Commit成功確認 → 単調時計の窓別待機開始の順とする。検出時lastSequenceを最終境界にせず、Tx-Q Commitと検出の競合をDrain後に解決する。Drain・境界確定に失敗すればFail Closed。
 
 実際のClock異常発生は検出より前の可能性がある。最後に信頼性を確認できたSequenceとの対応が保証される場合のみ、その対応を開始境界に使う。保証できなければ未確定の影響範囲を保守的に拡大し、壁時計Timestampの逆算だけでValid扱いしない。既存の固定範囲を変更・統合して辻褄を合わせず、安全な非重複分類を構築できなければ停止する。
 
@@ -3071,13 +3071,13 @@ RecoveryCleanEligibleは、管理者承認待ち・隔離25時間待機中・隔
 
 CanMarkCleanを満たさなければCLEAN更新Transactionを開始しない。Runtime=STOPPING、Gate閉鎖、新規Tx-Q / HTTP禁止、Adapter所有処理Drain、Provider影響処理に未解決なし、必要なQuota予約永続化済み、Connection / Transaction正常、History / Recovery / Clock適格、今回ProcessのBoot ID・Generation一致を要求する。適格性確認からCommitまで新規送信が入り込まない停止境界を維持する。承認待ち・隔離中・再検証待ち・History UNVERIFIED / SUSPENDED・Clock不確実履歴未解決・DB / Quota / Lifecycle unknownでは禁止し、隔離中は正常DrainでもRUNNINGを維持する。
 
-共有Connection CoordinationとLifecycle所有権に従い、専用Transactionで今回ProcessのRUNNINGからCLEANへ条件付き更新する。設計例は以下とし、`:lifecycle_key`の具体値・DDL制約を新たに固定するものではない。開始には後述R-03のDeadline Gateも要求する。
+共有Connection CoordinationとLifecycle所有権に従い、専用Transactionで今回ProcessのRUNNINGからCLEANへ条件付き更新する。設計例は以下とし、D-01で確定したSingletonのlifecycle_key=1に限定する。開始には後述R-03のDeadline Gateも要求する。
 
 ```sql
 BEGIN IMMEDIATE;
 UPDATE backend_lifecycle
 SET state = 'CLEAN'
-WHERE lifecycle_key = :lifecycle_key
+WHERE lifecycle_key = 1
   AND state = 'RUNNING'
   AND boot_id = :process_boot_id
   AND generation = :process_generation;
@@ -3128,13 +3128,218 @@ better-sqlite3の同期処理・開始後の同期COMMITが長時間停止し得
 
 HTTP開始権限取得とSTOPPINGを同じ同期境界で直列化し、開始先行ならIn-flightとしてDrain、STOPPING先行なら新規開始拒否とする。Quota Commit済み・HTTP未開始なら消費を保持して未送信終了できる。Fastify Lifecycle、Connection Coordination、DB所有権、F-03停止完了条件は維持し、Startup / Shutdown / Recoveryは同じ適格性・証拠失効条件を参照する。
 
-**P1-1：Lifecycle MarkerとSchema v3（未実装）**
+<a id="pr-c-c-impl-5b4-d01"></a>
 
-明示的v2→v3 Migrationでbackend_lifecycleを追加し、lifecycle_key / state / boot_id / generationを管理する。Schema更新とLifecycle初期化は同一Transactionで確定し、初期値をstate=RUNNING、generation=1、boot_id=Migration時のOS Boot IDとする。Migration直後のRUNNINGは異常終了の断定ではなく、自動復帰に使用できるCLEAN証拠がない状態を意味する。
+##### D-01：Lifecycle / Schema v3 / 明示Migration（確定設計・未実装）
 
-Migration書込み前にWAL + synchronous=FULLを設定・検証する。C-Impl-5B-4で利用する共有ConnectionもFULLを要求し、現行NORMAL実装のままで耐久条件を満たしたとしない。既存v2の6 Table・Index・Quota履歴は保持し、履歴初期化・自動修復を行わない。通常Backend起動でSchema Migrationを自動実行しない。旧Releaseとの非互換、Backup・Rollback管理、Schema前後検証・Commit unknown照合は既存12.4に従う。FULLもmicroSD故障・管理外Restoreを完全防止する保証ではない。
+PR #51反映済みmain `96e29396b95a1ea02ee06589331230656ef77fd0`を基準にD-01〜D-03を確定設計として記録する。v2の既存6 Table・Index・Quota Metadata / Consumptionを変更せず、v3で以下の4 Tableを追加する。DDLは今回承認された定義であり、実DBへの適用・実装・試験完了ではない。
 
-Lifecycle RepositoryはBackendStoreの単一Connectionを借用し、connection-coordination.tsのbusy / connectionUnresolved / blockedと整合させる。未解決ConnectionでStartup・CLEAN更新・別Repositoryの新Transactionを開始しない。起動境界Commit unknownなら通常復帰しない。CLEANと同一boot_idは自動復帰判断の必要な証拠であり、それだけでHistory完全性・Clock・独立管理停止等の検証を省略しない。Startup前Markerの評価と今回RUNNING境界の確定を取り違えない。R-01でCLEAN条件付き更新・保存結果と次回起動の分岐を確定した。Lifecycle Tableの具体DDL・制約、generation更新・上限、Startupの具体SQLは、依頼にない値を推測せず実装前確認に残す。
+```sql
+CREATE TABLE backend_lifecycle (
+    lifecycle_key INTEGER PRIMARY KEY NOT NULL
+        CHECK (lifecycle_key = 1),
+    state TEXT NOT NULL
+        CHECK (state IN ('RUNNING', 'CLEAN')),
+    boot_id TEXT NOT NULL
+        CHECK (length(boot_id) > 0),
+    generation INTEGER NOT NULL
+        CHECK (
+            generation >= 1
+            AND generation <= 9007199254740991
+        )
+);
+```
+
+lifecycle_key=1のSingletonとし、通常StartupでLifecycle行を自動生成・修復しない。Boot IDのUUID形式・正規化・比較はBackendで検証する。MigrationでRUNNING / Gen 1 / Migration時OS Boot IDを初期化し、Migration Gen 1にはStartup親を作成しない。初回StartupはGen 2、その後の通常StartupはGenerationを正確に1増加する。CLEAN更新では増加しない。上限9007199254740991に達したらStartupを拒否し、巻戻し・再利用しない。
+
+CLEANは安全な停止とRecovery適格性のMarkerで、HTTP成功・送信許可ではない。R-01のBoot ID・Generation拘束・更新正確に1件・結果不明保護、CanMarkCleanとCanStartCleanTxを維持する。R-03の共有10秒単調時計Deadline・実機計測待ちB_cleanを維持し、同期COMMITの強制中断・期限内完了保証をしない。R-01のSQL例のlifecycle_keyパラメータは本DDLのSingleton値1に拘束する。
+
+**v2→v3 Migration契約**
+
+- 管理者の明示操作・専用EX Lock下でのみ実施する。通常Startupで自動Migrationしない。
+- 既存v2 Schemaを事前検証し、書込み前にWAL + synchronous=FULLとFK有効化を設定・検証する。v3の共有ConnectionもFULLを要求する。
+- 4 TableのDDL追加、LifecycleのGen 1初期化、user_version=3を同一Transactionで確定し、前後Schemaを検証する。Quota履歴・Metadataを削除・初期化しない。
+- Commit unknownを成功と推測せず、Version・Schema・初期化状態とTransaction状態を既存規則で安全に照合する。不明なまま再実行・自動修復しない。旧Release非互換、DB / WAL Backup・Rollback管理条件は12.4を維持する。
+- Schema Validatorは4 Tableの列・制約・PK / FKを厳密に検証する。backend_lifecycleとstartup_generationsのINTEGER PRIMARY KEYはSQLiteの自動Indexを生成しないため、現行「各TableにPK Indexが1件ある」前提をそのまま流用しない。複合PKとFKも定義に従って検証する（[SQLite CREATE TABLE](https://www.sqlite.org/lang_createtable.html)）。
+
+FULLでもStorage故障・管理外Restore・Provider計上遅延の完全保証にはならない。新規DBの明示Provisioning手順と既存v2からのUpgradeを混同せず、通常起動の自動作成・履歴修復禁止を維持する。
+
+<a id="pr-c-c-impl-5b4-d02"></a>
+
+##### D-02：Startup親子・Generation・Startup Transaction（確定設計・未実装）
+
+```sql
+CREATE TABLE startup_generations (
+    generation INTEGER PRIMARY KEY NOT NULL
+        CHECK (
+            generation >= 2
+            AND generation <= 9007199254740991
+        ),
+    boot_id TEXT NOT NULL
+        CHECK (length(boot_id) > 0),
+    previous_state TEXT NOT NULL
+        CHECK (previous_state IN ('RUNNING', 'CLEAN')),
+    previous_boot_id TEXT NOT NULL
+        CHECK (length(previous_boot_id) > 0),
+    previous_generation INTEGER NOT NULL
+        CHECK (
+            previous_generation >= 1
+            AND previous_generation <= 9007199254740990
+        ),
+    CHECK (generation = previous_generation + 1)
+);
+```
+
+previous_state / previous_boot_id / previous_generationはStartup直前に取得した前回Lifecycle証拠であり、Recovery承認・送信許可ではない。Gen 2以降、Startupごとに親レコードを追加する。
+
+```sql
+CREATE TABLE startup_provider_boundaries (
+    generation INTEGER NOT NULL,
+    provider_key TEXT NOT NULL
+        CHECK (length(provider_key) > 0),
+    provider_state TEXT NOT NULL
+        CHECK (
+            provider_state IN ('UNPROVISIONED', 'PROVISIONED')
+        ),
+    cutoff_sequence INTEGER,
+    PRIMARY KEY (generation, provider_key),
+    FOREIGN KEY (generation)
+        REFERENCES startup_generations(generation),
+    CHECK (
+        (
+            provider_state = 'UNPROVISIONED'
+            AND cutoff_sequence IS NULL
+        )
+        OR
+        (
+            provider_state = 'PROVISIONED'
+            AND cutoff_sequence IS NOT NULL
+            AND cutoff_sequence >= 0
+            AND cutoff_sequence <= 9007199254740991
+        )
+    )
+);
+```
+
+Startup境界は確定後不変とし、後からUPDATEしない。全管理対象Providerについて次の分類を行い、UNPROVISIONED / NULLとPROVISIONED / 0を区別する。
+
+| Metadata | Consumption | Startup境界 |
+|---|---|---|
+| なし | なし | UNPROVISIONED / NULL |
+| あり・構造正常 | 0件以上、Sequence整合 | PROVISIONED / last_sequence |
+| なし | あり | Fail Closed |
+| あり・構造不正 | 任意 | Fail Closed |
+
+**DDLとBackend検証の境界**：PROVISIONED分岐へのcutoff_sequence IS NOT NULL追加は今回のChatレビューで承認済みの正式採用であり、未決定事項ではない。UNPROVISIONED / NULLは許容し、PROVISIONED / NULLはDDLのCHECK制約で拒否する。PROVISIONEDは非NULLかつ0〜9007199254740991、他のprovider_stateは既存の列CHECKで拒否する。SQLiteではCHECK式がNULLでも制約違反にならないため、明示的な非NULL条件を要求する（[SQLite CHECK constraints](https://www.sqlite.org/lang_createtable.html)）。BackendでもProvider状態・cutoffの整数範囲・MetadataとConsumptionとの一致を独立に検証し、不正をFail Closedとする。DDL制約の成立だけではStartup履歴の完全性を証明しない。
+
+Startup後F-01のCommit成功が確定した場合、永続Startup境界は更新せず、今回Process内にRuntime Provisioning境界cutoffSequence=0を生成する。F-01 Commit unknownではRuntime境界を発行せず対象ProviderをFail Closedとする。後続RangeのFKは元のStartup Provider境界を参照し、実効cutoffの評価だけRuntime境界を使用する。
+
+**Preflight**
+
+専用EX保持、厳密なSchema v3一致、WAL / FULL / FK有効、正常Connection・未解決Transactionなしを確認する。Lifecycleは正確に1行でState・Boot ID・Generationが妥当、OS Boot ID取得・検証成功を要求する。Startup親履歴がGen 2から現在Genまで連続しLifecycleと整合すること、管理対象Provider集合と履歴構造の整合、Generationの安全な+1、新規Tx-Q / Provider HTTP禁止を確認する。Gen 1はMigration直後で親なしというD-01の例外に従う。
+
+**Transaction内の全履歴検証：案Aを採用**
+
+BEGIN IMMEDIATEの単一Transaction内で以下を行う。事前Readだけで正当化せず、全Consumptionの構造・Sequence連続性をこのTransaction内で検証する。
+
+1. 前回Lifecycleを再取得・検証する。
+2. 全管理対象ProviderのMetadata・全Consumptionの構造とSequence連続性を検証する。
+3. ProviderごとのStartup Cutoffを確定する。
+4. Startup親へ今回Generation・前回Lifecycle証拠をINSERTする。
+5. 全管理対象ProviderのStartup境界をINSERTする。
+6. 境界件数と期待Provider集合の完全一致を検証する。
+7. 前回State・Boot ID・Generationを条件にLifecycleを今回Boot ID・今回Generation・RUNNINGへUPDATEする。
+8. UPDATE件数が正確に1件であることを確認する。
+9. COMMITする。
+
+Lifecycle更新・Startup親・全Provider境界はAtomicに確定する。Timestamp TrustとRecovery適格性はこの構造検証と混同せず、Post-Commitで別評価する。
+
+| Startup結果 | 今回Processの扱い |
+|---|---|
+| Commit成功確定 | 今回Startup証拠を採用。これだけで送信しない |
+| Rollback確定 | Startup失敗・送信禁止 |
+| Commit unknown | 今回Startup証拠を採用せずFail Closed |
+| Connection不明 | 新規Transaction禁止 |
+
+同一ProcessでStartupを無条件再試行しない。次回StartupではLifecycle・Startup親子・Quota履歴を独立検証する。前回RUNNING、または前回CLEANでも異なるOS Bootなら管理者Recovery対象。前回CLEAN・同一OS BootはClock / History / Quota / Recovery等の全安全条件成立時のみ自動復帰候補とする。DB / Lifecycle不整合はFail Closed。R-01の「前回CLEAN Commit unknownと次回DB検証の独立性」を維持する。
+
+案Dの旧履歴はStartup Commit成功後の単調時計を使い、1分・65分・25時間を窓別独立管理する。Process再起動では待機証拠を引き継がない。管理者隔離25時間は別起点・別証拠のまま維持する。
+
+<a id="pr-c-c-impl-5b4-d03"></a>
+
+##### D-03：Clock異常Range・History分類・保守的Quota評価（確定設計・未実装）
+
+```sql
+CREATE TABLE history_uncertain_ranges (
+    provider_key TEXT NOT NULL
+        CHECK (length(provider_key) > 0),
+    generation INTEGER NOT NULL,
+    range_id INTEGER NOT NULL
+        CHECK (
+            range_id >= 1
+            AND range_id <= 9007199254740991
+        ),
+    start_sequence INTEGER NOT NULL
+        CHECK (
+            start_sequence >= 1
+            AND start_sequence <= 9007199254740991
+        ),
+    end_sequence INTEGER NOT NULL
+        CHECK (
+            end_sequence >= start_sequence
+            AND end_sequence <= 9007199254740991
+        ),
+    PRIMARY KEY (provider_key, generation, range_id),
+    FOREIGN KEY (generation, provider_key)
+        REFERENCES startup_provider_boundaries(
+            generation, provider_key
+        )
+);
+```
+
+**Rangeの永続境界とRuntime証拠の分離**
+
+- RangeはProvider・Generation・Range IDで識別し、(generation, provider_key)の複合FKでStartup Provider境界に拘束する。FK有効化と検証は必須。
+- 非空区間だけ永続化し、Range境界は確定後不変。通常運用でUPDATE・DELETE・統合しない。Range IDはProvider・Generation内で単調増加し、再利用しない。
+- 非重複・Runtime Valid証拠との非重複・全Consumptionの一意分類はRepository Transaction内で検証する。DDLだけで保証済みとはしない。
+- 登録条件は `cutoffSequence < startSequence <= endSequence <= lastSequence`。Startup時UNPROVISIONEDで後からF-01成功したProviderはD-02のRuntime Cutoff 0を使用する。
+- 待機開始時刻、待機完了状態、Valid区間はDBへ永続化しない。R-02の範囲に紐づく窓別証拠は今回Process内だけで保持する。
+
+**Clock異常Rangeの検証・確定順序**
+
+1. Clock Trustを失効させる。
+2. Provider Gateを同期的に閉じ、新規Tx-Q / HTTPを禁止する。
+3. Runtime Valid証拠を凍結する。
+4. 進行中Tx-Q・HTTP Adapter所有処理をDrainする。
+5. Drain後の最終Sequenceを取得する。
+6. 全Consumptionを検証し、不確実Sequence区間を固定する。
+7. 既存Range非重複、Valid証拠非重複、分類漏れなしを確認する。
+8. RangeをTransactionでINSERTし、Commit成功を確認する。
+9. Range別・窓別の単調時計待機証拠を開始する。
+10. Clock / History / Quota / Recoveryを再検証し、全条件成立時のみ再開候補とする。
+
+開始境界は最後の信頼確認Sequenceとの対応が保証できる場合のみlastTrustedSequence+1を使用する。保証できなければ影響範囲を保守的に拡大し、安全な分類を構築できなければFail Closed。壁時計Timestampの逆算・検出時lastSequenceだけで境界を推測しない。
+
+Drain失敗はRange確定禁止、Commit unknownはRange確定証拠を発行せずFail Closed。分類漏れ・未解決ConnectionもFail Closed。Range確定前のProcess停止はRUNNING維持で次回管理者Recoveryとし、Clock回復だけで過去の不確実履歴をValidへ昇格させない。
+
+**Runtime Valid証拠とQuota合算**
+
+| 区分 | 証拠・窓評価 |
+|---|---|
+| H_old | 今回Startup Cutoff以前。案Dの各窓待機未完了では全件計上、完了窓だけ除外可能 |
+| H_new_valid | 今回ProcessでClock TrustとTx-Q Commit成功に基づくRuntime Valid証拠がある履歴。Timestampと暫定2秒で評価 |
+| H_new_uncertain | 確定Range内の履歴。範囲別・窓別の待機中は全件計上、完了窓だけ除外可能 |
+
+Runtime Valid証拠はTx-Q Commit成功後にのみ生成し、Clock異常との競合を同期的に制御する。永続化せず、生成失敗・Commit unknownではValid扱いせずFail Closed。凍結・分類・Range登録の具体型は後続実装で詳細化し、固定historyComplete=trueで既存Guardを通過させない。
+
+`C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w`
+
+各Rangeの待機は1秒窓=1分、60分窓=65分、24時間窓=25時間で独立する。Clock回復後の再開は**案Aを採用**し、Range待機未完了でも未完了分を全件計上した保守的Quota評価とClock / History / Recovery等の独立条件がすべて成立すれば送信再開候補にできる。管理者承認後25時間隔離中の送信・CLEAN禁止は別条件として維持する。再開候補とCLEAN適格性は同義ではなく、R-01のCLEAN条件を緩めず、D-04のRecovery状態詳細を先取りしない。
+
+Clock再異常でも単調時計継続性が保証されれば既存Range待機証拠は維持可能、継続性不明なら失効する。新しい不確実Consumptionがあれば新Rangeを追加し、なければ空Rangeは作らない。既存境界を変更せず、Clock回復だけで失効証拠を復活させない。再起動ではRuntime証拠を引き継がず、旧履歴を新Startup Cutoffで案D評価する。旧Range記録がDBに残っても、前Processの待機完了を復元したとはしない。
+
+
+Lifecycle / Startup / Rangeの各RepositoryはBackendStoreの単一Connectionを借用し、既存connection-coordination.tsのbusy / connectionUnresolved / blockedに従う。新しい専用DB Connectionや安全性を迂回するWriterを追加しない。
 
 **P1-2：ローカル管理承認**
 
@@ -3154,7 +3359,7 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 
 **反映状態と実装前確認**
 
-今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。R-01の全条件を生成する具体的な検証・StartupのSQLとLifecycle DDL、R-02範囲記録の具体型・Guardへの接続、R-03のB_clean値、Token・UDS仕様、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
+今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。D-01〜D-03の4 Table DDL、Startup Transactionの構造検証・Generation契約、Range永続化とRuntime証拠の分離・再開案Aは確定済みである。D-04 Recovery状態の詳細、証拠管理の具体型・API、R-03のB_clean値、Token・UDS仕様、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
 
 
 <a id="pr-c-c3-f02-delay-margin"></a>
