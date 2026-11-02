@@ -499,3 +499,40 @@ for (const after of [false, true])
       db.close();
     }
   });
+
+test("Shutdown synchronously requested during Boot read cannot enter Startup", async () => {
+  const f = fixture();
+  vi.mocked(readOsBootId).mockImplementation(() => {
+    f.signals.emit("SIGTERM");
+    return boot;
+  });
+  const b = await start(f);
+  expect(b.result).toBeUndefined();
+  expect(f.store.startup.execute).not.toHaveBeenCalled();
+  expect(b.app.listen).not.toHaveBeenCalled();
+  expect(f.store.close).toHaveBeenCalledTimes(1);
+});
+test("Shutdown synchronously requested during DB status logging cannot register routes or Listen", async () => {
+  const f = fixture();
+  const stream = new Writable({
+    write(chunk, _enc, cb) {
+      if (chunk.includes('"event":"database_status"'))
+        f.signals.emit("SIGTERM");
+      cb();
+    },
+  });
+  expect(
+    await startBackend({}, stream, {
+      signals: f.signals,
+      finish: f.finish,
+      initializeStore: f.initializeStore,
+    }),
+  ).toBeUndefined();
+  const app = vi.mocked(buildApp).mock.results.at(-1)!.value;
+  apps.push(app);
+  expect(app.hasRoute({ method: "GET", url: "/ping" })).toBe(false);
+  expect(app.listen).not.toHaveBeenCalled();
+  expect(f.store.startup.execute).toHaveBeenCalledTimes(1);
+  expect(f.store.close).toHaveBeenCalledTimes(1);
+  expect(f.finish).toHaveBeenCalledExactlyOnceWith(0);
+});

@@ -130,7 +130,7 @@ export async function startBackend(
                 layer: "L3",
                 reason: "os_boot_id_unverified",
               };
-            } else {
+            } else if (!shutdown.requested) {
               // One synchronous attempt only. No Trust, Quota or HTTP authority
               // is exposed by the restricted Store, including after committed.
               status = startupDatabaseStatus(
@@ -159,6 +159,10 @@ export async function startBackend(
       { event: "database_status", ...status },
       "Database startup state",
     );
+    if (shutdown.requested) {
+      await shutdown.shutdown();
+      return;
+    }
     registerRoutes(app);
     stage = "listen_failed";
     await app.listen({ host: config.host, port: config.port });

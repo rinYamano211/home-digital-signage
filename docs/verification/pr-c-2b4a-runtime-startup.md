@@ -63,15 +63,15 @@ Close成功時だけdatabase_closedを記録する。Close例外はFastify Close
 
 ## テスト・品質確認
 
-追加33件のRuntime StartupテストとLinux実Process 4件。テストは既存Fastifyを用い、単体試験だけListen / Lock / OS取得を差し替える。実SQLiteの本番Openとexecute経路、COMMIT前後throwを検証する。Linux試験は一時専用Directory・実EX・実OS Boot・実HTTP /pingでGen 1→2→3を確認する。実運用DB・外部APIへはアクセスしない。
+追加35件のRuntime StartupテストとLinux実Process 4件。テストは既存Fastifyを用い、単体試験だけListen / Lock / OS取得を差し替える。実SQLiteの本番Openとexecute経路、COMMIT前後throwを検証する。Linux試験は一時専用Directory・実EX・実OS Boot・実HTTP /pingでGen 1→2→3を確認する。実運用DB・外部APIへはアクセスしない。
 
 - committed / rejected / L1〜L4 / unknown、Boot失敗、v2拒否、SchemaError、未分類Open失敗と機密非露出。
-- Open前 / Open中 / Startup直前 / 同期Startup直後のShutdown、Close所有権、Close失敗、Listen失敗、10秒期限・Listener解除。
+- Open前 / Open中 / Startup直前 / 同期Startup直後・Boot取得 / 状態ログの同期再入時のShutdown、Close所有権、Close失敗、Listen失敗、10秒期限・Listener解除。
 - 実SQLiteのCommit unknown前後で成功不採用・1回試行・Generationの保存有無を検証。
 - Linux：本番v3再起動・v2無変更、SIGTERM / SIGINTをAtomic Startup中にQueueしてListenしないこと、EX解放。
 - 既存Linuxの正常Lifetime・Listen失敗・取得後Shutdown・Timeout試験は明示的v3準備へ適合。v1→v2明示Migrationのデータ保持は維持し、v2本番起動はBLOCKEDであることを確認。旧「v3通常起動拒否」の期待は今回採用したGen 2 Startupへ更新する。
 
-ローカル全体：1,082 PASS・Linux専用56 Skip（計1,138件）。Lint / Format Check / Type Check / Backend Build / git diff --check成功。Linux CIの実測結果はPR本文に記録する。
+ローカル全体：1,084 PASS・Linux専用56 Skip（計1,140件）。Lint / Format Check / Type Check / Backend Build / git diff --check成功。Linux CIの実測結果はPR本文に記録する。
 
 | 正本・条件                    | 今回の検証                                                     | 未完了                     |
 | ----------------------------- | -------------------------------------------------------------- | -------------------------- |
