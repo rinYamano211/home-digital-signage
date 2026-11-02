@@ -1,0 +1,1113 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Signage UI Mock</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css"
+    />
+    <style>
+      :root {
+        --bg: #1c1b22;
+        --tile: #25242c;
+        --tile-2: #2f2d37;
+        --line: #34323b;
+        --text: #ece6dc;
+        --sub: #a7a096;
+        --faint: #77716a;
+        --na: #8d877e;
+        --accent: #f2c48d;
+        --rain: #c9d8f2;
+        --rain-bg: #2a2f3d;
+        --stale: #e3b874;
+        --stale-bg: #332d25;
+        --fade-ms: 600ms;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: #0f0e12;
+        color: #ddd;
+        font-family: system-ui, sans-serif;
+      }
+      .stage {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+      }
+      .frame {
+        width: min(100%, 1280px);
+        aspect-ratio: 16/10;
+        position: relative;
+        overflow: hidden;
+        border-radius: 10px;
+        outline: 10px solid #000;
+      }
+      #screen {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 1280px;
+        height: 800px;
+        transform-origin: 0 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Zen Maru Gothic", sans-serif;
+        font-weight: 500;
+        display: grid;
+        grid-template-columns: 45% 1fr;
+        gap: 16px;
+        padding: 16px;
+      }
+      .tile {
+        background: var(--tile);
+        border-radius: 24px;
+        position: relative;
+        overflow: hidden;
+        min-width: 0;
+        min-height: 0;
+      }
+      .sub {
+        color: var(--sub);
+      }
+      .nw {
+        white-space: nowrap;
+      }
+      .ti {
+        line-height: 1;
+      }
+
+      /* clock */
+      .clock {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 0 40px;
+      }
+      .clock .date {
+        font-size: 36px;
+        color: var(--sub);
+      }
+      .clock .time {
+        font-size: 200px;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -4px;
+        font-variant-numeric: tabular-nums;
+      }
+      .clock .time.nosync {
+        color: #4a4752;
+      }
+      .clock .syncmsg {
+        font-size: 30px;
+        color: var(--sub);
+        margin-top: 12px;
+      }
+      .dots {
+        position: absolute;
+        left: 40px;
+        bottom: 32px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .dot {
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: #4a4752;
+        transition:
+          width 0.5s ease,
+          background-color 0.5s ease;
+      }
+      .dot.on {
+        width: 40px;
+        background: var(--accent);
+      }
+      .dot.skip {
+        background: transparent;
+        border: 3px solid #4a4752;
+      }
+
+      /* content area & transitions */
+      #content {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+      }
+      .panel {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        gap: 16px;
+        min-height: 0;
+      }
+      .fade-enter {
+        opacity: 0;
+      }
+      .fade-enter.active {
+        opacity: 1;
+        transition: opacity var(--fade-ms) ease;
+      }
+      .fade-exit {
+        opacity: 1;
+      }
+      .fade-exit.active {
+        opacity: 0;
+        transition: opacity var(--fade-ms) ease;
+      }
+      .slide-enter {
+        opacity: 0;
+        transform: translateY(40px);
+      }
+      .slide-enter.active {
+        opacity: 1;
+        transform: none;
+        transition:
+          opacity var(--fade-ms) ease,
+          transform var(--fade-ms) ease;
+      }
+      .slide-exit {
+        opacity: 1;
+      }
+      .slide-exit.active {
+        opacity: 0;
+        transform: translateY(-24px);
+        transition:
+          opacity var(--fade-ms) ease,
+          transform var(--fade-ms) ease;
+      }
+
+      .badge {
+        position: absolute;
+        top: 14px;
+        right: 18px;
+        font-size: 22px;
+        color: var(--stale);
+        background: var(--stale-bg);
+        border-radius: 14px;
+        padding: 3px 14px;
+        white-space: nowrap;
+        z-index: 2;
+      }
+      .na {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        color: var(--na);
+        font-size: 30px;
+        height: 100%;
+        padding: 16px;
+        text-align: center;
+      }
+      .na .ti {
+        font-size: 40px;
+      }
+
+      /* schedule */
+      .sched {
+        padding: 24px 32px;
+        display: flex;
+        flex-direction: column;
+      }
+      .sched > * {
+        flex-shrink: 0;
+      }
+      .chips {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .chip {
+        background: var(--tile-2);
+        border-radius: 16px;
+        padding: 4px 20px;
+        font-size: 24px;
+      }
+      .ev {
+        display: flex;
+        font-size: 28px;
+        line-height: 1.85;
+        min-width: 0;
+      }
+      .ev .tm {
+        flex: 0 0 96px;
+        font-variant-numeric: tabular-nums;
+      }
+      .ev .tt {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      .ev.done {
+        color: var(--faint);
+        font-size: 24px;
+      }
+      .big {
+        border-left: 8px solid var(--accent);
+        padding: 2px 0 2px 20px;
+        margin: 10px 0;
+      }
+      .big.next {
+        border-left-color: var(--sub);
+      }
+      .big .lab {
+        font-size: 22px;
+        color: var(--accent);
+      }
+      .big.next .lab {
+        color: var(--sub);
+      }
+      .big .ev {
+        font-size: 38px;
+        line-height: 1.4;
+      }
+      .big .ev .tm {
+        flex-basis: 124px;
+      }
+      .collapsed {
+        color: var(--faint);
+        font-size: 24px;
+        line-height: 1.85;
+        border-bottom: 2px dashed #3a3842;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .more {
+        color: var(--sub);
+        font-size: 24px;
+        margin-top: 6px;
+      }
+      .empty {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 34px;
+        color: var(--sub);
+      }
+
+      /* today weather */
+      .now {
+        padding: 16px 28px;
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .now .ic {
+        font-size: 56px;
+        color: var(--accent);
+      }
+      .now .temp {
+        font-size: 92px;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .now .cond {
+        font-size: 30px;
+        color: var(--sub);
+      }
+      .now .hilo {
+        margin-left: auto;
+        font-size: 26px;
+        line-height: 1.6;
+      }
+      .now.stale {
+        padding-top: 52px;
+      }
+      .hourly:has(> .badge),
+      .weekly:has(> .badge) {
+        padding-top: 56px;
+      }
+      .sched:has(> .badge) {
+        padding-top: 60px;
+      }
+      .rain {
+        border-radius: 20px;
+        padding: 20px 28px;
+        font-size: 36px;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        white-space: nowrap;
+        background: #34476a;
+        color: #e3edff;
+      }
+      .rain {
+        min-width: 0;
+        overflow: hidden;
+      }
+      .rain > span:first-of-type {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .rain .ti {
+        font-size: 44px;
+      }
+      .rain.stale .rt {
+        background: none;
+        color: var(--stale);
+        font-size: 22px;
+        line-height: 1.25;
+        text-align: right;
+        padding: 0;
+        flex-shrink: 0;
+      }
+      .rain .rt {
+        margin-left: auto;
+        font-size: 30px;
+        background: #e3edff;
+        color: #24324d;
+        border-radius: 14px;
+        padding: 2px 14px;
+      }
+      .rain.dry,
+      .rain.muted {
+        background: var(--tile);
+        color: var(--na);
+        font-size: 28px;
+        padding: 14px 28px;
+      }
+      .rain.dry .ti,
+      .rain.muted .ti {
+        font-size: 34px;
+      }
+      .rain.muted .rt {
+        color: var(--stale);
+        background: none;
+        font-size: 24px;
+        padding: 0;
+      }
+      .hourly {
+        padding: 16px 8px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-around;
+      }
+      .hrow {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        text-align: center;
+        line-height: 1.35;
+      }
+      .hrow .h {
+        font-size: 24px;
+        color: var(--sub);
+      }
+      .hrow .hi {
+        font-size: 44px;
+        display: block;
+        margin: 4px 0;
+      }
+      .hrow .ht {
+        font-size: 34px;
+      }
+      .hrow .hp {
+        font-size: 24px;
+      }
+      .hrow .daystart {
+        border-left: 4px solid var(--accent);
+      }
+      .sep {
+        border-top: 2px solid var(--line);
+        opacity: 0.5;
+      }
+
+      /* weekly (rows) */
+      .weekly {
+        padding: 12px 28px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-evenly;
+      }
+      .wr {
+        display: grid;
+        grid-template-columns: 128px 60px 80px 56px 1fr 56px;
+        align-items: center;
+        column-gap: 12px;
+        padding: 6px 16px;
+        border-radius: 18px;
+      }
+      .wr.today {
+        background: var(--tile-2);
+      }
+      .wr .wl {
+        font-size: 32px;
+        white-space: nowrap;
+      }
+      .wr .wl small {
+        font-size: 22px;
+        color: var(--sub);
+        margin-left: 8px;
+      }
+      .wr .wi {
+        font-size: 52px;
+        text-align: center;
+      }
+      .wr .wp {
+        font-size: 26px;
+        color: var(--faint);
+        text-align: right;
+      }
+      .wr .wp.wet {
+        color: var(--rain);
+      }
+      .wr .wmin {
+        font-size: 32px;
+        color: var(--sub);
+        text-align: right;
+      }
+      .wr .wmax {
+        font-size: 32px;
+      }
+      .wr .barbox {
+        height: 10px;
+        border-radius: 5px;
+        background: #34323b;
+        position: relative;
+      }
+      .wr .bar {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-radius: 5px;
+        background: linear-gradient(90deg, #9db7e8, #f2c48d);
+      }
+      .sat {
+        color: #9db7e8;
+      }
+      .sun {
+        color: #e8a39d;
+      }
+      .nosync-ic {
+        font-size: 150px;
+        color: #4a4752;
+        line-height: 1;
+      }
+
+      /* controls */
+      .controls {
+        width: min(100%, 1280px);
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 10px 16px;
+        font-size: 14px;
+        color: #cfcac2;
+      }
+      .controls label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .controls select,
+      .controls button,
+      .controls input {
+        font: inherit;
+        background: #22212a;
+        color: #eee;
+        border: 1px solid #3a3842;
+        border-radius: 6px;
+        padding: 6px 8px;
+      }
+      .controls button {
+        cursor: pointer;
+      }
+      .controls .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .note {
+        width: min(100%, 1280px);
+        font-size: 13px;
+        color: #8d877e;
+        line-height: 1.6;
+      }
+      body.capture .stage {
+        padding: 0;
+      }
+      body.capture .frame {
+        width: 1280px;
+        outline: none;
+        border-radius: 0;
+      }
+      body.capture .controls,
+      body.capture .note {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <div class="frame" id="frame">
+        <div id="screen">
+          <div class="tile clock" id="clock"></div>
+          <div id="content"></div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <label
+          >予定
+          <select id="c-sched">
+            <option value="normal">通常（8件）</option>
+            <option value="busy">多い日（16件）</option>
+            <option value="empty">予定なし</option>
+            <option value="stale">更新待ち</option>
+            <option value="na">取得できません</option>
+          </select>
+        </label>
+        <label
+          >現在の天気
+          <select id="c-cur">
+            <option value="ok">正常</option>
+            <option value="stale">更新待ち</option>
+            <option value="unknown">天気コード不明</option>
+            <option value="na">取得できません</option>
+          </select>
+        </label>
+        <label
+          >降雨
+          <select id="c-rain">
+            <option value="start">これから降る</option>
+            <option value="raining">降っている（やむ時刻あり）</option>
+            <option value="unknownEnd">降っている（やむ時刻不明）</option>
+            <option value="dry">雨の予報なし</option>
+            <option value="stale">更新待ち（10分未満）</option>
+            <option value="stale10">更新待ち（10分以上・予報非表示）</option>
+            <option value="na">取得できません</option>
+          </select>
+        </label>
+        <label
+          >時間別天気
+          <select id="c-hourly">
+            <option value="ok">正常</option>
+            <option value="stale">更新待ち</option>
+            <option value="na">取得できません</option>
+          </select>
+        </label>
+        <label
+          >週間天気
+          <select id="c-weekly">
+            <option value="ok">正常</option>
+            <option value="stale">更新待ち</option>
+            <option value="na">取得できません</option>
+          </select>
+        </label>
+        <label
+          >時刻
+          <select id="c-sync">
+            <option value="ok">同期済み</option>
+            <option value="no">未同期</option>
+          </select>
+        </label>
+        <label
+          >切り替えの動き
+          <select id="c-anim">
+            <option value="slide" selected>フェード＋少し上へ</option>
+            <option value="fade">フェード</option>
+            <option value="none">なし（瞬時）</option>
+          </select>
+        </label>
+        <label
+          >表示時間（秒）
+          <input
+            id="c-sec"
+            type="number"
+            min="3"
+            max="60"
+            step="1"
+            value="10"
+          />
+        </label>
+        <label
+          >操作
+          <span class="row"
+            ><button id="b-prev">◀ 前</button
+            ><button id="b-pause">一時停止</button
+            ><button id="b-next">次 ▶</button></span
+          >
+        </label>
+        <label
+          >まとめて
+          <span class="row"
+            ><button id="b-allok">すべて正常</button
+            ><button id="b-allna">すべて取得不可</button></span
+          >
+        </label>
+      </div>
+      <p class="note">
+        モックデータ。現在時刻は 2026-11-02（月）14:30
+        に固定。文言・色・秒数は仮。フォントとアイコンはこの確認用にCDNから読み込む（本番は同梱）。
+      </p>
+    </div>
+
+    <script>
+      (function () {
+        const NOW = 14 * 60 + 30; // minutes from midnight
+        const STALE_AT = "14:05時点";
+
+        // ---- mock data ----
+        const allDay = ["資源ごみの日"];
+        const baseEvents = [
+          [450, 480, "朝ごはん当番"],
+          [600, 660, "歯医者"],
+          [840, 900, "オンライン会議（週次の定例ミーティングと資料確認）"],
+          [990, 1050, "買い物"],
+          [1140, 1200, "夕食"],
+          [1260, 1320, "ドラマ録画"],
+          [1380, 1500, "洗濯"],
+        ];
+        const busyExtra = [
+          [420, 435, "ゴミ出し"],
+          [510, 540, "散歩"],
+          [540, 570, "洗濯物を干す"],
+          [720, 780, "昼食"],
+          [855, 900, "子どもお迎え"],
+          [1020, 1080, "ピアノ教室"],
+          [1080, 1140, "夕食の準備"],
+          [1200, 1260, "オンライン英会話"],
+        ];
+        const hourly = [
+          [15, 3, 18, 20],
+          [16, 61, 17, 60],
+          [17, 63, 16, 70],
+          [18, 3, 15, 40],
+          [19, 3, 15, 20],
+          [20, 0, 14, 10],
+          [21, 0, 13, 10],
+          [22, 0, 13, 0],
+          [23, 2, 12, 0],
+          [0, 0, 12, 0],
+          [1, 0, 11, 0],
+          [2, 0, 11, 0],
+        ];
+        const weekly = [
+          ["今日", "11/2", "月", 61, 19, 12, 70],
+          ["明日", "11/3", "火", 0, 21, 11, 10],
+          ["", "11/4", "水", 1, 22, 12, 0],
+          ["", "11/5", "木", 3, 19, 13, 30],
+          ["", "11/6", "金", 63, 16, 12, 80],
+          ["", "11/7", "土", 2, 17, 10, 40],
+          ["", "11/8", "日", 0, 20, 9, 10],
+        ];
+
+        // ---- helpers ----
+        const pad = (n) => String(n).padStart(2, "0");
+        const hm = (m) => pad(Math.floor((m % 1440) / 60)) + ":" + pad(m % 60);
+        const esc = (s) =>
+          String(s).replace(
+            /[&<>"]/g,
+            (c) =>
+              ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+          );
+        function icon(code, night) {
+          if (code === 0 || code === 1) return night ? "ti-moon" : "ti-sun";
+          if (code === 2 || code === 3) return "ti-cloud";
+          if (code === 45 || code === 48) return "ti-mist";
+          if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82))
+            return "ti-cloud-rain";
+          if ((code >= 71 && code <= 77) || code === 85 || code === 86)
+            return "ti-snowflake";
+          if (code >= 95 && code <= 99) return "ti-cloud-storm";
+          return "ti-question-mark";
+        }
+        const isNight = (h) => h >= 18 || h < 6;
+        const badge = () =>
+          `<span class="badge"><i class="ti ti-refresh"></i> 更新待ち・${STALE_AT}</span>`;
+        const naBox = (ic, msg) =>
+          `<div class="na"><i class="ti ${ic}"></i>${msg}</div>`;
+        const $ = (id) => document.getElementById(id);
+
+        // ---- state ----
+        const st = {
+          sched: "normal",
+          cur: "ok",
+          rain: "start",
+          hourly: "ok",
+          weekly: "ok",
+          sync: "ok",
+          anim: "slide",
+          sec: 10,
+        };
+        let order = ["S", "W", "K"],
+          idx = 0,
+          paused = false,
+          timer = null,
+          shownKey = null;
+
+        // ---- availability (E2) ----
+        function available(k) {
+          // without a usable system time, expiry and "today" cannot be evaluated
+          if (st.sync !== "ok") return false;
+          if (k === "S") return st.sched !== "na";
+          if (k === "K") return st.weekly !== "na";
+          // today weather: available if any part shows real data
+          return (
+            st.cur !== "na" ||
+            st.hourly !== "na" ||
+            !["na", "stale10"].includes(st.rain)
+          );
+        }
+
+        // ---- clock ----
+        function renderClock() {
+          const cur = order[idx];
+          const anyAvail = order.some(available);
+          const dots = order
+            .map(
+              (k) =>
+                `<span class="dot ${anyAvail && k === cur ? "on" : ""} ${available(k) ? "" : "skip"}"></span>`,
+            )
+            .join("");
+          $("clock").innerHTML =
+            st.sync === "ok"
+              ? `<div class="date">11月2日（月）</div><div class="time">${hm(NOW)}</div><div class="dots">${dots}</div>`
+              : `<i class="ti ti-clock-pause nosync-ic"></i><div class="syncmsg" style="font-size:40px;margin-top:28px">時刻を合わせています</div><div class="syncmsg" style="font-size:26px;margin-top:4px">ネットにつながると自動で表示します</div><div class="dots">${dots}</div>`;
+        }
+
+        // ---- schedule ----
+        function scheduleHTML() {
+          if (st.sched === "empty") {
+            return `<div class="panel" style="grid-template-rows:1fr"><div class="tile sched"><div class="empty">本日の予定はありません</div></div></div>`;
+          }
+          const evs = (
+            st.sched === "busy" ? baseEvents.concat(busyExtra) : baseEvents
+          )
+            .slice()
+            .sort((a, b) => a[0] - b[0]);
+          const done = evs.filter((e) => e[1] <= NOW);
+          const ongoing = evs.filter((e) => e[0] <= NOW && NOW < e[1]);
+          const future = evs.filter((e) => e[0] > NOW);
+          const bigOngoing = ongoing.slice(0, 2),
+            smallOngoing = ongoing.slice(2);
+          const next = future[0] ? [future[0]] : [];
+          const later = smallOngoing.concat(future.slice(1));
+          const tt = (e) =>
+            esc(e[2]) + (e[1] > 1440 ? `（翌${hm(e[1])}まで）` : "");
+          const row = (e, cls) =>
+            `<div class="ev ${cls || ""}"><span class="tm">${hm(e[0])}</span><span class="tt">${tt(e)}</span></div>`;
+          const big = (e, lab, cls) =>
+            `<div class="big ${cls}"><div class="lab">${lab}</div>${row(e)}</div>`;
+          return `<div class="panel" style="grid-template-rows:1fr"><div class="tile sched" data-sched>
+      ${st.sched === "stale" ? badge() : ""}
+      <div class="chips">${allDay.map((a) => `<span class="chip">終日　${esc(a)}</span>`).join("")}</div>
+      <div data-done>${done.map((e) => row(e, "done")).join("")}</div>
+      <div data-collapsed style="display:none" class="collapsed">終了済み ${done.length}件（${done[0] ? hm(done[0][0]) + " " + esc(done[0][2]) : ""} ほか）</div>
+      ${bigOngoing.map((e) => big(e, "進行中", "")).join("")}
+      ${next.map((e) => big(e, "次の予定", "next")).join("")}
+      <div data-later>${later.map((e) => row(e)).join("")}</div>
+      <div data-more class="more" style="display:none"></div>
+    </div></div>`;
+        }
+        function fitSchedule(panel) {
+          const box = panel.querySelector("[data-sched]");
+          if (!box) return;
+          const over = () => box.scrollHeight > box.clientHeight + 1;
+          if (over()) {
+            const d = box.querySelector("[data-done]");
+            if (d.children.length) {
+              d.style.display = "none";
+              box.querySelector("[data-collapsed]").style.display = "";
+            }
+          }
+          const later = box.querySelector("[data-later]"),
+            more = box.querySelector("[data-more]");
+          let hidden = 0;
+          while (over() && later.lastElementChild) {
+            later.lastElementChild.remove();
+            hidden++;
+            more.style.display = "";
+            more.textContent = `ほか ${hidden}件`;
+          }
+        }
+
+        // ---- today weather ----
+        function weatherHTML() {
+          let now;
+          if (st.cur === "na") {
+            now = `<div class="tile now">${naBox("ti-cloud-off", "現在の天気を取得できません")}</div>`;
+          } else {
+            const unknown = st.cur === "unknown";
+            const hilo =
+              st.weekly !== "na"
+                ? `<div class="hilo nw"><span class="sub">最高</span> ${weekly[0][4]}°<br><span class="sub">最低</span> ${weekly[0][5]}°</div>`
+                : "";
+            now = `<div class="tile now ${st.cur === "stale" ? "stale" : ""}">${st.cur === "stale" ? badge() : ""}
+        <i class="ti ${unknown ? "ti-question-mark" : "ti-cloud"} ic"></i><span class="temp">18°</span>
+        <span class="cond nw">${unknown ? "天気不明" : "くもり"}</span>${hilo}</div>`;
+          }
+          const rainMap = {
+            start: ["", "ti-umbrella", "14:50ごろから弱い雨", "あと約20分"],
+            raining: ["", "ti-umbrella", "普通の雨　15:40ごろやむ見込み", ""],
+            unknownEnd: ["", "ti-umbrella", "弱い雨　しばらく続く見込み", ""],
+            dry: [
+              "dry",
+              "ti-umbrella-off",
+              "1時間以内の雨の予報はありません",
+              "",
+            ],
+            stale: [
+              "stale",
+              "ti-umbrella",
+              "14:50ごろから弱い雨",
+              '<i class="ti ti-refresh" style="font-size:20px"></i> 更新待ち<br>14:12時点',
+            ],
+            stale10: [
+              "muted",
+              "ti-umbrella",
+              "雨の予報は更新待ち",
+              "14:12時点",
+            ],
+            na: ["muted", "ti-cloud-off", "雨の予報を取得できません", ""],
+          };
+          const r = rainMap[st.rain];
+          const rain = `<div class="rain ${r[0]}"><i class="ti ${r[1]}"></i><span>${r[2]}</span>${r[3] ? `<span class="rt">${r[3]}</span>` : ""}</div>`;
+          let hr;
+          if (st.hourly === "na") {
+            hr = `<div class="tile hourly">${naBox("ti-cloud-off", "時間ごとの天気を取得できません")}</div>`;
+          } else {
+            const cell = (
+              h,
+            ) => `<div class="${h[0] === 0 ? "daystart" : ""}"><span class="h">${h[0] === 0 ? "明日 " : ""}${h[0]}時</span>
+        <i class="ti ${icon(h[1], isNight(h[0]))} hi"></i><span class="ht">${h[2]}°</span><br>
+        <span class="hp" style="color:${h[3] >= 50 ? "var(--rain)" : "var(--faint)"}">${h[3]}%</span></div>`;
+            hr = `<div class="tile hourly">${st.hourly === "stale" ? badge() : ""}
+        <div class="hrow">${hourly.slice(0, 6).map(cell).join("")}</div><div class="sep"></div>
+        <div class="hrow">${hourly.slice(6).map(cell).join("")}</div></div>`;
+          }
+          return `<div class="panel" style="grid-template-rows:auto auto 1fr">${now}${rain}${hr}</div>`;
+        }
+
+        // ---- weekly ----
+        function weeklyHTML() {
+          const lo = Math.min(...weekly.map((w) => w[5])),
+            hi = Math.max(...weekly.map((w) => w[4]));
+          const pos = (t) => ((t - lo) / (hi - lo)) * 100;
+          const day = (w) => `<div class="wr ${w[0] === "今日" ? "today" : ""}">
+      <div class="wl"><span class="${w[2] === "土" ? "sat" : w[2] === "日" ? "sun" : ""}">${w[0] || w[2] + "曜"}</span><small>${w[1]}</small></div>
+      <i class="ti ${icon(w[3], false)} wi"></i>
+      <div class="wp ${w[6] >= 50 ? "wet" : ""}">${w[6]}%</div>
+      <div class="wmin">${w[5]}°</div>
+      <div class="barbox"><div class="bar" style="left:${pos(w[5])}%;right:${100 - pos(w[4])}%"></div></div>
+      <div class="wmax">${w[4]}°</div></div>`;
+          return `<div class="panel" style="grid-template-rows:1fr"><div class="tile weekly">${st.weekly === "stale" ? badge() : ""}
+      ${weekly.map(day).join("")}</div></div>`;
+        }
+
+        function allNaHTML() {
+          return `<div class="panel" style="grid-template-rows:1fr"><div class="tile"><div class="na" style="flex-direction:column;gap:18px">
+      <i class="ti ti-wifi-off" style="font-size:56px"></i>予定と天気を取得できません
+      <span style="font-size:24px">自動で再試行しています</span></div></div></div>`;
+        }
+
+        // ---- render with transition ----
+        function timeWaitHTML() {
+          return `<div class="panel" style="grid-template-rows:1fr"><div class="tile"><div class="na" style="flex-direction:column;gap:18px">
+      <i class="ti ti-clock-pause" style="font-size:56px"></i>時刻を確認できるまで
+      <span>予定と天気は表示しません</span></div></div></div>`;
+        }
+
+        function htmlFor(k) {
+          if (k === "NA") return allNaHTML();
+          if (k === "TIME") return timeWaitHTML();
+          return k === "S"
+            ? scheduleHTML()
+            : k === "W"
+              ? weatherHTML()
+              : weeklyHTML();
+        }
+        function show(k, animate) {
+          const content = $("content");
+          const wrap = document.createElement("div");
+          wrap.innerHTML = htmlFor(k).trim();
+          const panel = wrap.firstElementChild;
+          const old = content.querySelector(".panel:not(.leaving)");
+          const mode = animate ? st.anim : "none";
+          if (mode === "none" || !old) {
+            content.innerHTML = "";
+            content.appendChild(panel);
+            fitSchedule(panel);
+          } else {
+            panel.classList.add(mode + "-enter");
+            content.appendChild(panel);
+            fitSchedule(panel);
+            old.classList.add("leaving", mode + "-exit");
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                panel.classList.add("active");
+                old.classList.add("active");
+              }),
+            );
+            const ms =
+              parseInt(
+                getComputedStyle(document.documentElement).getPropertyValue(
+                  "--fade-ms",
+                ),
+                10,
+              ) || 600;
+            setTimeout(() => {
+              old.remove();
+              panel.classList.remove(mode + "-enter", "active");
+            }, ms + 50);
+          }
+          shownKey = k;
+          renderClock();
+        }
+
+        function step(dir, animate) {
+          if (st.sync !== "ok") {
+            if (shownKey !== "TIME") show("TIME", animate);
+            else renderClock();
+            return;
+          }
+          if (!order.some(available)) {
+            if (shownKey !== "NA") show("NA", animate);
+            else renderClock();
+            return;
+          }
+          for (let i = 0; i < order.length; i++) {
+            idx = (idx + dir + order.length) % order.length;
+            if (available(order[idx])) break;
+          }
+          show(order[idx], animate);
+        }
+        function refresh() {
+          // re-render current content after a control change, without advancing
+          if (st.sync !== "ok") {
+            show("TIME", false);
+            return;
+          }
+          if (!order.some(available)) {
+            show("NA", false);
+            return;
+          }
+          if (!available(order[idx])) {
+            step(1, false);
+            return;
+          }
+          show(order[idx], false);
+        }
+        function restartTimer() {
+          clearInterval(timer);
+          if (!paused) timer = setInterval(() => step(1, true), st.sec * 1000);
+        }
+
+        // ---- controls ----
+        [
+          ["c-sched", "sched"],
+          ["c-cur", "cur"],
+          ["c-rain", "rain"],
+          ["c-hourly", "hourly"],
+          ["c-weekly", "weekly"],
+          ["c-sync", "sync"],
+          ["c-anim", "anim"],
+        ].forEach(([id, key]) =>
+          $(id).addEventListener("change", (e) => {
+            st[key] = e.target.value;
+            if (key !== "anim") refresh();
+          }),
+        );
+        $("c-sec").addEventListener("change", (e) => {
+          st.sec = Math.min(60, Math.max(3, Math.round(+e.target.value || 10)));
+          e.target.value = st.sec;
+          restartTimer();
+        });
+        $("b-next").addEventListener("click", () => {
+          step(1, true);
+          restartTimer();
+        });
+        $("b-prev").addEventListener("click", () => {
+          step(-1, true);
+          restartTimer();
+        });
+        $("b-pause").addEventListener("click", (e) => {
+          paused = !paused;
+          e.target.textContent = paused ? "再開" : "一時停止";
+          restartTimer();
+        });
+        function setAll(v) {
+          const map =
+            v === "ok"
+              ? {
+                  sched: "normal",
+                  cur: "ok",
+                  rain: "start",
+                  hourly: "ok",
+                  weekly: "ok",
+                }
+              : {
+                  sched: "na",
+                  cur: "na",
+                  rain: "na",
+                  hourly: "na",
+                  weekly: "na",
+                };
+          Object.assign(st, map);
+          $("c-sched").value = map.sched;
+          $("c-cur").value = map.cur;
+          $("c-rain").value = map.rain;
+          $("c-hourly").value = map.hourly;
+          $("c-weekly").value = map.weekly;
+          refresh();
+        }
+        $("b-allok").addEventListener("click", () => setAll("ok"));
+        $("b-allna").addEventListener("click", () => setAll("na"));
+
+        // ---- scale the 1280x800 screen to the frame ----
+        function fit() {
+          const w = $("frame").clientWidth;
+          $("screen").style.transform = `scale(${w / 1280})`;
+        }
+        window.addEventListener("resize", fit);
+
+        // URL parameters, e.g. ?view=W&cur=stale&capture=1 (capture: 1280x800 screen only, no rotation)
+        const params = new URLSearchParams(location.search);
+        const ctl = {
+          sched: "c-sched",
+          cur: "c-cur",
+          rain: "c-rain",
+          hourly: "c-hourly",
+          weekly: "c-weekly",
+          sync: "c-sync",
+          anim: "c-anim",
+        };
+        Object.entries(ctl).forEach(([key, id]) => {
+          const v = params.get(key);
+          if (v && [...$(id).options].some((o) => o.value === v)) {
+            st[key] = v;
+            $(id).value = v;
+          }
+        });
+        const view = params.get("view");
+        if (view && order.includes(view)) idx = order.indexOf(view);
+        if (params.get("capture") === "1") {
+          document.body.classList.add("capture");
+          paused = true;
+        }
+
+        fit();
+        refresh();
+        restartTimer();
+        document.fonts && document.fonts.ready.then(() => refresh());
+      })();
+    </script>
+  </body>
+</html>
