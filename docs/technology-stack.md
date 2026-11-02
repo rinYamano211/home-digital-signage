@@ -2741,7 +2741,7 @@ Providerごとの未終了Requestは最大1件とする。fetchのPromise resolv
 
 同期閉鎖は失効の検出・通知後のApplication内制御である。定期監視の観測間隔中に発生した未検出の時計異常や外部状態変化まで即時に把握し、完全に防止できるという保証はしない。
 
-History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立確認とし、UNVERIFIED / TRUSTED / SUSPENDED等の論理状態はDBのhistory_statusと同一視しない。時計の安定観測だけではHistory Trustを自動回復せず、不明履歴を削除・初期化しない。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の具体的取得手段・RTC-only送信許可条件は引き続き未確定である。
+History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立確認とし、C-Impl-4の既存Monitorが用いるUNVERIFIED / TRUSTED / SUSPENDEDをDBのhistory_statusと同一視しない。D-04で採用したHistory InterfaceはTRUSTED / CONSERVATIVE / BLOCKEDであり、既存Monitor実装と新Interfaceの結合は未実装である。時計の安定観測だけではHistory Trustを自動回復せず、不明履歴を削除・初期化しない。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の具体的取得手段・RTC-only送信許可条件は引き続き未確定である。
 
 **Step 5：F-02遅延判定とProvider Cooldown**
 
@@ -2981,10 +2981,10 @@ Clock TrustとHistory Trustを独立して評価する。壁時計が正常と�
 | 要素 | 確認する内容 |
 |---|---|
 | 内部整合性 | Provider Metadata、Sequence連続性、last_sequenceと履歴の対応等 |
-| Timestamp信頼性 | 履歴生成時の時刻をQuota判定に安全に使えるか |
+| Timestamp信頼性 | 時刻を安全に使えるか。不確実TimestampはD-04の確定Range・完全性・分類証拠に基づいてWindow別保守計上し、Timestamp自体を信頼済みにしない |
 | 履歴完全性 | Restore巻戻し・未記録消費等による履歴欠落を否定できるか |
 
-History TrustはUNVERIFIED / TRUSTED / SUSPENDED等の論理状態として扱い、SQLiteのprovider_quota_metadata.history_statusとは同一視しない。時計異常の影響が不明な履歴を自動修復・自動削除・初期化しない。時計が回復してもHistory Trustが回復したとは限らず、安全性を証明できなければ送信禁止を維持する。
+既存History MonitorのUNVERIFIED / TRUSTED / SUSPENDEDと、D-04のHistory判定TRUSTED / CONSERVATIVE / BLOCKEDを区別し、SQLiteのprovider_quota_metadata.history_statusとも同一視しない。時計異常の影響が不明な履歴を自動修復・自動削除・初期化しない。時計が回復してもHistory Trustが回復したとは限らず、安全性を証明できなければ送信禁止を維持する。
 
 | 項目 | 実機検証前の暫定設定案 |
 |---|---|
@@ -3221,6 +3221,8 @@ CREATE TABLE startup_provider_boundaries (
 );
 ```
 
+上記はD-01〜D-03の承認DDLである。D04-R05で追加承認されたMetadata Snapshot・history_fingerprintの保持要件と、未指定の物理DDLは[D-04](#pr-c-c-impl-5b4-d04)で区別する。
+
 Startup境界は確定後不変とし、後からUPDATEしない。全管理対象Providerについて次の分類を行い、UNPROVISIONED / NULLとPROVISIONED / 0を区別する。
 
 | Metadata | Consumption | Startup境界 |
@@ -3334,18 +3336,117 @@ Runtime Valid証拠はTx-Q Commit成功後にのみ生成し、Clock異常との
 
 `C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w`
 
-各Rangeの待機は1秒窓=1分、60分窓=65分、24時間窓=25時間で独立する。Clock回復後の再開は**案Aを採用**し、Range待機未完了でも未完了分を全件計上した保守的Quota評価とClock / History / Recovery等の独立条件がすべて成立すれば送信再開候補にできる。管理者承認後25時間隔離中の送信・CLEAN禁止は別条件として維持する。再開候補とCLEAN適格性は同義ではなく、R-01のCLEAN条件を緩めず、D-04のRecovery状態詳細を先取りしない。
+各Rangeの待機は1秒窓=1分、60分窓=65分、24時間窓=25時間で独立する。Clock回復後の再開は**案Aを採用**し、Range待機未完了でも未完了分を全件計上した保守的Quota評価とClock / History / Recovery等の独立条件がすべて成立すれば送信再開候補にできる。管理者承認後25時間隔離中の送信・CLEAN禁止は別条件として維持する。再開候補とCLEAN適格性は同義ではなく、R-01のCLEAN条件を緩めず、D-04のU-02 / U-03に従い、送信再開候補と管理者隔離・CLEAN適格性を別々に判定する。
 
 Clock再異常でも単調時計継続性が保証されれば既存Range待機証拠は維持可能、継続性不明なら失効する。新しい不確実Consumptionがあれば新Rangeを追加し、なければ空Rangeは作らない。既存境界を変更せず、Clock回復だけで失効証拠を復活させない。再起動ではRuntime証拠を引き継がず、旧履歴を新Startup Cutoffで案D評価する。旧Range記録がDBに残っても、前Processの待機完了を復元したとはしない。
 
 
 Lifecycle / Startup / Rangeの各RepositoryはBackendStoreの単一Connectionを借用し、既存connection-coordination.tsのbusy / connectionUnresolved / blockedに従う。新しい専用DB Connectionや安全性を迂回するWriterを追加しない。
 
+<a id="pr-c-c-impl-5b4-d04"></a>
+
+##### D-04：History Trust Interface・Restart Recovery・管理者認可（採用方針確定・実装未完了）
+
+D-01〜D-03とR-01〜R-03を前提に、U-01 / U-02 / U-03およびD04-R01〜R07の採用方針を整理する。文書の設計確定とコード実装・受入試験・実機検証は区別する。先行PR #52のHead `d5eb375f3187c4a0bf5a71376ca3dd39a83b4f28`を基準とする積み重ねPRであり、PR #52の変更をmain反映済みとは扱わない。新しいTable、管理コマンド、独立管理Service、Web管理画面は追加しない。
+
+**U-01：Schema / Migration / Startupの接続**
+
+Schema v2の6 Tableを維持し、D-01〜D-03のbackend_lifecycle / startup_generations / startup_provider_boundaries / history_uncertain_rangesをv3に追加する。Migrationは専用EX下の明示操作に限定し、通常Startupで自動実行しない。WAL + synchronous=FULLを必要な書込み前に設定・検証する。Migration Gen 1は初期隔離用で、通常Startupの親を持たず、最初の通常StartupはGen 2を使用する。Generationを進めただけでRecovery承認・隔離・再検証を済ませたことにしない。
+
+| 識別子 | 意味・責務 |
+|---|---|
+| OS Boot ID | OSの起動を識別する。Backend Process再起動とは別 |
+| Process Instance ID | 今回Backend Processを識別し、メモリ証拠・Tokenを拘束する。OS Boot IDや永続Generationの代用にしない |
+| Startup Generation | 成功確定したStartupの永続境界。D-01の安全整数範囲と正確な+1を維持 |
+
+Startupは前回Lifecycleだけでなく過去Startup Boundaryと対応履歴を検証してから、今回RUNNING境界を保存する。過去不整合を新Boundaryの上書き・新Generation採番で解消しない（D04-R01）。Startup Generation・全Provider Boundary・Lifecycle更新をD-02の単一TransactionでAtomic確定する。Schema・履歴不整合、Commit unknownはFail Closed。境界Commit成功は送信許可でも過去Recovery制約解除でもなく、Post-CommitにClock・History・Quota・Recovery・管理停止を独立評価する（D04-R04）。
+
+**U-01 / D04-R05：履歴Fingerprint**
+
+以下は今回正式採用したD04-R05の仕様である。方式・入力順序・保存先を未決定扱いに戻さず、未指定の符号化細部・DDL配置と技術検証を分離する。
+
+| 項目 | 確定仕様 |
+|---|---|
+| Version / Hash | quota-history-v1 / SHA-256 |
+| Metadata | provider_key、history_status、initialized_at_ms、cutoff時点のlast_sequence |
+| Consumption | sequence、reserved_at_ms。sequence昇順、cutoffを超える行は含めない |
+| 入力順序 | Version → Metadata → Consumption件数 → Consumption行 |
+| Metadata内順序 | provider_key → history_status → initialized_at_ms → last_sequence |
+| 各Consumption行内順序 | sequence → reserved_at_ms |
+| 文字列 | UTF-8、Unicode正規化なし |
+| 整数 | 非負10進ASCII。先頭ゼロ・プラス記号なし、ゼロは0 |
+| フィールド符号化 | 型タグ + 4バイトBig Endian長 + 値。NULLとMetadata不在は専用タグで区別 |
+| Digest表現・保存先 | 小文字64桁Hexをstartup_provider_boundaries.history_fingerprintへ保存 |
+
+過去Metadataはstartup_provider_boundariesのSnapshotから再構成し、last_sequenceには保存済みcutoff_sequenceを使用する。現在のMetadata値へ差し替えて過去Fingerprintを再計算しない。過去のhistory_statusやinitialized_at_msを現在値から推測しない。UNPROVISIONED（Metadata不在）とPROVISIONED（cutoff=0・履歴0件）を区別し、NULLをMetadata不在の代用にしない。
+
+Startup前には、保存された過去BoundaryのSnapshot・cutoffと、そのcutoffまでのConsumptionを用いて同じVersion・同じ一意なバイト列を再構成し、保存済みhistory_fingerprintと照合する。Snapshot / cutoff / 履歴行の欠落・不整合・再現不能・Digest不一致はFail Closed。今回のBoundaryを保存して過去の不整合を上書きしない。今回Snapshot・cutoff・FingerprintはU-01 / D-02の同一Startup TransactionでBoundaryと整合して保存する。
+
+**D-01〜D-03 DDLとの接続**：PR #52のstartup_provider_boundaries定義にはSnapshot・history_fingerprintの物理定義がまだない。D04-R05で同TableにMetadata Snapshotとhistory_fingerprintを保持する要件は追加承認済みだが、Snapshotの物理カラム名・型・NULL制約・不在表現、history_fingerprintの型・CHECK等の具体DDLは未指定である。新Tableを追加せず、Snapshotをメモリだけで済ませず、現在のDDLが保存要件を実装可能な完全版だとも扱わない。今回、未承認のカラム定義・Migration SQLを創作しない。
+
+**相互運用性の未指定事項**：型タグの具体的バイト値・幅、NULL / Metadata不在タグの長さと値の表現、Metadataグループ・Consumption件数の符号化との具体対応は追加確認が必要である。JSON化・区切り文字・独自タグ番号等を推測で採用しない。これらを確定するまでは、異なる実装間で同じDigestになることを検証済みとはしない。Fingerprint独立テストベクトルの作成・照合も未実施である。
+
+FingerprintはDB内の履歴整合性確認に用いる。外部Senderの不存在、実際のHTTP送信回数、Provider側計上完了を証明しない。既存の管理外Restore検出限界・キー排他利用確認・レベルB残余リスクを変更しない。
+
+**U-02：History Trust Interface（採用済み7項目）**
+
+| ID | 契約 |
+|---|---|
+| U02-01 | History判定をTRUSTED / CONSERVATIVE / BLOCKEDの3状態で表す。既存Clock Trust型・DBのhistory_status・Recovery状態とは区別する |
+| U02-02 | H_old / H_new_valid / H_new_uncertainを排他的に分類し、Rangeごと・Windowごとに保守的に計上する |
+| U02-03 | 単調時計の待機証拠はProcessメモリのみ。永続Rangeがあっても再起動前の待機完了を復元しない |
+| U02-04 | Quota予約Transaction内でもTrustを再評価する。事前評価のみを送信根拠にしない |
+| U02-05 | Clock / Recovery / Historyは独立判定。一つの回復で他の条件・停止理由を解除しない |
+| U02-06 | 履歴不整合・必要証拠不足・分類不能ではFail Closed。固定historyComplete=trueでGuardを通過させない |
+| U02-07 | 管理者隔離解除はU-03へ委譲し、History判定だけで解除しない |
+
+| 状態 | 意味と禁止事項 |
+|---|---|
+| TRUSTED | 必要な履歴・Timestampの根拠を確認し、信頼できるWindow評価が可能。これだけでHTTP送信を許可しない |
+| CONSERVATIVE | 履歴完全性、確定Range境界、排他的分類、Window別保守的計上が成立する場合だけ使用。不明履歴を便宜的に許可する状態ではない |
+| BLOCKED | 上記の評価に必要な構造・完全性・境界・証拠を確認できない。新規Tx-Q・HTTPを許可しない |
+
+CONSERVATIVEでもD-03の未完了範囲を各Windowへ全件計上し、二重計上・過少計上を防ぐ（D04-R02）。各Windowの待機完了はTimestampのValid昇格・履歴完全性の回復ではない。Clock回復だけで過去不確実Rangeを正常履歴へ再分類しない。Clock・Recovery・管理停止等が送信を禁止していれば、Historyが評価可能でも送信不可。TRUSTED / CONSERVATIVEの判定を従来のBooleanへ固定値で置換せず、既存Quota Guardとの結合を実装・検証対象とする。
+
+**U-03：管理者操作・認可（採用済み8項目）**
+
+| ID | 契約 |
+|---|---|
+| U03-01 | status / inspect / approve / cancelとBackend内RecoveryAdminServiceを維持。CLIはSQLiteを直接変更しない |
+| U03-02 | ISOLATED / APPROVED_WAITING / REVALIDATING / RECOVEREDの復旧状態を用いる |
+| U03-03 | inspectで短時間有効・一回限りの確認Tokenを発行する。具体TTLを今回追加設定しない |
+| U03-04 | TokenをProcess / OS Boot / Startup Generation / Provider Boundaryに拘束し、既存cutoff・Fingerprint・診断・期限も再確認する |
+| U03-05 | ローカルUDSで管理者を認可する。APIキー等のSecretを診断情報・ログへ含めず、確認Tokenも監査ログへ出力しない |
+| U03-06 | 管理者承認後の独立25時間隔離、Plan Dの窓別待機、再検証を要求する |
+| U03-07 | cancelのRecovery承認に関する責務と、Provider永続管理停止SUSPENDEDを分離する。取消しをResume・SUSPENDED解除として扱わない |
+| U03-08 | Token・承認はProcessメモリのみ。再起動・異常で失効し、確認不能ならFail Closed |
+
+| 復旧状態 | 段階と安全条件 |
+|---|---|
+| ISOLATED | 管理者復帰が必要な隔離状態。承認なしで送信・CLEANを許可しない |
+| APPROVED_WAITING | 認可・Token再検証後の承認が成立し、独立25時間隔離を待つ。Plan Dと開始点を混同しない |
+| REVALIDATING | 必要な隔離・待機条件後にDB / Clock / History / Quota / Boundary / Providerキー排他利用を再検証する |
+| RECOVERED | 必要な再検証が成立した復旧状態。Quota / Send Gate・他の停止理由・CLEAN適格性を迂回する許可ではない |
+
+Plan DはStartup境界Commit確定後、管理者隔離25時間は認可済みapprove成立後に開始し、起点・証拠を独立保持する（D04-R03）。承認だけで送信しない。cancel・失効・再承認時にも独立SUSPENDEDを維持し、他責務の停止理由を解除しない。再起動で承認・Tokenを引き継がず、StartupとRecoveryを再評価する。
+
+UDSの接続成功・ローカル接続という事実だけで管理者と認めない。Peer Credentials取得とOS権限設定の実装可能性・失敗時動作を確認し、未確認・取得不能・認可不成立なら管理操作を許可しない（D04-R06）。Peer Credentialsの具体API、Socket配置・所有権、権限値は今回推測で固定せず、実装・実機検証事項とする。
+
+**D04-R07：CLEAN適格性と隔離迂回禁止**
+
+既存R-01〜R-03のHistory UNVERIFIED / SUSPENDEDは、未確認・停止した従来Monitorを表す記述である。新Interfaceの状態名だけへの機械的置換でCLEANを許可せず、Historyの必要証拠とRecoveryCleanEligibleを確認する。CONSERVATIVEの送信再開候補とCLEAN適格性は別であり、Range未完了・隔離・未解決の既存CLEAN禁止条件を解除しない。
+
+CanMarkClean = OperationallyDrained AND RecoveryCleanEligibleを維持する。Drainが完了してもISOLATED / APPROVED_WAITING / REVALIDATING等のRecovery未完了をCLEANで回避しない。RECOVEREDだけで自動的にCLEAN可能とせず、History・Clock・Quota・DB・LifecycleとR-03 Deadline / B_cleanを再検証する。隔離中はRUNNINGを維持し、同一Bootの次回Startupでも隔離を迂回できない。CLEAN Commit unknownの今回終了判定と次回DB検証の分離はR-01を維持する。
+
+**実装・技術検証との区別**
+
+UDS Peer CredentialsとOS権限、Suspend検出・単調時計のPi挙動、B_clean値、Pi SQLite耐久性、Fingerprint独立テストベクトル、既存Quota Guardと新History Interfaceの結合は未実施。設計方針の採用をこれらの成功としない。Table・管理コマンド・公開機能の追加、PR-D / PR-Eの責務変更、実Provider通信、未実施受入条件のPASS化は行わない。
+
 **P1-2：ローカル管理承認**
 
 ローカルCLI + Unix Domain Socketを採用し、status / inspect / approve / cancelを稼働中BackendのRecoveryAdminServiceへ委譲する。CLIがSQLiteを直接更新してHistory Trustを変更してはならない。独立した常駐Serviceは追加しない。
 
-inspectで短時間有効・一度限りの確認Tokenを発行し、今回Process、boot_id、generation、cutoffSequence、起動境界履歴Fingerprint、有効期限、管理者確認対象の診断情報に拘束する。approveで再検証し、古いToken・再利用・二重承認を拒否する。管理者はProviderキー排他利用とレベルB残余リスクを明示確認する。申告を外部キー利用の技術的証明とみなさない。承認・TokenはProcessメモリ内のみとし、再起動で失効する。journaldへ監査イベントを記録するが、APIキー・Tokenを出力しない。Token有効期間の具体値、UDS配置・権限・認可、cancelの詳細遷移は実装前確認とし、未確認の経路で承認やGate開放を行わない。
+inspectで短時間有効・一度限りの確認Tokenを発行し、今回Process、boot_id、generation、cutoffSequence、起動境界履歴Fingerprint、有効期限、管理者確認対象の診断情報に拘束する。approveで再検証し、古いToken・再利用・二重承認を拒否する。管理者はProviderキー排他利用とレベルB残余リスクを明示確認する。申告を外部キー利用の技術的証明とみなさない。承認・TokenはProcessメモリ内のみとし、再起動で失効する。journaldへ監査イベントを記録するが、APIキー・Tokenを出力しない。D-04のU-03で復旧4状態・UDS管理者認可・cancelとSUSPENDEDの分離を採用した。Token有効期間の具体値、UDS配置・権限・Peer Credentials取得方法、具体APIは実装・技術検証事項とし、未確認の経路で承認やGate開放を行わない。
 
 **P1-4：F-01とRestart Recoveryの分離**
 
@@ -3359,7 +3460,7 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 
 **反映状態と実装前確認**
 
-今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。D-01〜D-03の4 Table DDL、Startup Transactionの構造検証・Generation契約、Range永続化とRuntime証拠の分離・再開案Aは確定済みである。D-04 Recovery状態の詳細、証拠管理の具体型・API、R-03のB_clean値、Token・UDS仕様、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
+今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。D-01〜D-03の4 Table DDL、Startup Transactionの構造検証・Generation契約、Range永続化とRuntime証拠の分離・再開案Aは確定済みである。D-04のU-01 / U-02 / U-03とD04-R01〜R07、Fingerprintの承認仕様も採用済みである。Fingerprintの未指定タグ値・Snapshotの物理DDL、証拠管理の具体型・API、R-03のB_clean値、Token・UDS実装方式、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
 
 
 <a id="pr-c-c3-f02-delay-margin"></a>
