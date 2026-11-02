@@ -420,3 +420,32 @@ test("H54-19 invalid provider CHECK data is rejected even with exact DDL", () =>
   db.pragma("ignore_check_constraints=OFF");
   expect(() => validateSchema(db, 3)).toThrow();
 });
+
+test("nil OS Boot UUID is rejected independently of case normalization", () => {
+  const nil = "00000000-0000-0000-0000-000000000000";
+  // Nil contains no letters: uppercase/lowercase are the same UUID spelling.
+  expect(normalizedBootId(nil)).toBeNull();
+  expect(normalizedBootId(nil.toUpperCase())).toBeNull();
+  expect(normalizedBootId(nil.toLowerCase())).toBeNull();
+});
+test.each(["", "\n", "\r\n"])(
+  "nil OS Boot UUID with ending %j cannot reach Migration",
+  (ending) => {
+    os.boot = "00000000-0000-0000-0000-000000000000" + ending;
+    expect(() => readOsBootId()).toThrow();
+    const { db } = fixture();
+    const exec = vi.spyOn(db, "exec");
+    expect(() => upgrade(db)).toThrow();
+    expect(exec).not.toHaveBeenCalled();
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.inTransaction).toBe(false);
+  },
+);
+test("v3 Lifecycle Marker cannot use nil OS Boot UUID", () => {
+  const { db } = fixture();
+  upgrade(db);
+  db.exec(
+    "UPDATE backend_lifecycle SET boot_id='00000000-0000-0000-0000-000000000000'",
+  );
+  expect(() => validateSchema(db, 3)).toThrow();
+});

@@ -77,3 +77,9 @@ storage-process.test.tsにLinux専用2件を追加。実OS Boot ID・FD9を継�
 - Pi実機OS同期・停電・Storage耐久性・バックアップ／実運用Rollbackは未検証。今回のLinux CIを実機検証とみなさない。
 
 Issue #16はOpen、PR-C全体は未完了。PRはMergeせずレビュー待ちとする。
+
+## PR #57レビュー修正：全ゼロBoot UUIDの拒否
+
+normalizedBootId()は小文字への正規化後、全ゼロUUIDをnullとして拒否する。全ゼロUUIDには英字がなく大文字化・小文字化した文字列も同一だが、両方の呼出しで拒否することを明示検証した。readOsBootId()では末尾改行なし・LF・CRLFの3経路で全ゼロUUIDを拒否し、MigrationのBEGIN / DDLやVersion変更へ進まない。保存済みLifecycle Markerに全ゼロUUIDがある場合もv3検証で拒否する。
+
+追加5テスト。既存の正常UUID・大文字正規化・不正形式・改行処理・OS取得失敗テストは維持し、他のSchema・Migration・Startup / Trust設計は変更しない。最新の実行結果はPR本文へ記録する。

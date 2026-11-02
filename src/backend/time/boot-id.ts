@@ -10,7 +10,10 @@ export function normalizedBootId(value: unknown): string | null {
     )
   )
     return null;
-  return value.toLowerCase();
+  const normalized = value.toLowerCase();
+  return normalized === "00000000-0000-0000-0000-000000000000"
+    ? null
+    : normalized;
 }
 /** Fixed OS source, not an env/config override or randomly generated ID. */
 export function readOsBootId(): string {
