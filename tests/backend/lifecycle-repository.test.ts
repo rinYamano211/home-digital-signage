@@ -274,7 +274,7 @@ test("closed borrowed Connection returns no marker and cannot reopen itself", ()
     reason: "database_unavailable",
   });
 });
-test("H54-21 restricted v3 Store owns one Connection, FULL/FK, and only read/close capabilities", () => {
+test("H54-21 restricted v3 Store owns one Connection, FULL/FK, and limited Startup/read/close capabilities", () => {
   const f = fixture();
   const h = open(f);
   expect(f.lock.assertHeld).toHaveBeenCalledOnce();
@@ -282,6 +282,7 @@ test("H54-21 restricted v3 Store owns one Connection, FULL/FK, and only read/clo
   expect(Object.keys(h).sort()).toEqual([
     "close",
     "lifecycle",
+    "startup",
     "startupComplete",
   ]);
   expect(Object.keys(h.lifecycle)).toEqual(["read"]);

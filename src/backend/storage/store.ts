@@ -1,4 +1,9 @@
 import Database from "better-sqlite3";
+import {
+  StartupTransactionService,
+  type StartupRequest,
+  type StartupResult,
+} from "./startup-transaction.js";
 import type { ExclusiveLock } from "./lock.js";
 import { storagePaths, validateDatabaseFiles } from "./paths.js";
 import { migrate } from "./migrations.js";
@@ -28,6 +33,9 @@ export function configureDatabase(db: Database.Database, version: 2 | 3 = 2) {
 }
 export interface StartupStoreAccess {
   readonly startupComplete: false;
+  readonly startup: Readonly<{
+    execute(request: StartupRequest): StartupResult;
+  }>;
   readonly lifecycle: Readonly<{ read(): LifecycleReadResult }>;
   close(): void;
 }
@@ -91,8 +99,10 @@ export class BackendStore {
       validateDatabaseFiles(lock.directory);
       const owner = new BackendStore(db);
       const lifecycle = new LifecycleRepository(db);
+      const startup = new StartupTransactionService(db, lock);
       return Object.freeze({
         startupComplete: false as const,
+        startup: Object.freeze({ execute: startup.execute.bind(startup) }),
         lifecycle: Object.freeze({ read: lifecycle.read.bind(lifecycle) }),
         close: () => owner.close(),
       });

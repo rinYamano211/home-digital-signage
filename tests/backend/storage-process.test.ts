@@ -659,7 +659,7 @@ linux(
     expect(await job.done, job.output()).toBe(0);
     expect(job.output()).toContain('"startupComplete":false');
     expect(job.output()).toContain(
-      '"keys":["close","lifecycle","startupComplete"]',
+      '"keys":["close","lifecycle","startup","startupComplete"]',
     );
     expect(job.output()).toContain('"outcome":"found"');
     expect(job.output()).toContain('"reason":"database_unavailable"');
@@ -694,5 +694,54 @@ linux(
     );
     expect(await job.done).toBe(1);
     expect(job.output()).toContain("Exclusive");
+  },
+);
+
+linux(
+  "PR-C-2B-3 real EX/Boot v3 Startup atomically advances 1 -> 2 -> 3 without enabling Runtime",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const upgrade = command(dir, "migrate-v3", {
+      SIGNAGE_V3_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+    });
+    expect(await upgrade.done, upgrade.output()).toBe(0);
+    const code = `import {BackendStore} from ${moduleUrl("storage/store")};import {ExclusiveLock} from ${moduleUrl("storage/lock")};import {readOsBootId} from ${moduleUrl("time/boot-id")};const h=BackendStore.openV3ForStartup(ExclusiveLock.inherited(process.env.SIGNAGE_DATA_DIR));const r=h.startup.execute({bootId:readOsBootId()});if(r.outcome!=='committed')throw Error(JSON.stringify(r));console.log(JSON.stringify({result:r,startupComplete:h.startupComplete,keys:Object.keys(h).sort(),again:h.startup.execute({bootId:readOsBootId()})}));h.close();`;
+    for (const gen of [2, 3]) {
+      const job = harness(dir, code);
+      expect(await job.done, job.output()).toBe(0);
+      expect(job.output()).toContain(`"generation":${gen}`);
+      expect(job.output()).toContain('"startupComplete":false');
+      expect(job.output()).toContain('"startup_already_attempted"');
+    }
+    const db = new Database(join(dir, "signage.db"), { readonly: true });
+    try {
+      expect(
+        db.prepare("SELECT generation,state FROM backend_lifecycle").get(),
+      ).toEqual({ generation: 3, state: "RUNNING" });
+      expect(
+        db
+          .prepare(
+            "SELECT generation,provider_key,provider_state,cutoff_sequence FROM startup_provider_boundaries ORDER BY generation",
+          )
+          .all(),
+      ).toEqual(
+        [2, 3].map((g) => ({
+          generation: g,
+          provider_key: "tomorrow.io",
+          provider_state: "UNPROVISIONED",
+          cutoff_sequence: null,
+        })),
+      );
+      expect(db.prepare("SELECT * FROM provider_quota_metadata").all()).toEqual(
+        [],
+      );
+      expect(
+        db.prepare("SELECT * FROM history_uncertain_ranges").all(),
+      ).toEqual([]);
+    } finally {
+      db.close();
+    }
+    expect(await probe(dir)).toBe(0);
   },
 );
