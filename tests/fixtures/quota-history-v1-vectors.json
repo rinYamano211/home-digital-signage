@@ -1,0 +1,132 @@
+[
+  {
+    "name": "unprovisioned",
+    "history": {
+      "metadata": null,
+      "consumptions": []
+    },
+    "hex": "010000001071756f74612d686973746f72792d76310400000000050000000130",
+    "digest": "0442c820ae3054bba6a92b7dc65d1c9e4f243969d782ea5a6a054bbbcb48482f"
+  },
+  {
+    "name": "provisioned-zero",
+    "history": {
+      "metadata": {
+        "providerKey": "p",
+        "historyStatus": "ACTIVE",
+        "initializedAtMs": 0,
+        "lastSequence": 0
+      },
+      "consumptions": []
+    },
+    "hex": "010000001071756f74612d686973746f72792d76310100000001700100000006414354495645020000000130020000000130050000000130",
+    "digest": "a8aa51134d2bfbc088400d60f2dc92fc6862d2f8079ab7e3f0bd35eda4ce4014"
+  },
+  {
+    "name": "provisioned-one",
+    "history": {
+      "metadata": {
+        "providerKey": "p",
+        "historyStatus": "SUSPENDED",
+        "initializedAtMs": 0,
+        "lastSequence": 1
+      },
+      "consumptions": [
+        {
+          "sequence": 1,
+          "reservedAtMs": 10
+        }
+      ]
+    },
+    "hex": "010000001071756f74612d686973746f72792d7631010000000170010000000953555350454e44454402000000013002000000013105000000013102000000013102000000023130",
+    "digest": "82cce9ac773dbfd48e09e173cbecc9f0667bdf74171ea02cc246051aaa0f2b21"
+  },
+  {
+    "name": "provisioned-multiple",
+    "history": {
+      "metadata": {
+        "providerKey": "p",
+        "historyStatus": "ACTIVE",
+        "initializedAtMs": 0,
+        "lastSequence": 2
+      },
+      "consumptions": [
+        {
+          "sequence": 1,
+          "reservedAtMs": 10
+        },
+        {
+          "sequence": 2,
+          "reservedAtMs": 20
+        }
+      ]
+    },
+    "hex": "010000001071756f74612d686973746f72792d763101000000017001000000064143544956450200000001300200000001320500000001320200000001310200000002313002000000013202000000023230",
+    "digest": "101cf467d633b0028d9c06f13174f7f46ccd14b6a364351fd1f26adfed85b4cf"
+  },
+  {
+    "name": "multibyte",
+    "history": {
+      "metadata": {
+        "providerKey": "天気☔",
+        "historyStatus": "ACTIVE",
+        "initializedAtMs": 0,
+        "lastSequence": 2
+      },
+      "consumptions": [
+        {
+          "sequence": 1,
+          "reservedAtMs": 0
+        },
+        {
+          "sequence": 2,
+          "reservedAtMs": 8640000000000000
+        }
+      ]
+    },
+    "hex": "010000001071756f74612d686973746f72792d76310100000009e5a4a9e6b097e298940100000006414354495645020000000130020000000132050000000132020000000131020000000130020000000132020000001038363430303030303030303030303030",
+    "digest": "4e644cc1263514dfb1af08637d6269a4971af8ca4eb98e13cf5c2a8b8d9a8629"
+  },
+  {
+    "name": "nfc",
+    "history": {
+      "metadata": {
+        "providerKey": "é",
+        "historyStatus": "ACTIVE",
+        "initializedAtMs": 0,
+        "lastSequence": 0
+      },
+      "consumptions": []
+    },
+    "hex": "010000001071756f74612d686973746f72792d76310100000002c3a90100000006414354495645020000000130020000000130050000000130",
+    "digest": "476bec2aaf751f7a3fded9c168fa1790c7750b2f5030d213e99587222cbf2066"
+  },
+  {
+    "name": "nfd",
+    "history": {
+      "metadata": {
+        "providerKey": "é",
+        "historyStatus": "ACTIVE",
+        "initializedAtMs": 0,
+        "lastSequence": 0
+      },
+      "consumptions": []
+    },
+    "hex": "010000001071756f74612d686973746f72792d7631010000000365cc810100000006414354495645020000000130020000000130050000000130",
+    "digest": "c80f4dc0b77dae9892a46be04bbe1ac3706689191faf3e91862be36feef28f51"
+  },
+  {
+    "name": "length-300",
+    "history": {
+      "metadata": {
+        "providerKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "historyStatus": "ACTIVE",
+        "initializedAtMs": 0,
+        "lastSequence": 0
+      },
+      "consumptions": []
+    },
+    "hex": "010000001071756f74612d686973746f72792d7631010000012c6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610100000006414354495645020000000130020000000130050000000130",
+    "digest": "5fca6035e953f9ee4ee54059c40865f938bc05abddd9a6ef741535e197fe0898"
+  }
+]
