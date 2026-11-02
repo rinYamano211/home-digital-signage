@@ -1614,6 +1614,8 @@ BackupはWALと整合する方法で取得し、作成後に整合性確認す�
 Backup実行時刻・Path・Scheduler・再試行・復元コマンド、Lock / Checkpoint異常の詳細運用は未決定である。
 
 
+個人利用MVPの再起動時は、前回RUNNINGやOS Boot変更だけで管理者承認を必須にせず、構造・履歴・Fingerprint・Clock・保守的Quota・独立停止を検証して自動復旧候補とする。重大不整合は例外的な手動復旧へ分離する。通常復旧と送信許可・CLEAN適格性は別であり、詳細と正式変更したH54-31の期待結果は[設計正本MVP方針](technology-stack.md#pr-c-c-impl-5b4-mvp-policy)に従う。
+
 ### 16.8 SQLite初期化とBackend Lifecycle
 
 PR-B / B-1の設計方針として、**障害分類型Degraded Start**を採用する。16.7のL1〜L4とHEALTHY / DEGRADED / RECOVERING / BLOCKEDを維持し、一時的なDB障害だけでProcessを無条件終了させない。専用排他Lockの取得済みを前提に、安全にHTTP Serverを稼働できる場合はDB利用不能状態で起動し、通常Schedulerを保留する。Lock取得失敗はSQLite障害やBLOCKEDではなく起動中止とし、LockなしのDEGRADED起動は許可しない。DB破損・Schema非互換はBLOCKEDとし、自動削除・無条件再初期化・根拠のない修復は行わない。OS・Storageの致命的障害でProcess継続を無条件に保証しない。
@@ -1655,7 +1657,7 @@ C-Impl-5B-4のRestart Recoveryでは、案Dの起動後窓別待機と管理者�
 
 R-01〜R-03では、CLEAN結果不明の今回終了判定と次回StartupのDB検証を分離し、同一BootのCLEANでも全条件成立時のみ復帰候補とする。複数Clock異常は固定した非重複Sequence範囲ごとに独立待機し、Clock回復でValid再分類・範囲統合を行わない。Shutdownは開始時の単調時計絶対Deadlineを全工程で共有し、CanMarkCleanに加えてDeadline・開始余裕B_clean・Connection・Transaction・所有権を確認してからCLEANを開始する。B_clean値はPi実測待ちで、同期SQLite中断や10秒以内完了の保証ではない。CLEAN確定後のClose失敗は別に記録する。詳細は同正本のR-01〜R-03に従う。
 
-D-01〜D-03ではSchema v3のLifecycle・Startup親・Provider境界・Clock異常Rangeの4 Tableを設計確定した。Startupは前回Lifecycle証拠、今回Generationの+1、全管理Provider境界を、全Consumptionの構造・Sequenceを検証する単一TransactionでAtomic確定する。Clock異常Rangeは永続化した固定境界とProcess内の待機・Valid証拠を分離する。未完了Rangeの全件計上で安全な再開候補を評価できても管理者隔離・CLEAN適格性は別条件とし、D-04のRecovery状態詳細は未確定のまま残す。DDLと詳細検証契約は[設計正本D-01](technology-stack.md#pr-c-c-impl-5b4-d01)・[D-02](technology-stack.md#pr-c-c-impl-5b4-d02)・[D-03](technology-stack.md#pr-c-c-impl-5b4-d03)を参照し、実装・試験完了とは扱わない。
+D-01〜D-03ではSchema v3のLifecycle・Startup親・Provider境界・Clock異常Rangeの4 Tableを設計確定した。Startupは前回Lifecycle証拠、今回Generationの+1、全管理Provider境界を、全Consumptionの構造・Sequenceを検証する単一TransactionでAtomic確定する。Clock異常Rangeは永続化した固定境界とProcess内の待機・Valid証拠を分離する。未完了Rangeの全件計上で安全な再開候補を評価できても管理者隔離・CLEAN適格性は別条件とし、D-04のU-01〜U-03でRecovery 4状態・History 3状態と管理者操作の採用方針を確定し、Fingerprintのタグ・符号化順序とSnapshot・Fingerprintの追加3カラムの統合DDLも追加承認済みとし、実装・独立ベクトル・技術検証は未完了とする。D-04のFingerprint承認仕様・UDS認可と検証の区別は[設計正本D-04](technology-stack.md#pr-c-c-impl-5b4-d04)を参照する。DDLと詳細検証契約は[設計正本D-01](technology-stack.md#pr-c-c-impl-5b4-d01)・[D-02](technology-stack.md#pr-c-c-impl-5b4-d02)・[D-03](technology-stack.md#pr-c-c-impl-5b4-d03)を参照し、実装・試験完了とは扱わない。
 
 #### 工程の責務
 
