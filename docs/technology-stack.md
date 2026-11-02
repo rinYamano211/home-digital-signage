@@ -3171,7 +3171,7 @@ CREATE TABLE backend_lifecycle (
 );
 ```
 
-lifecycle_key=1のSingletonとし、通常StartupでLifecycle行を自動生成・修復しない。Boot IDのUUID形式・正規化・比較はBackendで検証する。MigrationでRUNNING / Gen 1 / Migration時OS Boot IDを初期化し、Migration Gen 1にはStartup親を作成しない。初回StartupはGen 2、その後の通常StartupはGenerationを正確に1増加する。CLEAN更新では増加しない。上限9007199254740991に達したらStartupを拒否し、巻戻し・再利用しない。
+lifecycle_key=1のSingletonとし、通常StartupでLifecycle行を自動生成・修復しない。Boot IDのUUID形式・正規化・比較はBackendで検証する。MigrationでRUNNING / Gen 1 / Migration時OS Boot IDを初期化し、Migration Gen 1にはStartup親を作成しない。Boot ID取得方式はPR-C-2A検討時に承認済みとし、Linuxの`/proc/sys/kernel/random/boot_id`を固定取得元とする。末尾の1改行を除去し、8-4-4-4-12桁の16進数UUID形式を検証して小文字化する。読取不能・不正値・Linux以外ではMigrationを拒否し、環境変数・固定値・乱数による代替はしない。初回StartupはGen 2、その後の通常StartupはGenerationを正確に1増加する。CLEAN更新では増加しない。上限9007199254740991に達したらStartupを拒否し、巻戻し・再利用しない。
 
 CLEANは安全な停止とRecovery適格性のMarkerで、HTTP成功・送信許可ではない。R-01のBoot ID・Generation拘束・更新正確に1件・結果不明保護、CanMarkCleanとCanStartCleanTxを維持する。R-03の共有10秒単調時計Deadline・実機計測待ちB_cleanを維持し、同期COMMITの強制中断・期限内完了保証をしない。R-01のSQL例のlifecycle_keyパラメータは本DDLのSingleton値1に拘束する。
 

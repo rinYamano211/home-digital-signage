@@ -566,3 +566,73 @@ linux(
     expect(await running.done).toBe(0);
   },
 );
+
+linux(
+  "PR-C-2A offline EX v3 upgrade uses actual Linux Boot ID; old runtime refuses v3",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    let job = command(dir, "migrate-v3");
+    expect(await job.done).toBe(1);
+    const ack = {
+      SIGNAGE_V3_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+    };
+    job = command(dir, "migrate-v3", ack);
+    expect(await job.done, job.output()).toBe(0);
+    const path = join(dir, "signage.db");
+    const db = new Database(path, { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(3);
+      expect(db.prepare("SELECT * FROM backend_lifecycle").get()).toEqual({
+        lifecycle_key: 1,
+        state: "RUNNING",
+        boot_id: (await readFile("/proc/sys/kernel/random/boot_id", "utf8"))
+          .trim()
+          .toLowerCase(),
+        generation: 1,
+      });
+      expect(db.prepare("SELECT * FROM startup_generations").all()).toEqual([]);
+      expect(db.prepare("SELECT * FROM provider_quota_metadata").all()).toEqual(
+        [],
+      );
+    } finally {
+      db.close();
+    }
+    job = command(dir, "migrate-v3", ack);
+    expect(await job.done).toBe(1); // no same-version repair/replay
+    const running = await backend(dir);
+    expect(running.output()).toContain('"state":"BLOCKED"');
+    const d = new Database(path, { readonly: true });
+    try {
+      expect(
+        d.prepare("SELECT generation FROM backend_lifecycle").get(),
+      ).toEqual({ generation: 1 });
+    } finally {
+      d.close();
+    }
+    running.child.kill("SIGTERM");
+    expect(await running.done).toBe(0);
+  },
+);
+
+linux(
+  "PR-C-2A v3 administrative upgrade cannot bypass an existing EX holder",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const running = await backend(dir);
+    const job = command(dir, "migrate-v3", {
+      SIGNAGE_V3_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+    });
+    expect(await job.done).toBe(73);
+    const db = new Database(join(dir, "signage.db"), { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(2);
+    } finally {
+      db.close();
+    }
+    running.child.kill("SIGTERM");
+    expect(await running.done).toBe(0);
+  },
+  10000,
+);

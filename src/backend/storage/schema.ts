@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { LIFECYCLE_DDL } from "./lifecycle-ddl.js";
+import { normalizedBootId } from "../time/boot-id.js";
 import { SchemaError } from "./errors.js";
 
 export const INITIAL_DDL = String.raw`CREATE TABLE published_state_snapshots (
@@ -68,13 +70,17 @@ export function initializeSchema(db: Database.Database): void {
 /** v1 exists only as an explicit pre-upgrade validator; runtime defaults to v2. */
 export function validateSchema(
   db: Database.Database,
-  version: 1 | 2 = 2,
+  version: 1 | 2 | 3 = 2,
 ): void {
   if (db.pragma("user_version", { simple: true }) !== version)
     throw new SchemaError();
-  if (version === 2 && db.pragma("foreign_keys", { simple: true }) !== 1)
+  if (version >= 2 && db.pragma("foreign_keys", { simple: true }) !== 1)
     throw new SchemaError();
-  const statements = (INITIAL_DDL + (version === 2 ? QUOTA_DDL : ""))
+  const statements = (
+    INITIAL_DDL +
+    (version >= 2 ? QUOTA_DDL : "") +
+    (version === 3 ? LIFECYCLE_DDL : "")
+  )
     .split(";")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -108,22 +114,44 @@ export function validateSchema(
       partial: number;
     }[];
     const hasTimeIndex = name === "provider_quota_consumptions";
-    if (indexes.length !== (hasTimeIndex ? 2 : 1)) throw new SchemaError();
-    const pk = indexes.find((i) => i.origin === "pk");
-    if (!pk || pk.unique !== 1 || pk.partial !== 0) throw new SchemaError();
-    const pkColumns =
-      name === "published_state_snapshots"
-        ? ["state_key", "generation"]
-        : name === "provider_quota_consumptions"
-          ? ["provider_key", "sequence"]
-          : name === "provider_quota_metadata"
-            ? ["provider_key"]
-            : ["state_key"];
-    const columns = db.pragma(`index_info(${pk.name})`) as { name: string }[];
-    if (
-      JSON.stringify(columns.map((c) => c.name)) !== JSON.stringify(pkColumns)
-    )
+    const rowidPrimary = ["backend_lifecycle", "startup_generations"].includes(
+      name,
+    );
+    if (indexes.length !== (rowidPrimary ? 0 : hasTimeIndex ? 2 : 1))
       throw new SchemaError();
+    const keys: Record<string, string[]> = {
+      published_state_snapshots: ["state_key", "generation"],
+      provider_quota_consumptions: ["provider_key", "sequence"],
+      provider_quota_metadata: ["provider_key"],
+      startup_provider_boundaries: ["generation", "provider_key"],
+      history_uncertain_ranges: ["provider_key", "generation", "range_id"],
+    };
+    if (!rowidPrimary) {
+      const pk = indexes.find((i) => i.origin === "pk");
+      if (!pk || pk.unique !== 1 || pk.partial !== 0) throw new SchemaError();
+      const columns = db.pragma(`index_info(${pk.name})`) as { name: string }[];
+      if (
+        JSON.stringify(columns.map((c) => c.name)) !==
+        JSON.stringify(keys[name] ?? ["state_key"])
+      )
+        throw new SchemaError();
+    } else {
+      const columns = db.pragma(`table_info(${name})`) as {
+        name: string;
+        type: string;
+        pk: number;
+        notnull: number;
+      }[];
+      const pk = columns.filter((c) => c.pk !== 0);
+      if (
+        pk.length !== 1 ||
+        pk[0].name !==
+          (name === "backend_lifecycle" ? "lifecycle_key" : "generation") ||
+        pk[0].type !== "INTEGER" ||
+        pk[0].notnull !== 1
+      )
+        throw new SchemaError();
+    }
     if (
       hasTimeIndex &&
       !indexes.some(
@@ -154,6 +182,67 @@ export function validateSchema(
         fk[0].match !== "NONE"
       )
         throw new SchemaError();
+    } else if (
+      name === "startup_provider_boundaries" ||
+      name === "history_uncertain_ranges"
+    ) {
+      const expected =
+        name === "startup_provider_boundaries"
+          ? [["startup_generations", "generation", "generation"]]
+          : [
+              ["startup_provider_boundaries", "generation", "generation"],
+              ["startup_provider_boundaries", "provider_key", "provider_key"],
+            ];
+      if (
+        JSON.stringify(fk.map((f) => [f.table, f.from, f.to])) !==
+          JSON.stringify(expected) ||
+        fk.some(
+          (f) =>
+            f.on_update !== "NO ACTION" ||
+            f.on_delete !== "NO ACTION" ||
+            f.match !== "NONE",
+        )
+      )
+        throw new SchemaError();
     } else if (fk.length !== 0) throw new SchemaError();
   }
+  if (version === 3) {
+    if (
+      db.pragma("journal_mode", { simple: true }) !== "wal" ||
+      db.pragma("synchronous", { simple: true }) !== 2
+    )
+      throw new SchemaError();
+    if (db.pragma("quick_check", { simple: true }) !== "ok")
+      throw new SchemaError();
+    if ((db.pragma("foreign_key_check") as unknown[]).length !== 0)
+      throw new SchemaError();
+    validateLifecycleMarker(db);
+  }
+}
+
+/** Marker validity is not Startup evidence, History Trust or send permission. */
+export function validateLifecycleMarker(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      "SELECT lifecycle_key,state,boot_id,generation FROM backend_lifecycle",
+    )
+    .safeIntegers(true)
+    .all() as {
+    lifecycle_key: unknown;
+    state: unknown;
+    boot_id: unknown;
+    generation: unknown;
+  }[];
+  if (rows.length !== 1) throw new SchemaError();
+  const r = rows[0];
+  if (
+    r.lifecycle_key !== 1n ||
+    !["RUNNING", "CLEAN"].includes(r.state as string) ||
+    typeof r.boot_id !== "string" ||
+    normalizedBootId(r.boot_id) !== r.boot_id ||
+    typeof r.generation !== "bigint" ||
+    r.generation < 1n ||
+    r.generation > BigInt(Number.MAX_SAFE_INTEGER)
+  )
+    throw new SchemaError();
 }

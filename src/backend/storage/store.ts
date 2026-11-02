@@ -9,14 +9,14 @@ import { PublishedStateRepository } from "./published-state-repository.js";
 import { AcquisitionControlRepository } from "./acquisition-control-repository.js";
 import { BackendCacheRepository } from "./backend-cache-repository.js";
 
-export function configureDatabase(db: Database.Database) {
+export function configureDatabase(db: Database.Database, version: 2 | 3 = 2) {
   enableForeignKeys(db);
   db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
+  db.pragma(version === 3 ? "synchronous = FULL" : "synchronous = NORMAL");
   db.pragma("wal_autocheckpoint = 1000");
   if (
     db.pragma("journal_mode", { simple: true }) !== "wal" ||
-    db.pragma("synchronous", { simple: true }) !== 1 ||
+    db.pragma("synchronous", { simple: true }) !== (version === 3 ? 2 : 1) ||
     db.pragma("wal_autocheckpoint", { simple: true }) !== 1000
   )
     throw new SchemaError();

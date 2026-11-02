@@ -1,5 +1,5 @@
 #!/bin/sh
-# Usage: sh scripts/with-backend-lock.sh backend|provision|migrate-v2
+# Usage: sh scripts/with-backend-lock.sh backend|provision|migrate-v2|migrate-v3
 # Fixed layout: SIGNAGE_DATA_DIR/{backend.lock,signage.db}; never unlink the lock.
 # Exit 73: contention (2s); 74: unsafe path/platform; 75: lock operation failure.
 set -eu
@@ -7,6 +7,7 @@ case "${1-}" in
   backend) entry=main.js ;;
   provision) entry=storage/provision.js ;;
   migrate-v2) entry=storage/upgrade-v2.js ;;
+  migrate-v3) entry=storage/upgrade-v3.js ;;
   *) printf '%s\n' 'lock: invalid command' >&2; exit 74 ;;
 esac
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
