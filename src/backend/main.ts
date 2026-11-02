@@ -6,18 +6,40 @@ import { ConfigError, loadConfig } from "./config/loader.js";
 import { createLogger } from "./logging/logger.js";
 import { installShutdown } from "./shutdown.js";
 import { ExclusiveLock } from "./storage/lock.js";
-import { BackendStore } from "./storage/store.js";
+import { BackendStore, type StartupStoreAccess } from "./storage/store.js";
+import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
+import type { StartupResult } from "./storage/startup-transaction.js";
 import {
   classifyDatabaseError,
   type DatabaseStatus,
 } from "./storage/errors.js";
+
+function startupDatabaseStatus(result: StartupResult): DatabaseStatus {
+  switch (result.outcome) {
+    case "committed":
+      return { state: "HEALTHY" };
+    case "rejected":
+      return { state: "BLOCKED", layer: "L3", reason: result.reason };
+    case "unknown":
+      return { state: "BLOCKED", layer: "L4", reason: result.reason };
+    case "database_error":
+      return {
+        state:
+          result.layer === "L1" || result.layer === "L2"
+            ? "DEGRADED"
+            : "BLOCKED",
+        layer: result.layer,
+        reason: result.reason,
+      };
+  }
+}
 
 interface StartupOptions {
   signals?: Pick<EventEmitter, "on" | "off">;
   finish?: (code: number) => void;
   initializeStore?: (
     lock: ExclusiveLock,
-  ) => BackendStore | Promise<BackendStore>;
+  ) => StartupStoreAccess | Promise<StartupStoreAccess>;
 }
 export async function startBackend(
   env: Readonly<NodeJS.ProcessEnv>,
@@ -44,16 +66,17 @@ export async function startBackend(
   }
   logger.info({ event: "startup_begin" }, "Backend starting");
   const app = buildApp(logger, false);
-  let ownedStore: BackendStore | undefined;
+  let ownedStore: StartupStoreAccess | undefined;
   let finishInitialization!: () => void;
   const initialized = new Promise<void>((resolve) => {
     finishInitialization = resolve;
   });
   app.addHook("onClose", async () => {
     await initialized;
-    ownedStore?.close();
-    if (ownedStore)
-      logger.info({ event: "database_closed" }, "Database closed");
+    const store = ownedStore;
+    ownedStore = undefined; // One close owner, including failure / Shutdown races.
+    store?.close();
+    if (store) logger.info({ event: "database_closed" }, "Database closed");
   });
   const shutdown = installShutdown(
     app,
@@ -77,25 +100,52 @@ export async function startBackend(
       logger.info({ event: "database_initializing" }, "Initializing database");
       await yieldToSignals();
       if (!shutdown.requested) {
-        let acquired: BackendStore | undefined;
         try {
-          try {
-            acquired = await (options.initializeStore ?? BackendStore.open)(
-              lock,
-            );
-          } catch (error) {
-            status = classifyDatabaseError(error);
-          }
-          // Both success and recoverable failure must drain pending OS signals.
-          // Synchronous SQLite cannot be interrupted by JS signal/timer callbacks.
+          ownedStore = await (
+            options.initializeStore ?? BackendStore.openV3ForStartup
+          )(lock);
+        } catch (error) {
+          status = classifyDatabaseError(error);
+        }
+        // The close hook already owns every returned Store, even if a Signal
+        // arrived while Open was pending. It waits for initialization to finish.
+        await yieldToSignals();
+        if (!shutdown.requested && ownedStore) {
+          logger.info(
+            { event: "storage_startup_begin" },
+            "Storage Startup beginning",
+          );
           await yieldToSignals();
-          if (!shutdown.requested && acquired) {
-            ownedStore = acquired; // Atomic ownership handoff: no await here.
-            acquired = undefined;
-            status = { state: "HEALTHY" };
+          if (!shutdown.requested) {
+            lock.assertHeld(); // Lock loss is not a safe Connectivity-only start.
+            let bootId: string | null = null;
+            try {
+              bootId = normalizedBootId(readOsBootId());
+            } catch {
+              /* fail closed below */
+            }
+            if (bootId === null) {
+              status = {
+                state: "BLOCKED",
+                layer: "L3",
+                reason: "os_boot_id_unverified",
+              };
+            } else {
+              // One synchronous attempt only. No Trust, Quota or HTTP authority
+              // is exposed by the restricted Store, including after committed.
+              status = startupDatabaseStatus(
+                ownedStore.startup.execute({ bootId }),
+              );
+              if (status.state === "HEALTHY")
+                logger.info(
+                  { event: "storage_startup_committed" },
+                  "Storage Startup committed",
+                );
+            }
+            // Drain Signals queued during synchronous SQLite before any route
+            // registration / Listen. Native code is not interrupted by JS.
+            await yieldToSignals();
           }
-        } finally {
-          acquired?.close();
         }
       }
     } finally {

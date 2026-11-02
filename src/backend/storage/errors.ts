@@ -8,7 +8,7 @@ export type DatabaseStatus =
   | { state: "HEALTHY" }
   | {
       state: "DEGRADED" | "BLOCKED";
-      layer: "L1" | "L2" | "L3";
+      layer: "L1" | "L2" | "L3" | "L4";
       reason: string;
     };
 export function classifyDatabaseError(
