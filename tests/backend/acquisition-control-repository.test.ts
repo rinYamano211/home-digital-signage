@@ -13,12 +13,18 @@ import {
   type ControlSaveRequest,
   type ControlReadResult,
 } from "../../src/backend/storage/acquisition-control-repository.js";
-import { initializeSchema } from "../../src/backend/storage/schema.js";
+import {
+  initializeSchema,
+  INITIAL_DDL,
+  validateSchema,
+} from "../../src/backend/storage/schema.js";
+import { migrate, V1_TO_V2 } from "../../src/backend/storage/migrations.js";
 import {
   BackendStore,
   configureDatabase,
 } from "../../src/backend/storage/store.js";
 import {
+  STATE_KEYS,
   PublishedStateRepository,
   type StateKey,
 } from "../../src/backend/storage/published-state-repository.js";
@@ -904,4 +910,182 @@ test("throwing initial facts are rejected without blocking healthy storage", () 
   expect(connectionCoordination(f.db).blocked).toBeUndefined();
   f.context.beginAttempt("rainForecast");
   expect(f.repo.read("rainForecast").outcome).toBe("empty");
+});
+
+// PR-C-1 verifies the already implemented C-2 persistence contract across an
+// actual Connection replacement; this is not Startup/Recovery orchestration.
+function reopenControl(f: ReturnType<typeof fixture>) {
+  f.db.close();
+  const db = new Database(f.path, { fileMustExist: true });
+  dbs.push(db);
+  migrate(db);
+  configureDatabase(db);
+  return { db, repo: new AcquisitionControlRepository(db) };
+}
+test.each(STATE_KEYS)(
+  "PR-C-1 C2-01/04/05 persisted %s survives Connection replacement with fresh Evidence",
+  (key) => {
+    const f = fixture();
+    if (key !== "schedule") f.context.beginAttempt(key);
+    seed(f.db, state(), key);
+    const oldEvidence = evidence(f.repo.read(key));
+    const next = {
+      consecutiveFailures: 4,
+      nextAttemptAt: "2099-11-02T23:45:00Z",
+    };
+    expect(
+      f.repo.saveConditionally(update(oldEvidence, next, key)).outcome,
+    ).toBe("saved");
+    const beforeClose = evidence(f.repo.read(key));
+    const restored = reopenControl(f);
+    expect(() => restored.repo.read(key)).toThrow(TypeError);
+    restored.repo.context.beginAttempt(key);
+    const read = restored.repo.read(key);
+    expect(read).toMatchObject({ outcome: "found", state: next });
+    expect(
+      restored.repo.saveConditionally(update(beforeClose, state(5), key)),
+    ).toMatchObject({
+      outcome: "not_saved",
+      reason: "invalid_control_evidence",
+    });
+    expect(
+      restored.repo.saveConditionally(update(evidence(read), state(5), key))
+        .outcome,
+    ).toBe("saved");
+    expect(
+      JSON.parse(
+        (
+          restored.db
+            .prepare(
+              "SELECT control_json FROM acquisition_control WHERE state_key=?",
+            )
+            .get(key) as { control_json: string }
+        ).control_json,
+      ),
+    ).toEqual(state(5));
+    expect(restored.db.inTransaction).toBe(false);
+    validateSchema(restored.db);
+  },
+);
+test("PR-C-1 C2-02/07 missing persisted Row is not initial authorization after restart", () => {
+  const f = fixture();
+  const restored = reopenControl(f);
+  restored.repo.context.beginAttempt("schedule");
+  const read = restored.repo.read("schedule");
+  expect(read.outcome).toBe("empty");
+  const spy = vi.spyOn(restored.db, "exec");
+  expect(
+    restored.repo.context.authorizeInitial(evidence(read), {
+      ...facts(),
+      eligibility: { kind: "unknown" },
+    }),
+  ).toBeNull();
+  expect(row(restored.db)).toBeUndefined();
+  expect(spy.mock.calls.some(([sql]) => sql.includes("BEGIN IMMEDIATE"))).toBe(
+    false,
+  );
+});
+test.each([
+  { json: "not-json", stage: "json_parse" },
+  {
+    json: JSON.stringify({
+      consecutiveFailures: "0",
+      nextAttemptAt: state().nextAttemptAt,
+    }),
+    stage: "schema",
+  },
+  {
+    json: JSON.stringify({ ...state(), consecutiveFailures: -1 }),
+    stage: "semantic",
+  },
+  {
+    json: JSON.stringify({ ...state(), nextAttemptAt: "2026-02-30T00:00:00Z" }),
+    stage: "semantic",
+  },
+])(
+  "PR-C-1 C2-01/13 persisted $stage failure remains invalid after restart",
+  ({ json, stage }) => {
+    const f = fixture();
+    seed(f.db, json);
+    const restored = reopenControl(f);
+    restored.repo.context.beginAttempt("schedule");
+    const read = restored.repo.read("schedule");
+    expect(read).toMatchObject({ outcome: "invalid", stage });
+    expect(read).not.toHaveProperty("evidence");
+    expect(row(restored.db)).toEqual({ control_json: json });
+    restored.repo.context.beginAttempt("currentWeather");
+    expect(restored.repo.read("currentWeather").outcome).toBe("empty");
+    expect(connectionCoordination(restored.db).blocked).toBeUndefined();
+  },
+);
+test("PR-C-1 C2-16 rolled-back UPDATE restores previous state without touching PR-B data", () => {
+  const f = fixture();
+  seed(f.db);
+  f.db
+    .prepare("INSERT INTO state_generation_counters VALUES (?,?)")
+    .run("schedule", 1);
+  f.db
+    .prepare("INSERT INTO published_state_snapshots VALUES (?,?,?)")
+    .run("schedule", 1, "synthetic-snapshot");
+  f.db
+    .prepare("INSERT INTO backend_cache VALUES (?,?)")
+    .run("schedule", "synthetic-cache");
+  const req = update(evidence(f.repo.read("schedule")));
+  // Fail this write COMMIT only; the subsequent read-only reconciliation
+  // must remain available to establish not_saved after the rollback.
+  failCommit(f.db, false);
+  expect(f.repo.saveConditionally(req).outcome).toBe("not_saved");
+  expect(f.db.inTransaction).toBe(false);
+  vi.restoreAllMocks();
+  const restored = reopenControl(f);
+  restored.repo.context.beginAttempt("schedule");
+  expect(restored.repo.read("schedule")).toMatchObject({
+    outcome: "found",
+    state: state(),
+  });
+  expect(
+    restored.db.prepare("SELECT * FROM published_state_snapshots").all(),
+  ).toEqual([
+    {
+      state_key: "schedule",
+      generation: 1,
+      snapshot_json: "synthetic-snapshot",
+    },
+  ]);
+  expect(restored.db.prepare("SELECT * FROM backend_cache").all()).toEqual([
+    { state_key: "schedule", cache_json: "synthetic-cache" },
+  ]);
+  expect(
+    restored.db.prepare("SELECT * FROM state_generation_counters").all(),
+  ).toEqual([{ state_key: "schedule", last_generation: 1 }]);
+  validateSchema(restored.db);
+});
+test("PR-C-1 C2-01 explicit v1-to-v2 migration preserves Control JSON for a fresh Connection", () => {
+  const dir = mkdtempSync(join(tmpdir(), "signage-control-migration-"));
+  dirs.push(dir);
+  const path = join(dir, "backend.db");
+  const db = new Database(path);
+  dbs.push(db);
+  db.exec(INITIAL_DDL);
+  db.pragma("user_version=1");
+  seed(db, state(7));
+  expect(() => migrate(db)).toThrow();
+  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  migrate(db, [V1_TO_V2]);
+  db.close();
+  const reopened = new Database(path, { fileMustExist: true });
+  dbs.push(reopened);
+  migrate(reopened);
+  configureDatabase(reopened);
+  const repo = new AcquisitionControlRepository(reopened);
+  repo.context.beginAttempt("schedule");
+  expect(repo.read("schedule")).toMatchObject({
+    outcome: "found",
+    state: state(7),
+  });
+  expect(
+    reopened.prepare("SELECT * FROM provider_quota_metadata").all(),
+  ).toEqual([]);
+  expect(reopened.pragma("user_version", { simple: true })).toBe(2);
+  validateSchema(reopened);
 });
