@@ -636,3 +636,63 @@ linux(
   },
   10000,
 );
+
+linux(
+  "PR-C-2B-1 restricted v3 Store uses real EX and paths without starting Runtime",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const code = `import {BackendStore} from ${moduleUrl("storage/store")}; import {ExclusiveLock} from ${moduleUrl("storage/lock")}; const h=BackendStore.openV3ForStartup(ExclusiveLock.inherited(process.env.SIGNAGE_DATA_DIR)); console.log(JSON.stringify({startupComplete:h.startupComplete,keys:Object.keys(h).sort(),read:h.lifecycle.read()}));h.close();h.close();console.log(JSON.stringify(h.lifecycle.read()));`;
+    const v2 = harness(dir, code);
+    expect(await v2.done).toBe(1);
+    let db = new Database(join(dir, "signage.db"), { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(2);
+    } finally {
+      db.close();
+    }
+    const upgrade = command(dir, "migrate-v3", {
+      SIGNAGE_V3_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+    });
+    expect(await upgrade.done, upgrade.output()).toBe(0);
+    const job = harness(dir, code);
+    expect(await job.done, job.output()).toBe(0);
+    expect(job.output()).toContain('"startupComplete":false');
+    expect(job.output()).toContain(
+      '"keys":["close","lifecycle","startupComplete"]',
+    );
+    expect(job.output()).toContain('"outcome":"found"');
+    expect(job.output()).toContain('"reason":"database_unavailable"');
+    expect(await probe(dir)).toBe(0);
+    db = new Database(join(dir, "signage.db"), { readonly: true });
+    try {
+      expect(
+        db.prepare("SELECT generation,state FROM backend_lifecycle").get(),
+      ).toEqual({ generation: 1, state: "RUNNING" });
+      for (const n of [
+        "startup_generations",
+        "startup_provider_boundaries",
+        "history_uncertain_ranges",
+        "provider_quota_consumptions",
+      ])
+        expect(db.prepare(`SELECT * FROM ${n}`).all()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  },
+);
+linux(
+  "PR-C-2B-1 v3 access without inherited EX cannot open storage",
+  async () => {
+    const dir = await directory();
+    await provision(dir);
+    const code = `import {BackendStore} from ${moduleUrl("storage/store")}; import {ExclusiveLock} from ${moduleUrl("storage/lock")}; BackendStore.openV3ForStartup(ExclusiveLock.inherited(process.env.SIGNAGE_DATA_DIR));`;
+    const job = launch(
+      process.execPath,
+      ["--input-type=module", "-e", code],
+      dir,
+    );
+    expect(await job.done).toBe(1);
+    expect(job.output()).toContain("Exclusive");
+  },
+);
