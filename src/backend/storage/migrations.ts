@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { connectionCoordination } from "./connection-coordination.js";
 import { SchemaError } from "./errors.js";
 import { validateSchema, QUOTA_DDL, enableForeignKeys } from "./schema.js";
 
@@ -30,11 +31,34 @@ export function migrate(
   allowed: readonly Migration[] = MIGRATIONS,
   target = 2,
 ) {
+  // v3 administrative work participates in the shared Connection gate.
+  const coordination = target === 3 ? connectionCoordination(db) : undefined;
+  if (
+    coordination &&
+    (coordination.busy ||
+      coordination.blocked ||
+      coordination.connectionUnresolved)
+  )
+    throw new SchemaError();
+  if (coordination) coordination.busy = true;
   try {
     if (db.inTransaction !== false) throw new SchemaError();
-    if (target === 2) enableForeignKeys(db);
+    if (target === 2 || target === 3) enableForeignKeys(db);
     applyMigrations(db, allowed, target);
   } catch (error) {
+    if (coordination) {
+      try {
+        if (db.inTransaction !== false)
+          coordination.connectionUnresolved = true;
+      } catch {
+        coordination.connectionUnresolved = true;
+      }
+      coordination.blocked = {
+        scope: "database",
+        layer: "L3",
+        reason: "migration_unconfirmed",
+      };
+    }
     // Definition/validator failures require manual review, not an OS-fatal exit.
     // Keep SQLite result codes so temporary and storage failures retain their layer.
     if (
@@ -44,6 +68,8 @@ export function migrate(
     )
       throw error;
     throw new SchemaError();
+  } finally {
+    if (coordination) coordination.busy = false;
   }
 }
 function applyMigrations(
@@ -91,5 +117,5 @@ function applyMigrations(
       throw error;
     }
   }
-  if (target === 1 || target === 2) validateSchema(db, target);
+  if (target === 1 || target === 2 || target === 3) validateSchema(db, target);
 }
