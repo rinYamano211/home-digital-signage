@@ -3221,7 +3221,7 @@ CREATE TABLE startup_provider_boundaries (
 );
 ```
 
-上記はD-01〜D-03の承認DDLである。D04-R05で追加承認されたMetadata Snapshot・history_fingerprintの保持要件と、未指定の物理DDLは[D-04](#pr-c-c-impl-5b4-d04)で区別する。
+上記は先行PR #52のD-01〜D-03基準DDLである。追加3カラムを含む最終実装対象は[D-04の正式統合DDL](#pr-c-c-impl-5b4-boundary-final-ddl)を参照する。基準定義と最終定義を混在させない。
 
 Startup境界は確定後不変とし、後からUPDATEしない。全管理対象Providerについて次の分類を行い、UNPROVISIONED / NULLとPROVISIONED / 0を区別する。
 
@@ -3363,75 +3363,145 @@ Startupは前回Lifecycleだけでなく過去Startup Boundaryと対応履歴を
 
 **U-01 / D04-R05：履歴Fingerprint**
 
-以下は今回正式採用したD04-R05の仕様である。方式・入力順序・保存先を未決定扱いに戻さず、未指定の符号化細部・DDL配置と技術検証を分離する。
+以下は追加承認を含むD04-R05の最終符号化仕様であり、R55-01の統合DDLと併せて実装対象とする。**設計確定・実装未完了・検証未実施**を区別する。
 
 | 項目 | 確定仕様 |
 |---|---|
 | Version / Hash | quota-history-v1 / SHA-256 |
 | Metadata | provider_key、history_status、initialized_at_ms、cutoff時点のlast_sequence |
-| Consumption | sequence、reserved_at_ms。sequence昇順、cutoffを超える行は含めない |
-| 入力順序 | Version → Metadata → Consumption件数 → Consumption行 |
-| Metadata内順序 | provider_key → history_status → initialized_at_ms → last_sequence |
-| 各Consumption行内順序 | sequence → reserved_at_ms |
-| 文字列 | UTF-8、Unicode正規化なし |
-| 整数 | 非負10進ASCII。先頭ゼロ・プラス記号なし、ゼロは0 |
-| フィールド符号化 | 型タグ + 4バイトBig Endian長 + 値。NULLとMetadata不在は専用タグで区別 |
+| Consumption | sequence、reserved_at_ms。sequence昇順、cutoffを超える行を含めない |
+| 文字列 | UTF-8、Unicode正規化なし。Lengthは文字数ではなくバイト数 |
+| 整数と件数 | 非負10進ASCII。ゼロは0、先頭ゼロ・プラス記号・小数点なし。SQLite INTEGERとJavaScript安全整数の共通範囲内 |
+| フィールド符号化 | TypeTag（1バイト）+ Length（4バイト符号なしBig Endian）+ Value（Lengthバイト） |
 | Digest表現・保存先 | 小文字64桁Hexをstartup_provider_boundaries.history_fingerprintへ保存 |
 
-過去Metadataはstartup_provider_boundariesのSnapshotから再構成し、last_sequenceには保存済みcutoff_sequenceを使用する。現在のMetadata値へ差し替えて過去Fingerprintを再計算しない。過去のhistory_statusやinitialized_at_msを現在値から推測しない。UNPROVISIONED（Metadata不在）とPROVISIONED（cutoff=0・履歴0件）を区別し、NULLをMetadata不在の代用にしない。
+フィールド間へ区切り文字・空白・改行を挿入しない。整数はIEEE 754のバイナリ表現を使わずASCIIで符号化する。既存Timestamp・SequenceのSemantic Validationは緩めない。件数は実際に符号化するConsumption行数と一致させる。
 
-Startup前には、保存された過去BoundaryのSnapshot・cutoffと、そのcutoffまでのConsumptionを用いて同じVersion・同じ一意なバイト列を再構成し、保存済みhistory_fingerprintと照合する。Snapshot / cutoff / 履歴行の欠落・不整合・再現不能・Digest不一致はFail Closed。今回のBoundaryを保存して過去の不整合を上書きしない。今回Snapshot・cutoff・FingerprintはU-01 / D-02の同一Startup TransactionでBoundaryと整合して保存する。
+| 型 | TypeTag | Value |
+|---|---|---|
+| STRING | 0x01 | UTF-8バイト列 |
+| INTEGER | 0x02 | 非負10進ASCII |
+| NULL | 0x03 | 空、Length=0 |
+| METADATA_ABSENT | 0x04 | 空、Length=0 |
+| COUNT | 0x05 | 非負10進ASCII |
 
-**D-01〜D-03 DDLとの接続**：PR #52のstartup_provider_boundaries定義にはSnapshot・history_fingerprintの物理定義がまだない。D04-R05で同TableにMetadata Snapshotとhistory_fingerprintを保持する要件は追加承認済みだが、Snapshotの物理カラム名・型・NULL制約・不在表現、history_fingerprintの型・CHECK等の具体DDLは未指定である。新Tableを追加せず、Snapshotをメモリだけで済ませず、現在のDDLが保存要件を実装可能な完全版だとも扱わない。今回、未承認のカラム定義・Migration SQLを創作しない。
+NULLは `03 00 00 00 00`、METADATA_ABSENTは `04 00 00 00 00`。同じ長さ0でもタグが異なる。NULLを許可しないフィールドのNULLはFail Closedとし、Metadata不在を複数のNULLフィールドで代用しない。
 
-**R55-01：Snapshot保存先の最小DDL案（未承認・確定DDLではない）**
+**PROVISIONEDの符号化順序**
 
-不整合は、承認済みの保存要件に対してPR #52のBoundary DDLに物理カラムがない点である。既存4 Table構成と保存先startup_provider_boundariesを維持する。最小案は同Tableへの次の3カラム追加であり、以下のカラム名・型・制約はすべて**承認待ちの提案**とする。D-01〜D-03の既存CREATE TABLE定義は変更しない。
+1. Version：STRING quota-history-v1。
+2. provider_key：STRING。
+3. history_status：STRING。
+4. initialized_at_ms：INTEGER。
+5. cutoff時点last_sequence：INTEGER（保存済みcutoff_sequence）。
+6. Consumption件数：COUNT。
+7. sequence昇順の各行でsequence：INTEGER → reserved_at_ms：INTEGER。
 
-| 提案カラム | 保存内容・理由 |
-|---|---|
-| history_status_snapshot | 過去MetadataのACTIVE / SUSPENDEDを再現するTEXT。現在値で代用しない |
-| initialized_at_ms_snapshot | 過去Metadataのinitialized_at_msを再現するINTEGER。BackendでもTimestamp妥当性を検証 |
-| history_fingerprint | 同じ過去Snapshot・cutoffに対応する小文字64桁Hex。既承認の保存先・表現を維持 |
+**UNPROVISIONEDの符号化順序**
 
-provider_keyは既存PKの値を使用し、cutoff時点last_sequenceは既存cutoff_sequenceを使用する。Versionは既承認のquota-history-v1に従い、この最小案ではVersion列・last_sequence重複列・新Tableを提案しない。
+1. Version：STRING quota-history-v1。
+2. METADATA_ABSENT（Length=0）。
+3. Consumption件数：COUNT、値0。
 
-次は既存CREATE TABLEへ追加するカラム・Table制約の**提案断片**であり、単独実行用SQL・承認済みMigrationではない。
+UNPROVISIONEDではMetadata4フィールドとConsumption行を出力しない。PROVISIONED / 0はMetadata4フィールドとCOUNT 0を符号化し、Metadata不在と区別する。
+
+**過去値・保存・再計算**
+
+過去Metadataは保存済みBoundary Snapshotから再構成する。provider_keyは既存列、history_statusはhistory_status_snapshot、initialized_at_msはinitialized_at_ms_snapshot、last_sequenceはcutoff_sequenceを使い、現在のMetadata値で過去値を代用しない。cutoffまでのConsumptionをsequence昇順で検証・符号化し、上記バイト列のSHA-256を小文字64桁Hexとしてhistory_fingerprintへ保存・照合する。
+
+Snapshot・cutoff・Fingerprintは同一Startup TransactionでAtomic保存する。過去Fingerprintの照合は新Boundary保存前に行い、履歴欠落・不整合・再現不能・Digest不一致・Commit unknownはFail Closed。現在Metadataで推測Backfill、自動修復、境界上書きによる救済を行わない。
+
+<a id="pr-c-c-impl-5b4-boundary-final-ddl"></a>
+
+**R55-01：startup_provider_boundaries統合後の正式DDL（最終実装対象）**
+
+D-01〜D-03節のDDLは先行PR #52の基準定義として維持する。以下は追加3カラムと承認済み制約を統合したD-04の正式CREATE TABLEであり、**実装・Schema Validator・明示v2→v3 Migrationが参照する最終定義は以下**とする。先行PR #52のBranch・DDL自体は変更しない。同じTableの別実体を作る指示ではない。
 
 ```sql
-history_status_snapshot TEXT,
-initialized_at_ms_snapshot INTEGER,
-history_fingerprint TEXT NOT NULL
+CREATE TABLE startup_provider_boundaries (
+    generation INTEGER NOT NULL,
+    provider_key TEXT NOT NULL
+        CHECK (length(provider_key) > 0),
+    provider_state TEXT NOT NULL
+        CHECK (
+            provider_state IN ('UNPROVISIONED', 'PROVISIONED')
+        ),
+    cutoff_sequence INTEGER,
+    history_status_snapshot TEXT,
+    initialized_at_ms_snapshot INTEGER,
+    history_fingerprint TEXT NOT NULL
+        CHECK (
+            length(history_fingerprint) = 64
+            AND history_fingerprint NOT GLOB '*[^0-9a-f]*'
+        ),
+    PRIMARY KEY (generation, provider_key),
+    FOREIGN KEY (generation)
+        REFERENCES startup_generations(generation),
     CHECK (
-        length(history_fingerprint) = 64
-        AND history_fingerprint NOT GLOB '*[^0-9a-f]*'
+        (
+            provider_state = 'UNPROVISIONED'
+            AND cutoff_sequence IS NULL
+        )
+        OR
+        (
+            provider_state = 'PROVISIONED'
+            AND cutoff_sequence IS NOT NULL
+            AND cutoff_sequence >= 0
+            AND cutoff_sequence <= 9007199254740991
+        )
     ),
-CHECK (
-    (
-        provider_state = 'UNPROVISIONED'
-        AND history_status_snapshot IS NULL
-        AND initialized_at_ms_snapshot IS NULL
+    CHECK (
+        (
+            provider_state = 'UNPROVISIONED'
+            AND history_status_snapshot IS NULL
+            AND initialized_at_ms_snapshot IS NULL
+        )
+        OR
+        (
+            provider_state = 'PROVISIONED'
+            AND history_status_snapshot IS NOT NULL
+            AND history_status_snapshot IN ('ACTIVE', 'SUSPENDED')
+            AND initialized_at_ms_snapshot IS NOT NULL
+            AND typeof(initialized_at_ms_snapshot) = 'integer'
+            AND initialized_at_ms_snapshot >= 0
+            AND initialized_at_ms_snapshot <= 9007199254740991
+        )
     )
-    OR
-    (
-        provider_state = 'PROVISIONED'
-        AND history_status_snapshot IS NOT NULL
-        AND history_status_snapshot IN ('ACTIVE', 'SUSPENDED')
-        AND initialized_at_ms_snapshot IS NOT NULL
-        AND typeof(initialized_at_ms_snapshot) = 'integer'
-        AND initialized_at_ms_snapshot >= 0
-        AND initialized_at_ms_snapshot <= 9007199254740991
-    )
-)
+);
 ```
 
-既存provider_state・cutoffのCHECK、PK / FKはそのまま併用する案である。UNPROVISIONEDはcutoff=NULL・Snapshot2項目=NULLとし、Metadata不在を符号化したFingerprintを保存する案とする。PROVISIONED / 0はMetadata2項目を必須とし、Consumption 0件でもMetadata不在と区別する。Fingerprint列は両状態とも非NULLとする提案であり、NULLで不在Digestを代用しない。BackendでもProvider状態・整数 / Timestamp範囲・全履歴とcutoff / Metadata一致を独立検証し、SQL制約だけで完全性を証明しない。
+既存PK / FK、provider_stateのNOT NULL・状態CHECK、cutoffの分岐CHECK（PROVISIONED時IS NOT NULLを含む）を維持する。追加カラムはhistory_status_snapshot / initialized_at_ms_snapshot / history_fingerprintの3つのみで、新Table・Version列・last_sequence重複列は追加しない。
 
-**Migrationへの影響（案）**：承認後、明示v2→v3 Migrationが作るBoundary Table定義に組み込み、v2の6 Table・Quota履歴は保持する。Migration Gen 1ではStartup Boundaryを作らないため、最初の通常Startup Gen 2で実際のSnapshot・cutoff・Fingerprintを同じStartup Transactionで保存する。既存Metadataから過去Snapshotを推測して埋める案は採用しない。旧案のv3を適用済みのDBが存在する場合は、自動的な同Version修復・ALTER・Backfillを行わず、別途明示対応を確認・承認する必要がある。今回DB / Migrationは操作しない。
+UNPROVISIONEDはcutoff=NULL・Snapshot2項目=NULLだが、Metadata不在を符号化したFingerprintは必須。PROVISIONEDはcutoff=0でもSnapshot2項目を必須とし、ACTIVE / SUSPENDED、非負の安全整数Timestampを保存する。Backendでも型・整数範囲・Timestamp妥当性・Provider状態・Metadata / Consumption対応と履歴完全性を独立検証し、SQL制約成立だけで完全性を証明しない。
 
-**承認が必要な判断**：3カラム名・型・分岐CHECKの採否、TimestampのSQL範囲とBackend検証の分担、UNPROVISIONEDでも非NULLの不在Metadata Digestを保存する案、必要に応じた既適用v3の扱い。型タグ値等の未指定符号化は別途確定が必要である。承認されるまでR55-01の物理DDL確定を保留し、本案をSchema Validatorや実装へ転記しない。
+統合DDLは明示的v2→v3 Migrationが作成するTable定義へ組み込み、既存v2の6 Table・Index・Quota履歴を維持する。Gen 1ではBoundaryを作らず、通常Startup Gen 2から実SnapshotをAtomic保存する。旧基準v3を適用済みのDBが存在する場合は自動的な同Version修復・ALTER・Backfillをせず、別途明示対応を確認する。今回、Migration・DB操作は行わない。
 
-**相互運用性の未指定事項**：型タグの具体的バイト値・幅、NULL / Metadata不在タグの長さと値の表現、Metadataグループ・Consumption件数の符号化との具体対応は追加確認が必要である。JSON化・区切り文字・独自タグ番号等を推測で採用しない。これらを確定するまでは、異なる実装間で同じDigestになることを検証済みとはしない。Fingerprint独立テストベクトルの作成・照合も未実施である。
+**符号化例：PROVISIONED・履歴0件（提示仕様、実行検証未実施）**
+
+```text
+Version           = quota-history-v1
+provider_key      = p
+history_status    = ACTIVE
+initialized_at_ms = 0
+cutoff_sequence   = 0
+Consumption件数   = 0
+```
+
+Hash入力のバイト列：
+
+```text
+01 00 00 00 10
+71 75 6f 74 61 2d 68 69
+73 74 6f 72 79 2d 76 31
+
+01 00 00 00 01 70
+01 00 00 00 06 41 43 54 49 56 45
+02 00 00 00 01 30
+02 00 00 00 01 30
+05 00 00 00 01 30
+```
+
+表示上の空白・改行はHash入力に含めない。この例を独立実装で照合するテストベクトル、UNPROVISIONED、Consumption 1件の独立ベクトルを後続検証対象とする。期待Digestの独立検証・テストコード・実行結果は今回追加せず、上例を検証PASSの証拠としない。
 
 FingerprintはDB内の履歴整合性確認に用いる。外部Senderの不存在、実際のHTTP送信回数、Provider側計上完了を証明しない。既存の管理外Restore検出限界・キー排他利用確認・レベルB残余リスクを変更しない。
 
@@ -3520,7 +3590,7 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 
 **反映状態と実装前確認**
 
-今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。D-01〜D-03の4 Table DDL、Startup Transactionの構造検証・Generation契約、Range永続化とRuntime証拠の分離・再開案Aは確定済みである。D-04のU-01 / U-02 / U-03とD04-R01〜R07、Fingerprintの承認仕様も採用済みである。Fingerprintの未指定タグ値・Snapshotの物理DDL、証拠管理の具体型・API、R-03のB_clean値、Token・UDS実装方式、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
+今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。D-01〜D-03の4 Table DDL、Startup Transactionの構造検証・Generation契約、Range永続化とRuntime証拠の分離・再開案Aは確定済みである。D-04のU-01 / U-02 / U-03とD04-R01〜R07、Fingerprintの承認仕様も採用済みである。Fingerprintのタグ・バイト表現とSnapshotの統合DDLも追加承認済みである。独立テストベクトル、証拠管理の具体型・API、R-03のB_clean値、Token・UDS実装方式、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
 
 
 <a id="pr-c-c3-f02-delay-margin"></a>

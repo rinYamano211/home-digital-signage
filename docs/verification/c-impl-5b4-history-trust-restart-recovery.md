@@ -160,42 +160,44 @@ D-04でU-01〜U-03の採用方針・復旧4状態・History 3状態を確定し�
 
 本更新はPR #52のHead d5eb375f3187c4a0bf5a71376ca3dd39a83b4f28に積み重ねる文書PRであり、PR #52をmain反映済みとは扱わない。正本は[D-04](../technology-stack.md#pr-c-c-impl-5b4-d04)。以下は採用済み方針と未実施の検証観点であり、新しい正式受入ID・テストPASSを設定しない。H54-01〜44の番号・本文は維持する。
 
-| 区分       | 採用内容                                                                                                                                          | 既存H54との対応・未実施の確認                                                                                 |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| U-01       | v2の6 Tableとv3の4 Table、明示Migration・FULL、Gen 1初期隔離→Gen 2通常Startup、OS Boot / Process Instance / Startup Genの分離                     | H54-01・19〜21・29〜32。過去Boundary / 履歴検証後のAtomic Startup。Snapshot・Fingerprintの具体DDLは下記要確認 |
-| U02-01〜07 | TRUSTED / CONSERVATIVE / BLOCKED、Window別保守計上、メモリ待機、Tx-Q内再判定、Clock / Recovery分離、証拠不足拒否、隔離解除をU-03へ委譲            | H54-02〜10・27・33〜37・44。従来Boolean・Monitorとの結合は未実装。固定trueで代替しない                        |
-| U03-01〜08 | 既存4管理操作とRecoveryAdminService、復旧4状態、一回限りToken、Process / Boot / Gen / Boundary拘束、UDS認可、独立隔離、cancel責務分離、再起動失効 | H54-04〜06・15〜17・22〜25・28。既存SUSPENDEDの解除に流用しない。具体Token / UDS実装は未検証                  |
+| 区分       | 採用内容                                                                                                                                          | 既存H54との対応・未実施の確認                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| U-01       | v2の6 Tableとv3の4 Table、明示Migration・FULL、Gen 1初期隔離→Gen 2通常Startup、OS Boot / Process Instance / Startup Genの分離                     | H54-01・19〜21・29〜32。過去Boundary / 履歴検証後のAtomic Startup。Snapshot・Fingerprintは正本の正式統合DDLを実装対象とする。実装未完了 |
+| U02-01〜07 | TRUSTED / CONSERVATIVE / BLOCKED、Window別保守計上、メモリ待機、Tx-Q内再判定、Clock / Recovery分離、証拠不足拒否、隔離解除をU-03へ委譲            | H54-02〜10・27・33〜37・44。従来Boolean・Monitorとの結合は未実装。固定trueで代替しない                                                  |
+| U03-01〜08 | 既存4管理操作とRecoveryAdminService、復旧4状態、一回限りToken、Process / Boot / Gen / Boundary拘束、UDS認可、独立隔離、cancel責務分離、再起動失効 | H54-04〜06・15〜17・22〜25・28。既存SUSPENDEDの解除に流用しない。具体Token / UDS実装は未検証                                            |
 
-| D-04レビュー | 反映した規約                                                                                                                | 対応する既存観点                                                          |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| D04-R01      | 過去Startup Boundary・履歴を検証後に新境界を保存。上書きで不整合を解消しない                                                | H54-01・19〜21・32                                                        |
-| D04-R02      | CONSERVATIVEは完全性・Range境界・排他的分類・Window別保守計上が成立する場合のみ                                             | H54-07〜10・27・33〜37                                                    |
-| D04-R03      | Plan DはStartup Commitに加え固定境界・単調時計連続性・Window開始証拠を要求。管理者隔離は正当なapprove後で独立               | H54-02〜06・15・16                                                        |
-| D04-R04      | 明示v3 Migrationと通常Startup、書込み前FULL、Gen 1隔離・Gen 2の接続                                                         | H54-19〜21・24                                                            |
-| D04-R05      | SHA-256 / quota-history-v1、Snapshotから過去Metadataを再現、cutoffまで昇順、型タグ・長さ付き符号化、Boundaryへ小文字Hex保存 | H54-01・22・27・32。具体タグ・Snapshot物理DDLと独立テストベクトルは未完了 |
-| D04-R06      | Peer Credentials・OS権限とUDS認可の実装可能性を確認できない場合、管理操作を許可しない                                       | H54-22・23・25                                                            |
-| D04-R07      | OperationallyDrained AND RecoveryCleanEligible、隔離中CLEAN禁止、次回起動の隔離迂回禁止                                     | H54-11〜18・26・29〜32・38〜43                                            |
+| D-04レビュー | 反映した規約                                                                                                                | 対応する既存観点                                                            |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| D04-R01      | 過去Startup Boundary・履歴を検証後に新境界を保存。上書きで不整合を解消しない                                                | H54-01・19〜21・32                                                          |
+| D04-R02      | CONSERVATIVEは完全性・Range境界・排他的分類・Window別保守計上が成立する場合のみ                                             | H54-07〜10・27・33〜37                                                      |
+| D04-R03      | Plan DはStartup Commitに加え固定境界・単調時計連続性・Window開始証拠を要求。管理者隔離は正当なapprove後で独立               | H54-02〜06・15・16                                                          |
+| D04-R04      | 明示v3 Migrationと通常Startup、書込み前FULL、Gen 1隔離・Gen 2の接続                                                         | H54-19〜21・24                                                              |
+| D04-R05      | SHA-256 / quota-history-v1、Snapshotから過去Metadataを再現、cutoffまで昇順、型タグ・長さ付き符号化、Boundaryへ小文字Hex保存 | H54-01・22・27・32。タグ・統合DDLは追加承認済み。独立テストベクトルは未検証 |
+| D04-R06      | Peer Credentials・OS権限とUDS認可の実装可能性を確認できない場合、管理操作を許可しない                                       | H54-22・23・25                                                              |
+| D04-R07      | OperationallyDrained AND RecoveryCleanEligible、隔離中CLEAN禁止、次回起動の隔離迂回禁止                                     | H54-11〜18・26・29〜32・38〜43                                              |
 
-### Fingerprintの承認範囲と不足事項
+### Fingerprint最終仕様・統合DDLと検証の区別
 
-承認済み：Version quota-history-v1、Metadataはprovider_key / history_status / initialized_at_ms / cutoff時点last_sequence、Consumptionはsequence / reserved_at_ms。入力はVersion→Metadata→件数→sequence昇順の行、Metadata内・行内順序は正本に従う。UTF-8・Unicode正規化なし、非負10進ASCII・先頭ゼロとプラスなし、型タグ + 4バイトBig Endian長 + 値、NULLとMetadata不在の専用タグを使用し、SHA-256を小文字64桁Hexでstartup_provider_boundaries.history_fingerprintへ保存する。
+正式仕様は[正本D-04](../technology-stack.md#pr-c-c-impl-5b4-d04)、物理保存先は[正式統合DDL](../technology-stack.md#pr-c-c-impl-5b4-boundary-final-ddl)に一元化する。PR #52の基準DDLは保持するが、実装・Schema Validator・明示v2→v3の最終対象はD-04統合定義とする。
 
-過去値は同BoundaryのSnapshotとcutoffから再構成し、現在Metadataに置換しない。cutoffより後の行を含めず、Snapshot / cutoff / 履歴行の不整合・再現不能はFail Closed。UNPROVISIONEDとPROVISIONED / 0を区別する。Hashは外部Sender不在・実HTTP回数・Provider計上完了の証明ではない。
+- Snapshot・Fingerprintの追加3カラムを正式採用：history_status_snapshot、initialized_at_ms_snapshot、history_fingerprint。UNPROVISIONEDはSnapshot2項目NULL・Digest必須、PROVISIONED / 0はSnapshot必須。provider_key・cutoff_sequence・既存PK / FK / CHECKを再利用する。
+- quota-history-v1 / SHA-256、TypeTag 1バイト + Valueバイト長の4バイト符号なしBig Endian + Value。STRING=0x01、INTEGER=0x02、NULL=0x03、METADATA_ABSENT=0x04、COUNT=0x05。NULL / ABSENTはLength=0でタグを区別する。
+- PROVISIONEDはVersion→provider_key→history_status→initialized_at_ms→cutoff時点last_sequence→COUNT→sequence昇順の各行(sequence→reserved_at_ms)。UNPROVISIONEDはVersion→METADATA_ABSENT→COUNT 0でMetadata4項目・履歴行を出力しない。
+- UTF-8・Unicode正規化なし、整数とCOUNTは共通安全整数範囲の非負10進ASCII。ゼロは0、先頭ゼロ・プラス・小数点・IEEE 754バイナリを使用しない。区切り文字・改行を挿入せず、件数と実符号化行数を一致させる。
+- 小文字64桁HexをBoundaryへ保存し、過去Snapshotとcutoffから再計算する。現在Metadataを代用せず、履歴欠落・不整合・再現不能・不一致・Commit unknownはFail Closed。Hashは外部Sender不在・実HTTP回数の証明ではない。
 
-未指定：型タグの具体バイト値・幅、NULL / Metadata不在の長さ・値表現、Metadataグループ・件数の符号化対応、Snapshotの物理カラム構成・型・制約、history_fingerprintの具体DDL。PR #52のDDLにはこれらが未反映であり、保存要件の追加承認をDDL実装完了としない。独立ベクトルの検証前に相互運用性を保証しない。
+正本に提示されたPROVISIONED・履歴0件（p / ACTIVE / initialized 0 / cutoff 0）のバイト列を掲載した。後続で独立ベクトルとして照合し、UNPROVISIONEDとConsumption 1件も作成・検証対象とする。今回期待Digestの算出・テストコード・実行結果を追加せず、設計確定と検証未実施を区別する。
 
 ### R55-01〜04のレビュー対応
 
 | 指摘   | 対応と状態                                                                                                                                                  | 既存H54との対応（未実施）                                                                    |
 | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| R55-01 | 正本にBoundary Tableへ追加する3カラム・制約断片の最小案を提示。未承認・物理DDL確定は保留。既存4 Table DDLは変更なし                                         | H54-01・19〜21・24・27。Snapshot / cutoff / FingerprintをAtomic保存し不在と0件を区別する必要 |
+| R55-01 | 3カラムと分岐CHECKを正式採用し、D-04に完全なCREATE TABLEを掲載。PR #52の基準DDLは保持、実装は正式統合定義を参照                                             | H54-01・19〜21・24・27。Snapshot / cutoff / FingerprintをAtomic保存し不在と0件を区別する必要 |
 | R55-02 | 暗号学的乱数32バイト、初期5分の単調時計期限、Processメモリのみ、再発行失効、approve検証試行時消費・失敗後再利用不可、7拘束項目、CLI stdin優先・Secret非監査 | H54-05・22・23。期限、再発行、検証失敗後再利用、境界 / diagnosisRevision不一致を実装時に確認 |
 | R55-03 | ISOLATED維持+Token失効、APPROVED_WAITING / REVALIDATING→ISOLATED、RECOVEREDは拒否。RECOVERED確定と直列化し旧結果の復帰を防止                                | H54-15〜17・22・28。cancelはSUSPENDEDの代用やQuota削除、HTTP取消し完了保証ではない           |
 | R55-04 | Startup Commitだけで待機開始せず、固定履歴境界・単調時計連続性・Window別開始時点を要求。失効時は該当待機未完了。管理者25時間隔離は正当なapprove後に独立開始 | H54-01〜06・09・25・37。各証拠不足と失効を実装時に確認                                       |
 
-R55-01の最小案はhistory_status_snapshot / initialized_at_ms_snapshot / history_fingerprintの3カラムで、provider_keyとcutoff_sequenceは既存列を使う。UNPROVISIONEDはSnapshot2項目NULL、PROVISIONED / 0はSnapshot必須とする分岐制約と、両状態に小文字Hex Digest必須を提案する。DDL・カラム名・型・制約はすべて未承認であり、SQL提案断片は[正本D-04](../technology-stack.md#pr-c-c-impl-5b4-d04)に一元化する。
-
-承認後は明示v2→v3のTable作成へ組み込み、既存6 Table・Quota履歴を維持する案である。Gen 1ではBoundaryなし、Gen 2で実Snapshotを保存する。旧v3適用DBが存在すれば別途明示対応の確認が必要で、過去Metadata推測Backfill・自動修復を許可しない。提案の採否、分岐表現・Timestamp制約分担、未指定タグ値等は承認待ち。今回Migration・SQLite実行は行わない。
+R55-01とD04-R05の追加承認により、3カラム・制約と符号化のタグ・長さ・順序は確定済み。明示v2→v3で統合Tableを作成し、Gen 1でBoundaryなし、Gen 2からSnapshot・cutoff・FingerprintをAtomic保存する。v2の既存6 Table・Quota履歴を維持し、自動修復・過去Metadata推測Backfillは行わない。旧基準v3適用DBが存在する場合の明示対応は別途確認する。今回DB / Migrationは未操作。
 
 ### 技術検証（未実施）
 
@@ -205,13 +207,13 @@ R55-01の最小案はhistory_status_snapshot / initialized_at_ms_snapshot / hist
 - Fingerprint独立テストベクトルと過去Snapshot / cutoff再計算。
 - 既存Quota Guardと新History Trustの結合、Tx-Q内のTrust再評価。
 
-合意済みU-01〜U-03・D04-R01〜R07は採用方針として確定する。一方、上記未指定の相互運用仕様・物理DDLと技術検証が残るため、D-04全体が実装着手に必要な細部まで完全確定・検証済みとは報告しない。新しいTable・管理コマンド・管理Serviceは追加しない。
+U-01〜U-03・D04-R01〜R07、R55-01の統合DDLとD04-R05のバイト列仕様は設計確定。相互運用性の独立ベクトル・実装結合・実機検証は未実施であり、設計確定をPASS・実装完了とは扱わない。新しいTable・管理コマンド・管理Serviceは追加しない。
 
 ## 実装前の要確認事項と保証境界
 
 - **D-01〜D-03で解消した未決扱い**：4 Table DDL、lifecycle_key=1、Generationの+1・上限、Startup親子Atomicityと全ConsumptionのTx内検証案A、F-01後Runtime Cutoff、Range複合FK・永続境界とRuntime証拠の分離・再開案Aは確定済み。DDL未指定・Generation未定義という旧記述は適用しない。実装・テストは未完了。
 - **DDLとBackend検証の境界**：PROVISIONED分岐のIS NOT NULL追加はChatレビューで承認済み・反映済み。PROVISIONED / NULLをDDLのCHECKでも拒否し、BackendでもProvider状態・cutoff整数範囲・Metadata / Consumption一致を独立検証する。DDL成立だけでStartup履歴の完全性を証明しない。上表のH54対応へ反映したが、NULL拒否の実行テストは未実施でありPASSとは扱わない。
-- **D-04と実装詳細**：U-01〜U-03・D04-R01〜R07とFingerprint承認範囲は上記に反映した。未指定の型タグ値・Snapshot物理DDL、Token実装、具体API・型、Runtime証拠管理、追加テスト実装は後続へ残す。既存Guard / Trust Monitorは新Interface未対応であり、固定trueで迂回しない。
+- **D-04と実装詳細**：U-01〜U-03・D04-R01〜R07とFingerprint承認範囲は上記に反映した。型タグ値・Snapshot統合DDLは追加承認済み。Token実装、具体API・型、Runtime証拠管理、追加テスト実装と独立ベクトル検証は後続へ残す。既存Guard / Trust Monitorは新Interface未対応であり、固定trueで迂回しない。
 - **Shutdown開始余裕**：R-03のB_cleanはPi 5実機検証後に決定。単調時計Deadline Gateの具体配線・計測を確認し、B_cleanを同期COMMITの完了保証としない。
 - **管理操作**：復旧4状態、UDS管理者認可、cancelとSUSPENDEDの分離は採用済み。Tokenの32バイト・初期5分単調期限・消費と再発行失効、7拘束項目、cancel遷移と直列化は採用済み・実装試験未実施。UDS配置・所有権・Peer Credentials APIは未検証。既存管理停止／ResumeとHistory復帰承認を混同しない。
 - **Sleep / 時刻**：systemd Sleep抑止・監視・Suspend検出の具体方式とPi単調時計の実挙動は未検証。観測周期だけでSuspend完全検出とはしない。Clock Trust本番確認・RTC-only許可を今回新たに固定しない。
