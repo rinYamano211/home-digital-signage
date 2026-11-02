@@ -449,7 +449,12 @@ linux(
     );
     expect(await job.done, job.output()).toBe(0);
     expect(job.output()).toContain("sidecars_checked");
-    await backend(dir);
+    const upgrade = command(dir, "migrate-v3", {
+      SIGNAGE_V3_UPGRADE_ACK: "backup-verified-incompatible-rollback-accepted",
+    });
+    expect(await upgrade.done, upgrade.output()).toBe(0);
+    const running = await backend(dir);
+    expect(running.output()).toContain('"state":"HEALTHY"');
     for (const suffix of ["", "-wal", "-shm"]) {
       const stat = await lstat(join(dir, "signage.db" + suffix));
       expect(stat.mode & 0o7777).toBe(0o600);

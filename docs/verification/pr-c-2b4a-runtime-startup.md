@@ -69,7 +69,7 @@ Close成功時だけdatabase_closedを記録する。Close例外はFastify Close
 - Open前 / Open中 / Startup直前 / 同期Startup直後・Boot取得 / 状態ログの同期再入時のShutdown、Close所有権、Close失敗、Listen失敗、10秒期限・Listener解除。
 - 実SQLiteのCommit unknown前後で成功不採用・1回試行・Generationの保存有無を検証。
 - Linux：本番v3再起動・v2無変更、SIGTERM / SIGINTをAtomic Startup中にQueueしてListenしないこと、EX解放。
-- 既存Linuxの正常Lifetime・Listen失敗・取得後Shutdown・Timeout試験は明示的v3準備へ適合。v1→v2明示Migrationのデータ保持は維持し、v2本番起動はBLOCKEDであることを確認。旧「v3通常起動拒否」の期待は今回採用したGen 2 Startupへ更新する。
+- 既存Linuxの正常Lifetime・Listen失敗・取得後Shutdown・Timeout・DB / WAL / SHM権限試験は明示的v3準備へ適合。v1→v2明示Migrationのデータ保持は維持し、v2本番起動はBLOCKEDであることを確認。旧「v3通常起動拒否」の期待は今回採用したGen 2 Startupへ更新する。
 
 ローカル全体：1,084 PASS・Linux専用56 Skip（計1,140件）。Lint / Format Check / Type Check / Backend Build / git diff --check成功。Linux CIの実測結果はPR本文に記録する。
 
