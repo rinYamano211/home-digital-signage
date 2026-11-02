@@ -628,7 +628,14 @@
         </label>
         <label
           >表示時間（秒）
-          <input id="c-sec" type="number" min="3" max="60" step="1" value="8" />
+          <input
+            id="c-sec"
+            type="number"
+            min="3"
+            max="60"
+            step="1"
+            value="10"
+          />
         </label>
         <label
           >操作
@@ -738,7 +745,7 @@
           weekly: "ok",
           sync: "ok",
           anim: "slide",
-          sec: 8,
+          sec: 10,
         };
         let order = ["S", "W", "K"],
           idx = 0,
@@ -1019,7 +1026,7 @@
           }),
         );
         $("c-sec").addEventListener("change", (e) => {
-          st.sec = Math.min(60, Math.max(3, Math.round(+e.target.value || 8)));
+          st.sec = Math.min(60, Math.max(3, Math.round(+e.target.value || 10)));
           e.target.value = st.sec;
           restartTimer();
         });
