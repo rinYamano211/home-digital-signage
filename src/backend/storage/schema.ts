@@ -220,8 +220,15 @@ export function validateSchema(
   }
 }
 
+export interface LifecycleMarker {
+  readonly state: "RUNNING" | "CLEAN";
+  readonly bootId: string;
+  readonly generation: number;
+}
 /** Marker validity is not Startup evidence, History Trust or send permission. */
-export function validateLifecycleMarker(db: Database.Database): void {
+export function validateLifecycleMarker(
+  db: Database.Database,
+): LifecycleMarker {
   const rows = db
     .prepare(
       "SELECT lifecycle_key,state,boot_id,generation FROM backend_lifecycle",
@@ -245,4 +252,9 @@ export function validateLifecycleMarker(db: Database.Database): void {
     r.generation > BigInt(Number.MAX_SAFE_INTEGER)
   )
     throw new SchemaError();
+  return Object.freeze({
+    state: r.state as "RUNNING" | "CLEAN",
+    bootId: r.boot_id,
+    generation: Number(r.generation),
+  });
 }

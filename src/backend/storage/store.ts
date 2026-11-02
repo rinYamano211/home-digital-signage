@@ -3,7 +3,12 @@ import type { ExclusiveLock } from "./lock.js";
 import { storagePaths, validateDatabaseFiles } from "./paths.js";
 import { migrate } from "./migrations.js";
 import { QuotaRepository } from "./quota-repository.js";
-import { enableForeignKeys } from "./schema.js";
+import {
+  LifecycleRepository,
+  type LifecycleReadResult,
+} from "./lifecycle-repository.js";
+import { connectionCoordination } from "./connection-coordination.js";
+import { enableForeignKeys, validateSchema } from "./schema.js";
 import { SchemaError } from "./errors.js";
 import { PublishedStateRepository } from "./published-state-repository.js";
 import { AcquisitionControlRepository } from "./acquisition-control-repository.js";
@@ -20,6 +25,11 @@ export function configureDatabase(db: Database.Database, version: 2 | 3 = 2) {
     db.pragma("wal_autocheckpoint", { simple: true }) !== 1000
   )
     throw new SchemaError();
+}
+export interface StartupStoreAccess {
+  readonly startupComplete: false;
+  readonly lifecycle: Readonly<{ read(): LifecycleReadResult }>;
+  close(): void;
 }
 export class BackendStore {
   readonly publishedStates: PublishedStateRepository;
@@ -50,6 +60,47 @@ export class BackendStore {
     } catch (error) {
       db.close();
       throw error;
+    }
+  }
+  /** Explicit restricted v3 connection; not wired into startBackend().
+   * No Quota/HTTP/Control writer or raw Connection escapes before Startup.
+   */
+  static openV3ForStartup(lock: ExclusiveLock): StartupStoreAccess {
+    lock.assertHeld();
+    validateDatabaseFiles(lock.directory);
+    const db = new Database(storagePaths(lock.directory).database, {
+      fileMustExist: true,
+      timeout: 5000,
+    });
+    const c = connectionCoordination(db);
+    let ownsBusy = false;
+    try {
+      if (c.busy)
+        throw Object.assign(new Error("Connection busy"), {
+          code: "SQLITE_BUSY",
+        });
+      if (c.blocked || c.connectionUnresolved || db.inTransaction !== false)
+        throw new SchemaError();
+      c.busy = true;
+      ownsBusy = true;
+      // Reject old/unknown versions before any configuration; never migrate.
+      if (db.pragma("user_version", { simple: true }) !== 3)
+        throw new SchemaError();
+      configureDatabase(db, 3);
+      validateSchema(db, 3);
+      validateDatabaseFiles(lock.directory);
+      const owner = new BackendStore(db);
+      const lifecycle = new LifecycleRepository(db);
+      return Object.freeze({
+        startupComplete: false as const,
+        lifecycle: Object.freeze({ read: lifecycle.read.bind(lifecycle) }),
+        close: () => owner.close(),
+      });
+    } catch (error) {
+      db.close();
+      throw error;
+    } finally {
+      if (ownsBusy) c.busy = false;
     }
   }
   close() {
