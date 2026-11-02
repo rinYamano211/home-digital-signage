@@ -106,7 +106,7 @@ Schema v2→v3とNORMAL→FULLは今回明示された将来設計の変更点�
 | H54-28 | 管理停止は独立維持し、DB Recovery・隔離完了・F-01完了だけではResumeしない。PR-D / PR-E境界維持                              | ADM、REC、F03条件              |
 | H54-29 | CLEAN Commit成功・Rollback確定を確認。RUNNING→CLEANは今回Boot ID・Generationで拘束し、更新1件のみ成功候補                   | H54-18、PR-B結果不明保護       |
 | H54-30 | CLEAN Commit unknownでDB上CLEANの場合、今回正常終了は未確定だが次回同一Boot・全安全条件成立なら自動復帰候補                 | R-01、REC-01                   |
-| H54-31 | CLEAN Commit unknownでDB上RUNNING、またはCLEANでも異なるBootなら管理者復帰。DB不正・欠損はFail Closed                       | R-01、H54-15・16               |
+| H54-31 | 前回RUNNING・OS Boot変更だけでは管理者承認・独立25時間隔離を必須にしない。Schema / Lifecycle / Boundary構造、必要なFingerprint照合、全Consumptionの構造・Sequence・完全性、保守的計上、Clock Trust、独立停止理由なし、予約Tx内Quota Guardがすべて成立すれば自動復旧候補。Startup成功と送信許可は別でScheduler / Tx-Q / Send Gateを維持。不整合・証拠不足は送信停止・必要に応じ手動対応、Clock単独は既存Clock Recoveryで自動回復候補。重大不整合の例外手動経路を維持 | R-01、H54-15・16 |
 | H54-32 | CLEAN + 同一BootでもHistory / Quota / Clock / Lifecycle条件不足では自動復帰・HTTP禁止。Startup unknownで証拠不採用          | R-01、H54-01                   |
 | H54-33 | Clock異常2回以上の非重複範囲を保持。後発範囲へ先発待機を流用せず、各窓で独立に全件計上・除外                                | R-02、H54-09                   |
 | H54-34 | Tx-Q CommitとClock異常検出が競合してもDrain後境界を確定。Drain / 境界確定失敗はFail Closed                                  | R-02、H54-08、TQ               |
@@ -215,7 +215,7 @@ U-01〜U-03・D04-R01〜R07、R55-01の統合DDLとD04-R05のバイト列仕様�
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1〜2：基本方針・通常クラッシュ | 構造・Fingerprint一致・履歴整合・保守計上・Clock・独立停止なし・予約時Guardの全条件で承認なし自動復旧候補。正常Startupと送信許可は別。重大不整合は停止・診断・手動対応 |
 | 3：DDL一本化                   | PR #55内の旧Boundary CREATE TABLE掲載を正本リンクへ置換。完全な定義はD-04統合DDL1件だけ。PR #52は変更しない                                                            |
-| 4：Fingerprint範囲             | 直前Boundaryのprefix Hash + 全Consumption構造 / Sequence + cutoff後全件計上を最小補完案として提示。保証範囲の差があるため照合縮小は保留                                |
+| 4：Fingerprint範囲 | 案Aを正式採用。直前Boundaryのprefix Hash + 全Consumption構造 / Sequence / Metadata整合 + cutoff後の保守計上。古いBoundaryごとの再Hashは必須とせず、保証上の限界を明記 |
 | 5：Suspend                     | systemd等のSleep / Suspend抑止・常時稼働を前提とし、複雑な独自監視を新設しない。連続性不明は待機未完了、再起動証拠復元なし                                             |
 | 6：状態名                      | 旧Monitor、新History、DB history_status、Provider管理停止、Recovery状態を別責務として表に整理。既存値の改名なし                                                        |
 | 7：CLEAN                       | History TRUSTED・未完了Rangeなし・必要履歴 / Boundary検証・隔離未完了でないこと等を要求。CONSERVATIVEはCLEAN許可ではない                                               |
@@ -225,13 +225,13 @@ U-01〜U-03・D04-R01〜R07、R55-01の統合DDLとD04-R05のバイト列仕様�
 
 通常復旧では前回RUNNINGの旧履歴をPlan Dで保守計上し、1分 / 65分 / 25時間の各待機完了前は全件計上したうえでQuota Guardを確認する。管理者独立25時間隔離は毎回の通常クラッシュに課さず、重大不整合の例外経路で維持する。Clock単独の問題は送信停止を維持しつつ既存Clock Recoveryで再評価し、無条件に恒久隔離へ昇格させない。APIキーを他Senderで使わないことは運用前提で、Hashが技術的に証明する事実ではない。
 
-### 実装前の判断保留
+### 判断事項の確定結果と対象外事項
 
-1. **H54-31と新MVP方針の衝突**：既存H54-31はRUNNINGまたは異Bootで管理者復帰とする旧期待結果である。ID・本文の変更禁止に従いそのまま保持した。新MVP条件では自動復旧候補にできるため、期待結果の変更・対応表の採用を別途承認する必要がある。旧H54を黙って読み替えたり、新方針の試験PASSとしたりしない。
-2. **Fingerprint照合縮小の保証範囲**：直前BoundaryのcutoffまでのConsumptionは1回のHashで覆えるが、より古いBoundary Snapshot / Digest自体の改変検出と、直前cutoff後の形式を保った改変のHash検出は別である。後者は旧全世代方式でもcutoff外なら覆えない。候補Aは直前prefix照合 + 全件構造 / Sequence + cutoff後全件計上に保証を限定してMVPで受容する方式、候補Bは既存の過去Boundary検証範囲を維持する方式。新Table / 複雑なキャッシュを作らず、今回Aを独断採用せず照合範囲縮小を保留する。異常な最新Boundaryを飛ばすFallbackは行わない。
-3. **既存v2の遡及整数制約**：既存4 State系TableとQuota2 TableのSQL制約追加は互換性・Migrationに影響する。今回新v3側の整数検証と既存Backend検証を整理し、v2 DDLの変更は実施しない。
+1. **H54-31の整合解消**：追加承認によりH54-31の期待結果をMVPの条件付き自動復旧へ正式変更した。RUNNING / OS Boot変更だけでは管理者承認・独立25時間隔離を要求しない。他のH54 ID・本文は維持する。実装・受入試験は未実施。
+2. **Fingerprint案Aを正式採用**：Startup親子・Lifecycle構造を検証し、Providerごとの直前BoundaryのSnapshot / cutoffまでを再Hashする。全Consumptionの構造・Sequence連続性・完全性・Metadata整合性とcutoff後の保守計上、予約Tx内Quota Guardは維持する。異常な直前Boundaryを飛ばすFallbackを禁止する。古いBoundary Snapshot / Digest自体の改変は網羅検出せず、直前cutoff後のConsumptionはHash対象外として構造検証・保守計上で扱う。全世代×全Consumptionの再Hashは行わない。外部Sender不在・実HTTP回数の証明ではない。
+3. **既存v2の遡及整数制約は対象外**：既存6 Table DDLは現状維持。互換性・Migration判断を伴う追加制約は今回採用せず、新v3側の整数制約と既存Backend検証を維持する。
 
-本PRの承認済み整理は文書へ反映するが、上記不整合・判断は未解決として報告する。受入実装前に解消が必要。PR #52のBranch変更・Merge・Rebaseは不要で、行っていない。
+上記2点の判断保留は解消したが、実装・テスト・技術検証は未完了である。独立Fingerprintベクトル、全件検証とQuota Guardの結合、通常復旧・CLEAN・例外手動経路の受入検証は後続で実施する。PR #52のBranch変更・Merge・Rebaseは不要で、行っていない。
 
 ## 実装前の要確認事項と保証境界
 

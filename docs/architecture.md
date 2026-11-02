@@ -1614,7 +1614,7 @@ BackupはWALと整合する方法で取得し、作成後に整合性確認す�
 Backup実行時刻・Path・Scheduler・再試行・復元コマンド、Lock / Checkpoint異常の詳細運用は未決定である。
 
 
-個人利用MVPの再起動時は、前回RUNNINGやOS Boot変更だけで管理者承認を必須にせず、構造・履歴・Fingerprint・Clock・保守的Quota・独立停止を検証して自動復旧候補とする。重大不整合は例外的な手動復旧へ分離する。通常復旧と送信許可・CLEAN適格性は別であり、詳細と受入整合の保留は[設計正本MVP方針](technology-stack.md#pr-c-c-impl-5b4-mvp-policy)に従う。
+個人利用MVPの再起動時は、前回RUNNINGやOS Boot変更だけで管理者承認を必須にせず、構造・履歴・Fingerprint・Clock・保守的Quota・独立停止を検証して自動復旧候補とする。重大不整合は例外的な手動復旧へ分離する。通常復旧と送信許可・CLEAN適格性は別であり、詳細と正式変更したH54-31の期待結果は[設計正本MVP方針](technology-stack.md#pr-c-c-impl-5b4-mvp-policy)に従う。
 
 ### 16.8 SQLite初期化とBackend Lifecycle
 

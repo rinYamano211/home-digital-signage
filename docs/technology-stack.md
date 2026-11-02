@@ -3033,7 +3033,7 @@ Fingerprint不一致、履歴欠落・破損・分類不能、DB / Lifecycle / B
 
 RecoveryAdminService・Token・UDS・復旧4状態と独立25時間隔離は、重大不整合に対する例外的な手動復旧経路として維持する。手動承認・待機だけで不整合を修復したとはしない。MVPは同じProvider APIキーを本サイネージ以外のSenderで使わない運用を前提とし、Fingerprintだけでその不在を証明しない。
 
-既存H54-31はRUNNING / Boot変更を理由に管理者復帰とする旧期待結果で、新方針と矛盾する。依頼に従い本文・IDは変更せず、[受入条件の整合保留](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の判断保留)に記録する。試験を実装する前に期待結果の変更承認が必要であり、旧条件を勝手に新しい意味へ読み替えない。
+H54-31は追加承認により本MVP方針へ正式変更した。前回RUNNING・OS Boot変更だけで管理者復旧を要求せず、上記の全条件を満たす自動復旧候補を期待結果とする。受入条件の変更は実装・試験PASSを意味しない。
 
 **P0-1：Startup境界と2系統の待機**
 
@@ -3360,11 +3360,19 @@ Schema v2の6 Tableを維持し、D-01〜D-03のbackend_lifecycle / startup_gene
 
 Startupは前回Lifecycleだけでなく過去Startup Boundaryと対応履歴を検証してから、今回RUNNING境界を保存する。過去不整合を新Boundaryの上書き・新Generation採番で解消しない（D04-R01）。Startup Generation・全Provider Boundary・Lifecycle更新をD-02の単一TransactionでAtomic確定する。Schema・履歴不整合、Commit unknownはFail Closed。境界Commit成功は送信許可でも過去Recovery制約解除でもなく、Post-CommitにClock・History・Quota・Recovery・管理停止を独立評価する（D04-R04）。
 
-**Fingerprint照合範囲の縮小は判断保留**
+**Fingerprint照合範囲：案Aを正式採用**
 
-原則を直前の有効Boundary中心へ整理する意図を記録するが、既存の過去Boundary・履歴検証範囲を今回独断で縮小しない。最小補完案は、Providerごとの直前Boundaryのcutoffまでを一度だけHash照合し、全Consumptionの構造・Sequence検証とcutoff後の全件保守計上を併用し、Startup親子の構造検証は維持する方式である。異常な最新Boundaryを飛ばして都合のよい過去Boundaryを選ばない。
+個人利用MVPとして、Startup時のFingerprint再計算は原則Providerごとの直前の有効なStartup Boundaryに限定する。全世代それぞれについて全Consumptionを再Hashしない。D04-R01の過去検証は以下の範囲で行い、今回の境界保存前に確定する。
 
-この案は直前cutoff以前のConsumption改変・欠落を照合できるが、それより古いBoundary Snapshot / Digest自体の改変の網羅検出や、直前cutoff後の正当な形式を保った履歴改変をHashで証明するものではない。後者は既存の全世代Hash照合でもcutoff外なら覆えず、全件計上・構造検証でQuotaを安全側評価する範囲と区別が必要である。全世代×全Consumptionの再計算を避ける代替案として提示するが、保証範囲の整理・採否は[判断保留事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の判断保留)へ残し、新Table・キャッシュを追加しない。
+1. Startup Generationの親子関係・連続性とLifecycleの構造を検証する。
+2. 各Providerの直前Startup Boundaryを特定し、構造と有効性を検証する。異常な直前Boundaryを飛ばして都合のよい古いBoundaryを選択しない。
+3. 直前Boundaryの保存済みMetadata Snapshotとcutoff_sequenceを取得する。現在Metadataで過去値を代用しない。
+4. cutoff_sequence以下のConsumptionをsequence昇順で読み取り、quota-history-v1の確定バイト列でSHA-256を再計算する。UNPROVISIONEDは既定のMetadata不在・COUNT 0を使用し、PROVISIONED / 0と区別する。
+5. 保存済みhistory_fingerprintと照合し、不一致・欠落・再現不能はFail Closedとする。
+6. cutoff後を含むConsumption全件の構造・Sequence連続性・履歴完全性・Metadata整合性をD-02のStartup Transaction内で検証する。
+7. 直前cutoff後のConsumptionも含め、Plan Dと既存Quota Guardで保守的に計上する。新規Quota予約Transaction内の全条件再評価を省略しない。
+
+直前cutoff以前のConsumptionと保存Fingerprintの整合性を検証する一方、より古いBoundary Snapshot / Digest自体の改変を網羅的に検出するものではなく、古いBoundaryごとのFingerprint再計算は必須としない。直前cutoff後のConsumptionは当該Fingerprintの対象外であり、構造・Sequence検証と保守的Quota計上で扱う。形式を保った対象外履歴の改変までHashで検出できるとはしない。外部Sender不在・実HTTP送信回数も証明しない。個人利用MVPとしてこの保証上の限界を理解して案Aを採用し、新Table・カラム・キャッシュ・Versionを追加しない。
 
 **U-01 / D04-R05：履歴Fingerprint**
 
