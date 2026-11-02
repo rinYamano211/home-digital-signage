@@ -28,25 +28,25 @@ PR #51はMerge Commit `96e29396b95a1ea02ee06589331230656ef77fd0`でmainへ反映
 
 以下の名前は説明用の論理段階であり、公開Interfaceや新たな永続列の追加指示ではない。DBのhistory_status、History Trustの論理状態、RuntimeのSTOPPING、Lifecycle Markerは別の状態として扱う。
 
-| 事象・前提                                 | 次の段階・処理                                                 | 送信・証拠への制約                                             |
-| ------------------------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------- |
-| Process開始                                | Gate閉鎖、Startup境界の確定・Trust検証                         | 旧Attempt / Permit / メモリ待機は復活しない                    |
-| Startup境界Commit未確定                    | 安全側停止・照合                                               | cutoffや待機証拠を発行しない                                   |
-| 自動復帰の全条件を確認                     | 保守的な通常Quota評価                                          | 案D待機未完了の旧履歴は各窓に全件計上。強制HTTPなし            |
-| RUNNING、またはCLEAN + 異なるOS Boot       | 管理者承認待ち                                                 | 新規Tx-Q / HTTP禁止、CLEAN禁止                                 |
-| Marker不正・欠損・DB不整合                 | Fail Closed                                                    | 正常なRUNNINGと同一視せず、推測復帰しない                      |
-| 有効Tokenで管理者承認成立                  | 今回Processの25時間隔離開始                                    | 案Dとは別起点・別証拠。CLEAN禁止                               |
-| 隔離完了                                   | 全窓待機・起動境界・DB / Clock / History・キー排他利用の再検証 | 完了時間だけで開放せず、再検証待ちはCLEAN禁止                  |
-| 再検証成功、History復帰                    | 通常判定の候補                                                 | 管理停止等を独立維持。Guard・Tx-Q・Gateを迂回しない            |
-| 壁時計Trustのみ失効                        | Tx-Q / HTTP停止、Drain、影響範囲固定・窓別隔離                 | 単調時計継続なら管理者隔離証拠保持。Clock回復とHistory回復は別 |
-| Drain不能、単調時計継続性不明、Suspend検出 | Fail Closed                                                    | 該当証拠失効。新たな待機証拠を推測発行しない                   |
-| Shutdown開始                               | STOPPING・Gate閉鎖・新規取得禁止・Drain                        | HTTP開始と同じ同期境界で直列化                                 |
-| CanStartCleanTx成立                        | Boot ID・Generation拘束の専用TxでCLEAN更新、正確に1件を要求    | 共有10秒Deadline・B_clean確認後のみ開始                        |
-| Drain済みでもRecovery不適格                | RUNNING維持で安全に終了可能                                    | 次回同一OS BootでもCLEAN経由の隔離迂回を許さない               |
-| CLEAN Commit unknown                       | 今回Processは正常終了未確定、再試行・RUNNING書戻し禁止         | 次回DB上CLEAN + 同一Boot + 全条件成立なら候補                  |
-| Startup Commit unknown                     | 今回起動証拠を採用せずFail Closed                              | CLEANの次回照合と混同しない                                    |
-| Deadline / B_clean不成立                   | CLEAN省略・RUNNING維持、可能なCloseを進める                    | 全体期限は延長しない                                           |
-| CLEAN確定後のClose失敗                     | CLEAN成立とClose失敗を別記録                                   | 安全な終了完了と同一視しない                                   |
+| 事象・前提                                 | 次の段階・処理                                                 | 送信・証拠への制約                                                   |
+| ------------------------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Process開始                                | Gate閉鎖、Startup境界の確定・Trust検証                         | 旧Attempt / Permit / メモリ待機は復活しない                          |
+| Startup境界Commit未確定                    | 安全側停止・照合                                               | cutoffや待機証拠を発行しない                                         |
+| 自動復帰の全条件を確認                     | 保守的な通常Quota評価                                          | 案D待機未完了の旧履歴は各窓に全件計上。強制HTTPなし                  |
+| RUNNING、またはCLEAN + 異なるOS Boot       | MVP自動復旧条件を独立検証                                      | Boot差・通常クラッシュだけで管理者隔離せず、検証後もQuota / Gate判定 |
+| Marker不正・欠損・DB不整合                 | Fail Closed                                                    | 正常なRUNNINGと同一視せず、推測復帰しない                            |
+| 有効Tokenで管理者承認成立                  | 今回Processの25時間隔離開始                                    | 案Dとは別起点・別証拠。CLEAN禁止                                     |
+| 隔離完了                                   | 全窓待機・起動境界・DB / Clock / History・キー排他利用の再検証 | 完了時間だけで開放せず、再検証待ちはCLEAN禁止                        |
+| 再検証成功、History復帰                    | 通常判定の候補                                                 | 管理停止等を独立維持。Guard・Tx-Q・Gateを迂回しない                  |
+| 壁時計Trustのみ失効                        | Tx-Q / HTTP停止、Drain、影響範囲固定・窓別隔離                 | 単調時計継続なら管理者隔離証拠保持。Clock回復とHistory回復は別       |
+| Drain不能、単調時計継続性不明、Suspend検出 | Fail Closed                                                    | 該当証拠失効。新たな待機証拠を推測発行しない                         |
+| Shutdown開始                               | STOPPING・Gate閉鎖・新規取得禁止・Drain                        | HTTP開始と同じ同期境界で直列化                                       |
+| CanStartCleanTx成立                        | Boot ID・Generation拘束の専用TxでCLEAN更新、正確に1件を要求    | 共有10秒Deadline・B_clean確認後のみ開始                              |
+| Drain済みでもRecovery不適格                | RUNNING維持で安全に終了可能                                    | 次回同一OS BootでもCLEAN経由の隔離迂回を許さない                     |
+| CLEAN Commit unknown                       | 今回Processは正常終了未確定、再試行・RUNNING書戻し禁止         | 次回DB上CLEAN + 同一Boot + 全条件成立なら候補                        |
+| Startup Commit unknown                     | 今回起動証拠を採用せずFail Closed                              | CLEANの次回照合と混同しない                                          |
+| Deadline / B_clean不成立                   | CLEAN省略・RUNNING維持、可能なCloseを進める                    | 全体期限は延長しない                                                 |
+| CLEAN確定後のClose失敗                     | CLEAN成立とClose失敗を別記録                                   | 安全な終了完了と同一視しない                                         |
 
 `CanMarkClean = OperationallyDrained AND RecoveryCleanEligible`はStartup / Shutdown / Recoveryの共通不変条件とする。Lifecycle MarkerをHTTP成功フラグにせず、予約永続化・所有処理終了・Recovery適格性を確認する。DB・History構造不整合を待機時間だけで解除しない。
 
@@ -202,12 +202,36 @@ R55-01とD04-R05の追加承認により、3カラム・制約と符号化のタ
 ### 技術検証（未実施）
 
 - UDS Peer Credentials取得とOS権限設定。利用可能なAPI・失敗時の拒否を確認し、ローカル接続だけで認可しない。
-- Suspend検出方式、Pi単調時計の継続性・待機証拠失効。
+- Sleep / Suspend抑止、Pi単調時計の継続性・待機証拠失効。
 - Shutdown B_clean値、同期SQLiteの長時間停止、Pi SQLite耐久性。
 - Fingerprint独立テストベクトルと過去Snapshot / cutoff再計算。
 - 既存Quota Guardと新History Trustの結合、Tx-Q内のTrust再評価。
 
 U-01〜U-03・D04-R01〜R07、R55-01の統合DDLとD04-R05のバイト列仕様は設計確定。相互運用性の独立ベクトル・実装結合・実機検証は未実施であり、設計確定をPASS・実装完了とは扱わない。新しいTable・管理コマンド・管理Serviceは追加しない。
+
+## 個人利用MVP向け整理（設計変更・未実装）
+
+| クロスレビュー項目             | 対応                                                                                                                                                                   |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1〜2：基本方針・通常クラッシュ | 構造・Fingerprint一致・履歴整合・保守計上・Clock・独立停止なし・予約時Guardの全条件で承認なし自動復旧候補。正常Startupと送信許可は別。重大不整合は停止・診断・手動対応 |
+| 3：DDL一本化                   | PR #55内の旧Boundary CREATE TABLE掲載を正本リンクへ置換。完全な定義はD-04統合DDL1件だけ。PR #52は変更しない                                                            |
+| 4：Fingerprint範囲             | 直前Boundaryのprefix Hash + 全Consumption構造 / Sequence + cutoff後全件計上を最小補完案として提示。保証範囲の差があるため照合縮小は保留                                |
+| 5：Suspend                     | systemd等のSleep / Suspend抑止・常時稼働を前提とし、複雑な独自監視を新設しない。連続性不明は待機未完了、再起動証拠復元なし                                             |
+| 6：状態名                      | 旧Monitor、新History、DB history_status、Provider管理停止、Recovery状態を別責務として表に整理。既存値の改名なし                                                        |
+| 7：CLEAN                       | History TRUSTED・未完了Rangeなし・必要履歴 / Boundary検証・隔離未完了でないこと等を要求。CONSERVATIVEはCLEAN許可ではない                                               |
+| 8：diagnosisRevision           | Process内診断Revisionをinspect Tokenへ拘束。承認判断に影響する変化で更新、approve不一致拒否、再起動引継ぎ・DB列なし                                                    |
+| 9：整数                        | v3の非PK / 複合PK INTEGERへtypeof確認を追加。既存v2 DDLは変更せずBackend整数・安全範囲検証を維持。遡及SQL変更は別途承認が必要                                          |
+| 10：実装区分                   | MVP必須、重大不整合時の例外経路、後続実機・運用確認を分類。機能削除・新ID追加・PASS化なし                                                                              |
+
+通常復旧では前回RUNNINGの旧履歴をPlan Dで保守計上し、1分 / 65分 / 25時間の各待機完了前は全件計上したうえでQuota Guardを確認する。管理者独立25時間隔離は毎回の通常クラッシュに課さず、重大不整合の例外経路で維持する。Clock単独の問題は送信停止を維持しつつ既存Clock Recoveryで再評価し、無条件に恒久隔離へ昇格させない。APIキーを他Senderで使わないことは運用前提で、Hashが技術的に証明する事実ではない。
+
+### 実装前の判断保留
+
+1. **H54-31と新MVP方針の衝突**：既存H54-31はRUNNINGまたは異Bootで管理者復帰とする旧期待結果である。ID・本文の変更禁止に従いそのまま保持した。新MVP条件では自動復旧候補にできるため、期待結果の変更・対応表の採用を別途承認する必要がある。旧H54を黙って読み替えたり、新方針の試験PASSとしたりしない。
+2. **Fingerprint照合縮小の保証範囲**：直前BoundaryのcutoffまでのConsumptionは1回のHashで覆えるが、より古いBoundary Snapshot / Digest自体の改変検出と、直前cutoff後の形式を保った改変のHash検出は別である。後者は旧全世代方式でもcutoff外なら覆えない。候補Aは直前prefix照合 + 全件構造 / Sequence + cutoff後全件計上に保証を限定してMVPで受容する方式、候補Bは既存の過去Boundary検証範囲を維持する方式。新Table / 複雑なキャッシュを作らず、今回Aを独断採用せず照合範囲縮小を保留する。異常な最新Boundaryを飛ばすFallbackは行わない。
+3. **既存v2の遡及整数制約**：既存4 State系TableとQuota2 TableのSQL制約追加は互換性・Migrationに影響する。今回新v3側の整数検証と既存Backend検証を整理し、v2 DDLの変更は実施しない。
+
+本PRの承認済み整理は文書へ反映するが、上記不整合・判断は未解決として報告する。受入実装前に解消が必要。PR #52のBranch変更・Merge・Rebaseは不要で、行っていない。
 
 ## 実装前の要確認事項と保証境界
 
@@ -216,6 +240,6 @@ U-01〜U-03・D04-R01〜R07、R55-01の統合DDLとD04-R05のバイト列仕様�
 - **D-04と実装詳細**：U-01〜U-03・D04-R01〜R07とFingerprint承認範囲は上記に反映した。型タグ値・Snapshot統合DDLは追加承認済み。Token実装、具体API・型、Runtime証拠管理、追加テスト実装と独立ベクトル検証は後続へ残す。既存Guard / Trust Monitorは新Interface未対応であり、固定trueで迂回しない。
 - **Shutdown開始余裕**：R-03のB_cleanはPi 5実機検証後に決定。単調時計Deadline Gateの具体配線・計測を確認し、B_cleanを同期COMMITの完了保証としない。
 - **管理操作**：復旧4状態、UDS管理者認可、cancelとSUSPENDEDの分離は採用済み。Tokenの32バイト・初期5分単調期限・消費と再発行失効、7拘束項目、cancel遷移と直列化は採用済み・実装試験未実施。UDS配置・所有権・Peer Credentials APIは未検証。既存管理停止／ResumeとHistory復帰承認を混同しない。
-- **Sleep / 時刻**：systemd Sleep抑止・監視・Suspend検出の具体方式とPi単調時計の実挙動は未検証。観測周期だけでSuspend完全検出とはしない。Clock Trust本番確認・RTC-only許可を今回新たに固定しない。
+- **Sleep / 時刻**：systemd等のSleep / Suspend抑止・常時稼働運用を採用し、複雑な独自検出機構は追加しない。OS設定とPi単調時計は未検証。抑止だけで連続性を証明せず、不明時は該当待機未完了。Clock本番確認・RTC-only許可は新たに固定しない。
 - **耐久性・外部前提**：WAL + FULLでも電源断・microSD・管理外Restoreの完全検出／耐久保証はしない。Provider計上遅延上限不明はレベルB受容。外部Sender不在は管理者確認の前提であって技術的証明ではない。
 - **C-Impl-5B-5前の確認**：上記未指定事項をレビューし、H54対応を既存テストへ割り当て、実Startup / Shutdown / Gate / Quotaの結合範囲を確定してから実装する。今回実装・テスト実行・Migration・実Provider通信・実機試験は行っていない。
