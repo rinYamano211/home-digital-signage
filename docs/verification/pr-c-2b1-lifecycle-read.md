@@ -64,3 +64,25 @@ readは共有busyを取得してBEGIN → Schema / Marker検証 → COMMIT → T
 - UI・共通正本・DDL・Migration・依存・Workflowは変更しない。実運用DB・Deploy・Pi実機へ操作しない。
 
 Issue #16はOpen、PRは未Merge・通常Chatでのレビュー待ち。今回の完了は接続・読取基盤に限る。
+
+## R59-01：読取Transactionの終了とConnection再利用
+
+D-02のStartup Transactionは書込みと証拠発行を伴い、Commit unknownでは今回Startup証拠を採用しない。本Repository.read()は書込み・証拠発行を行わず、BEGIN / COMMITの例外ではMarkerを返さない。この読取失敗後の新しいreadを、Startup書込みの再実行・成功扱い・送信許可と混同しない。readWithinTransaction()は引き続きTransactionの開始・終了を所有せず、後続Startup所有者がD-02の規則を適用する。
+
+既存v2 Control / Cache Repositoryと同じく、inTransactionを確認し、必要ならRollback後に実際の終了状態を再確認する。一方、inTransaction=falseだけではConnectionの健全性を証明しない。今回、ROLLBACK例外も既存classifyDatabaseErrorの対象として保持し、元例外またはcleanup例外がL3 / L4なら、終了済みでも共有blockedとして再利用を拒否する。既存v2 Repository・Migration本体の振る舞いは変更しない。
+
+| 状況                                                                                                                                     | 現在のread結果                                | 同じConnectionでの後続read                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------- |
+| BEGIN拒否・COMMIT前例外でTransaction終了を確認。必要なRollbackも実状態で終了確認でき、元例外とcleanup例外が既存DEGRADED（L1 / L2）の範囲 | database_error。Markerなし                    | 自動Retryはしない。後述の全条件を満たす新しいreadのみ評価可能   |
+| COMMIT成功後の例外でinTransaction=falseを確認、元例外が一時SQL異常                                                                       | database_error。取得済みMarkerは不採用        | 新しいreadで最初から検証。古いMarkerや成功結果を再利用しない    |
+| ROLLBACKが例外を投げたが終了を確認できた                                                                                                 | database_error。Markerなし                    | 例外も分類。L1 / L2だけなら再検証候補、L3 / L4ならblockedで禁止 |
+| 元例外またはcleanup例外がL3 / L4                                                                                                         | database_error。共有blocked                   | Transaction終了済みでも禁止。connectionUnresolvedとは別の理由   |
+| ROLLBACK未終了、Transaction状態が取得不能、所有不明の既存Transaction                                                                     | database_error。connectionUnresolvedとblocked | getterが後で回復しても自動解除しない。新Transaction禁止         |
+
+再利用候補となるのは、読取Transactionの終了を確認でき、観測した例外が既存分類上の非致命的な範囲であり、共有Coordinationに停止理由がない場合だけである。次回readはConnectionがopenであること・busy所有者なし・blockedなし・connectionUnresolvedなしを確認して、新しい読取Transaction内でWAL / FULL / FK・Schema / SQLite整合性・Markerを再検証する。条件不足・確認不能ならMarkerを返さない。これはStorageやOSが将来も健全であるという一般保証ではなく、既存契約に従った新しい読取の評価条件である。
+
+busyは現在の同期操作の所有権であり、finallyで自分の所有分だけを解放する。busy=falseを「正常復旧」の印にしない。connectionUnresolvedはTransaction終了を確定できないこと、blockedは既知の致命的異常・健全性不明による停止を表す。終了済み・blocked・connectionUnresolved=falseは成立する。いずれも今回自動解除するAPIは追加しない。
+
+既存BEGIN / COMMIT前後・Rollback不能テストに、同一Connectionでの次回読取、fresh Marker再検証、共有保護の確認を追加した。追加13件では、Rollback終了後通知例外のL1 / L3 / L4、Commit前後の致命的例外、Transaction状態取得不能3位置、BEGIN実行後例外、後続read時のFULL / FK再検証を確認する。致命的・未解決時は別Lifecycle RepositoryとPR-Bの後続操作もDBへ進まないことを確認した。状態取得失敗はnative getterを改変せず、テスト専用Proxyで実SQLiteの操作を維持して注入する。
+
+最新の全体品質・Linux CI結果はPR #59本文へ記録する。UI・共通正本・v2 Repository・Migration・Startup Generation・送信統合は変更しない。

@@ -191,7 +191,17 @@ test.each(["BEGIN", "COMMIT"])(
       reason: "temporary_sql",
     });
     expect(f.db.inTransaction).toBe(false);
-    expect(connectionCoordination(f.db).busy).toBe(false);
+    expect(connectionCoordination(f.db)).toEqual({
+      busy: false,
+      connectionUnresolved: false,
+    });
+    vi.mocked(f.db.exec).mockRestore();
+    f.db.exec("UPDATE backend_lifecycle SET state='CLEAN'");
+    expect(f.repo.read()).toMatchObject({
+      outcome: "found",
+      marker: { state: "CLEAN" },
+    });
+    expect(new LifecycleRepository(f.db).read().outcome).toBe("found");
   },
 );
 test("H54-21 COMMIT after-success throw never returns the cached marker", () => {
@@ -207,6 +217,16 @@ test("H54-21 COMMIT after-success throw never returns the cached marker", () => 
     layer: "L1",
   });
   expect(f.db.inTransaction).toBe(false);
+  expect(connectionCoordination(f.db)).toEqual({
+    busy: false,
+    connectionUnresolved: false,
+  });
+  vi.mocked(f.db.exec).mockRestore();
+  f.db.exec("UPDATE backend_lifecycle SET state='CLEAN'");
+  expect(f.repo.read()).toMatchObject({
+    outcome: "found",
+    marker: { state: "CLEAN" },
+  });
 });
 test("H54-21 unresolved rollback protects shared repositories and prohibits retry", () => {
   const f = fixture();
@@ -222,6 +242,13 @@ test("H54-21 unresolved rollback protects shared repositories and prohibits retr
   expect(connectionCoordination(f.db).connectionUnresolved).toBe(true);
   const calls = vi.mocked(f.db.exec).mock.calls.length;
   expect(f.repo.read().outcome).toBe("database_error");
+  expect(vi.mocked(f.db.exec).mock.calls).toHaveLength(calls);
+  expect(connectionCoordination(f.db).busy).toBe(false);
+  expect(connectionCoordination(f.db).blocked).toBeDefined();
+  expect(new LifecycleRepository(f.db).read().outcome).toBe("database_error");
+  expect(
+    new PublishedStateRepository(f.db).save("schedule", "{}").outcome,
+  ).toBe("unknown");
   expect(vi.mocked(f.db.exec).mock.calls).toHaveLength(calls);
 });
 test("unknown SQLite-path exception is sanitized and blocked", () => {
@@ -420,3 +447,170 @@ test("Lifecycle reader preserves the largest safe Generation without advancing i
     },
   });
 });
+
+test.each([
+  { code: "SQLITE_BUSY", layer: "L1", reusable: true },
+  { code: "SQLITE_CORRUPT", layer: "L3", reusable: false },
+  { code: "SQLITE_IOERR", layer: "L4", reusable: false },
+])(
+  "R59-01 ROLLBACK ended but notification $code controls health independently",
+  ({ code, layer, reusable }) => {
+    const f = fixture();
+    const original = f.db.exec.bind(f.db);
+    const exec = vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+      if (sql === "COMMIT") throw busy();
+      const result = original(sql);
+      if (sql === "ROLLBACK")
+        throw Object.assign(new Error("synthetic cleanup secret"), { code });
+      return result;
+    });
+    const read = f.repo.read();
+    expect(read).toMatchObject({ outcome: "database_error", layer });
+    expect(read).not.toHaveProperty("marker");
+    expect(JSON.stringify(read)).not.toContain("secret");
+    expect(f.db.inTransaction).toBe(false);
+    expect(connectionCoordination(f.db).connectionUnresolved).toBe(false);
+    expect(connectionCoordination(f.db).busy).toBe(false);
+    exec.mockRestore();
+    if (reusable) {
+      expect(connectionCoordination(f.db).blocked).toBeUndefined();
+      expect(f.repo.read().outcome).toBe("found");
+      expect(new LifecycleRepository(f.db).read().outcome).toBe("found");
+    } else {
+      expect(connectionCoordination(f.db).blocked).toBeDefined();
+      const sql = vi.spyOn(f.db, "exec");
+      expect(f.repo.read().outcome).toBe("database_error");
+      expect(new LifecycleRepository(f.db).read().outcome).toBe(
+        "database_error",
+      );
+      expect(
+        new PublishedStateRepository(f.db).save("schedule", "{}"),
+      ).toMatchObject({ outcome: "not_saved", scope: "database" });
+      expect(sql).not.toHaveBeenCalled();
+    }
+  },
+);
+test.each(
+  [false, true].flatMap((after) =>
+    ["SQLITE_CORRUPT", "SQLITE_IOERR"].map((code) => ({ after, code })),
+  ),
+)(
+  "R59-01 fatal COMMIT $code after=$after blocks ended Connection",
+  ({ after, code }) => {
+    const f = fixture();
+    const original = f.db.exec.bind(f.db);
+    const exec = vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+      if (sql === "COMMIT") {
+        if (after) original(sql);
+        throw Object.assign(new Error("private commit"), { code });
+      }
+      return original(sql);
+    });
+    expect(f.repo.read()).toMatchObject({
+      outcome: "database_error",
+      layer: code === "SQLITE_CORRUPT" ? "L3" : "L4",
+    });
+    expect(f.db.inTransaction).toBe(false);
+    expect(connectionCoordination(f.db).connectionUnresolved).toBe(false);
+    expect(connectionCoordination(f.db).blocked).toBeDefined();
+    exec.mockRestore();
+    const sql = vi.spyOn(f.db, "exec");
+    expect(f.repo.read().outcome).toBe("database_error");
+    expect(
+      new PublishedStateRepository(f.db).save("schedule", "{}"),
+    ).toMatchObject({ outcome: "not_saved" });
+    expect(sql).not.toHaveBeenCalled();
+  },
+);
+test.each(["before_begin", "after_commit", "after_rollback"])(
+  "R59-01 Transaction getter failure %s remains unresolved after getter recovery",
+  (stage) => {
+    const f = fixture();
+    let unreadable = stage === "before_begin";
+    // Native getter is nonconfigurable. A test-only Proxy faults status reads,
+    // while every SQLite operation still targets the real Connection.
+    const proxy = new Proxy(f.db, {
+      get(target, key) {
+        if (key === "inTransaction" && unreadable)
+          throw new Error("private status");
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const repo = new LifecycleRepository(proxy);
+    const original = f.db.exec.bind(f.db);
+    vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+      if (sql === "COMMIT") {
+        if (stage === "after_commit") {
+          original(sql);
+          unreadable = true;
+        }
+        throw busy();
+      }
+      const result = original(sql);
+      if (sql === "ROLLBACK") unreadable = true;
+      return result;
+    });
+    expect(repo.read()).toMatchObject({
+      outcome: "database_error",
+      reason: "transaction_unresolved",
+    });
+    expect(connectionCoordination(proxy)).toMatchObject({
+      busy: false,
+      connectionUnresolved: true,
+    });
+    expect(connectionCoordination(proxy).blocked).toBeDefined();
+    unreadable = false;
+    vi.mocked(f.db.exec).mockRestore();
+    const exec = vi.spyOn(f.db, "exec");
+    expect(repo.read().outcome).toBe("database_error");
+    expect(new LifecycleRepository(proxy).read().outcome).toBe(
+      "database_error",
+    );
+    expect(
+      new PublishedStateRepository(proxy).save("schedule", "{}").outcome,
+    ).toBe("unknown");
+    expect(exec).not.toHaveBeenCalled();
+  },
+);
+test("R59-01 BEGIN after actual start can reuse only after verified rollback", () => {
+  const f = fixture();
+  const original = f.db.exec.bind(f.db);
+  const exec = vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+    const result = original(sql);
+    if (sql === "BEGIN") throw busy();
+    return result;
+  });
+  expect(f.repo.read()).toMatchObject({
+    outcome: "database_error",
+    layer: "L1",
+  });
+  expect(exec.mock.calls.map(([sql]) => sql)).toEqual(["BEGIN", "ROLLBACK"]);
+  expect(f.db.inTransaction).toBe(false);
+  expect(connectionCoordination(f.db).blocked).toBeUndefined();
+  exec.mockRestore();
+  expect(f.repo.read().outcome).toBe("found");
+});
+test.each(["FULL", "FK"])(
+  "R59-01 next read revalidates %s after resolved transient COMMIT error",
+  (condition) => {
+    const f = fixture();
+    const original = f.db.exec.bind(f.db);
+    const exec = vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+      if (sql === "COMMIT") throw busy();
+      return original(sql);
+    });
+    expect(f.repo.read()).toMatchObject({
+      outcome: "database_error",
+      layer: "L1",
+    });
+    exec.mockRestore();
+    if (condition === "FULL") f.db.pragma("synchronous=NORMAL");
+    else f.db.pragma("foreign_keys=OFF");
+    expect(f.repo.read()).toMatchObject({
+      outcome: "database_error",
+      layer: "L3",
+    });
+    expect(connectionCoordination(f.db).blocked).toBeDefined();
+  },
+);

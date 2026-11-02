@@ -47,14 +47,21 @@ export class LifecycleRepository {
         if (this.db.inTransaction !== false) return this.unresolved();
         return { outcome: "found", marker };
       } catch (error) {
-        if (!this.resolveRead()) return this.unresolved();
+        const resolution = this.resolveRead();
+        if (!resolution.ended) return this.unresolved();
+        // An ended read Transaction is not proof of Connection health. Apply
+        // existing fatal-error rules to BOTH the original and cleanup errors.
+        const original = this.classifyFailure(error);
+        const rollback = resolution.rollbackFailure;
+        const failure =
+          original.layer === "L3" || original.layer === "L4"
+            ? original
+            : rollback && (rollback.layer === "L3" || rollback.layer === "L4")
+              ? rollback
+              : original;
         // Even COMMIT-after-success exceptions do not publish the cached Row.
-        try {
-          const status = classifyDatabaseError(error);
-          return this.problem(status.layer, status.reason);
-        } catch {
-          return this.problem("L4", "storage_failure");
-        }
+        // Any later caller must start a new read and revalidate Schema/Marker.
+        return this.problem(failure.layer, failure.reason);
       }
     } catch {
       return this.unresolved();
@@ -79,22 +86,48 @@ export class LifecycleRepository {
     validateSchema(this.db, 3);
     return validateLifecycleMarker(this.db);
   }
-  private resolveRead(): boolean {
+  private classifyFailure(
+    error: unknown,
+  ): Extract<LifecycleReadResult, { outcome: "database_error" }> {
     try {
-      if (this.db.inTransaction === false) return true;
-      if (this.db.inTransaction !== true) return false;
+      const status = classifyDatabaseError(error);
+      return {
+        outcome: "database_error",
+        layer: status.layer,
+        reason: status.reason,
+      };
     } catch {
-      return false;
+      return {
+        outcome: "database_error",
+        layer: "L4",
+        reason: "storage_failure",
+      };
     }
+  }
+  private resolveRead(): {
+    ended: boolean;
+    rollbackFailure?: Extract<
+      LifecycleReadResult,
+      { outcome: "database_error" }
+    >;
+  } {
+    try {
+      if (this.db.inTransaction === false) return { ended: true };
+      if (this.db.inTransaction !== true) return { ended: false };
+    } catch {
+      return { ended: false };
+    }
+    let rollbackFailure:
+      Extract<LifecycleReadResult, { outcome: "database_error" }> | undefined;
     try {
       this.db.exec("ROLLBACK");
-    } catch {
-      /* inspect actual state below */
+    } catch (error) {
+      rollbackFailure = this.classifyFailure(error);
     }
     try {
-      return this.transactionResolved();
+      return { ended: this.transactionResolved(), rollbackFailure };
     } catch {
-      return false;
+      return { ended: false, rollbackFailure };
     }
   }
   private transactionResolved(): boolean {
