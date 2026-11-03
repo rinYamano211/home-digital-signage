@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { recordStartupCommit } from "./internal/startup-commit.js";
 import type { ExclusiveLock } from "./lock.js";
 import { normalizedBootId, readOsBootId } from "../time/boot-id.js";
 import {
@@ -210,6 +211,10 @@ export class StartupTransactionService {
       committing = true;
       this.db.exec("COMMIT");
       if (this.transactionActive() !== false) return this.unresolved();
+      // DB COMMIT already returned successfully. If this memory handoff fails, keep the
+      // committing phase: return unknown below, never claim rollback/success or
+      // reconstruct evidence from the committed Rows. Do not retry this attempt.
+      recordStartupCommit(this.db, generation, id);
       return { outcome: "committed", generation };
     } catch (error) {
       let original: StartupResult =

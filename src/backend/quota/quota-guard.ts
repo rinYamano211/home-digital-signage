@@ -25,12 +25,8 @@ export interface QuotaInspectionResult {
   reason: string;
   recheckAtMs?: number;
 }
-export const QUOTA_WINDOWS = Object.freeze([
-  Object.freeze({ widthMs: 86400000, limit: 400 }),
-  Object.freeze({ widthMs: 3600000, limit: 20 }),
-  Object.freeze({ widthMs: 1000, limit: 1 }),
-]);
-export const QUOTA_MARGIN_MS = 2000; // Provisional design margin; not a measured guarantee.
+export { QUOTA_WINDOWS, QUOTA_MARGIN_MS } from "./internal/quota-window.js";
+import { QUOTA_WINDOWS, quotaWindow } from "./internal/quota-window.js";
 export function quotaTimestamp(n: number): boolean {
   return (
     Number.isSafeInteger(n) && n >= 0 && Number.isFinite(new Date(n).getTime())
@@ -84,17 +80,9 @@ export class QuotaGuard {
       return deny("sequence_exhausted");
     let recheckAtMs = 0;
     for (const w of QUOTA_WINDOWS) {
-      const recent = history.consumptions.filter(
-        (c) => now - c.reservedAtMs <= w.widthMs + QUOTA_MARGIN_MS,
-      );
-      if (recent.length >= w.limit) {
-        // At the inclusive boundary it is still counted, so +1 epoch ms is the
-        // earliest representable re-evaluation at which this slot can leave.
-        const at =
-          recent[recent.length - w.limit].reservedAtMs +
-          w.widthMs +
-          QUOTA_MARGIN_MS +
-          1;
+      const usage = quotaWindow(history.consumptions, now, w);
+      if (usage.count >= w.limit) {
+        const at = usage.releaseAtMs!;
         if (!quotaTimestamp(at)) return deny("quota_boundary_out_of_range");
         recheckAtMs = Math.max(recheckAtMs, at);
       }

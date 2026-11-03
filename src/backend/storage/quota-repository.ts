@@ -113,7 +113,10 @@ export class QuotaRepository {
   private readonly provisioningUnresolved: Set<string>;
   private readonly active = new Map<QuotaProvider, QuotaAttempt>();
   private readonly guard = new QuotaGuard();
-  constructor(private readonly db: Database.Database) {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly schemaVersion: 2 | 3 = 2,
+  ) {
     this.coordination = connectionCoordination(db);
     let pending = pendingByConnection.get(db);
     if (!pending) {
@@ -150,6 +153,10 @@ export class QuotaRepository {
     if (this.active.get(trial.providerKey) === attempt)
       this.active.delete(trial.providerKey);
   }
+  /** Internal identity check; does not expose or transfer Connection ownership. */
+  belongsToConnection(db: Database.Database): boolean {
+    return this.db === db;
+  }
   /** Minimal read-only handoff to a future Gate. Not a send decision or Permit. */
   inspectReservation(
     evidence: QuotaReservationEvidence,
@@ -173,6 +180,18 @@ export class QuotaRepository {
       return null;
     return record.reservation;
   }
+  /** Internal borrowed read: Startup/Range owns busy and Transaction. */
+  historyWithinTransaction(provider: QuotaProvider): QuotaHistory {
+    if (
+      !this.coordination.busy ||
+      this.coordination.blocked ||
+      this.coordination.connectionUnresolved ||
+      !this.db.open ||
+      this.db.inTransaction !== true
+    )
+      throw new InvalidQuotaRows();
+    return this.history(provider);
+  }
   inspect(
     providerKey: QuotaProvider,
     trust: QuotaTrust,
@@ -187,7 +206,7 @@ export class QuotaRepository {
       if (!this.resolved())
         return { allowed: false, reason: this.unresolved().reason };
       this.db.exec("BEGIN");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const history = this.history(providerKey);
       this.db.exec("COMMIT");
       if (!this.resolved())
@@ -245,7 +264,7 @@ export class QuotaRepository {
         return { outcome: "unknown", reason: this.unresolved().reason };
       this.db.exec("BEGIN IMMEDIATE");
       began = true;
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const history = this.history(providerKey);
       if (history.metadata || history.consumptions.length) {
         this.db.exec("ROLLBACK");
@@ -334,7 +353,7 @@ export class QuotaRepository {
         };
       trial.attempted = true;
       this.db.exec("BEGIN IMMEDIATE");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const currentTrust = this.trust(source);
       const before = this.history(provider);
       const result = this.guard.evaluate(
@@ -443,7 +462,7 @@ export class QuotaRepository {
     try {
       if (!this.resolved()) return this.unresolved();
       this.db.exec("BEGIN");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const actual = this.history(attempt.trial.providerKey);
       const guard = this.writeGuard();
       this.db.exec("COMMIT");
