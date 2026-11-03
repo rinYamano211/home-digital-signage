@@ -99,7 +99,7 @@ export class OsSyncReader {
           this.snapshot = { confirmed, checkedAtNs };
       })
       .catch(() => {
-        this.snapshot = undefined;
+        if (run.generation === this.generation) this.snapshot = undefined;
       });
   }
 }

@@ -109,6 +109,33 @@ test("OS-05 command failure, including a synchronous throw, discards success", a
   throwing.stop();
   f.reader.stop();
 });
+test("OS-05 a throwing monotonic read after valid output fails closed, then recovers", async () => {
+  const f = fixture();
+  let broken = false;
+  const reader = new OsSyncReader(
+    {
+      wallMs: f.time.wallMs,
+      monotonicNs: () => {
+        if (broken) throw Error("clock");
+        return f.mono();
+      },
+    },
+    f.command,
+  );
+  reader.start();
+  await f.settle(0, "yes\n");
+  expect(reader.current()).not.toBeNull();
+  await f.advance(5000);
+  broken = true;
+  await f.settle(1, "yes\n");
+  broken = false;
+  expect(reader.current()).toBeNull();
+  await f.advance(5000);
+  expect(f.command).toHaveBeenCalledTimes(3);
+  await f.settle(2, "yes\n");
+  expect(reader.current()).toEqual({ confirmed: true, checkedAtNs: f.mono() });
+  reader.stop();
+});
 test("OS-06 Timeout aborts the child, drops success and ignores its late output", async () => {
   const f = fixture();
   f.reader.start();
