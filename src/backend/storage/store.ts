@@ -18,6 +18,7 @@ import { SchemaError } from "./errors.js";
 import { PublishedStateRepository } from "./published-state-repository.js";
 import { AcquisitionControlRepository } from "./acquisition-control-repository.js";
 import { BackendCacheRepository } from "./backend-cache-repository.js";
+import { committedStartup } from "./internal/startup-commit.js";
 
 export function configureDatabase(db: Database.Database, version: 2 | 3 = 2) {
   enableForeignKeys(db);
@@ -39,16 +40,61 @@ export interface StartupStoreAccess {
   readonly lifecycle: Readonly<{ read(): LifecycleReadResult }>;
   close(): void;
 }
+/** DB access only, never Clock/History Trust, a quota decision or Send Permit.
+ * The Startup facade remains the single Close owner of the same Connection.
+ */
+export interface RuntimeStoreAccess {
+  readonly runtimeActive: true;
+  readonly quota: QuotaRepository;
+}
+const startupOwners = new WeakMap<StartupStoreAccess, BackendStore>();
 export class BackendStore {
   readonly publishedStates: PublishedStateRepository;
   readonly cache: BackendCacheRepository;
   readonly acquisitionControl: AcquisitionControlRepository;
   readonly quota: QuotaRepository;
-  private constructor(private readonly db: Database.Database) {
+  private closing = false;
+  private runtime?: RuntimeStoreAccess;
+  private constructor(
+    private readonly db: Database.Database,
+    version: 2 | 3 = 2,
+  ) {
     this.publishedStates = new PublishedStateRepository(db);
     this.cache = new BackendCacheRepository(db);
     this.acquisitionControl = new AcquisitionControlRepository(db);
-    this.quota = new QuotaRepository(db);
+    this.quota = new QuotaRepository(db, version);
+  }
+  /** Opens Runtime DB access on the same Connection only after this facade's
+   * own confirmed Startup Commit. The Lifecycle row alone is not evidence.
+   * Repeated calls re-check and return the same object; no new Repository.
+   */
+  static activateRuntime(
+    startup: StartupStoreAccess,
+  ): RuntimeStoreAccess | null {
+    const owner = startupOwners.get(startup);
+    return owner ? owner.activate() : null;
+  }
+  private activate(): RuntimeStoreAccess | null {
+    try {
+      const c = connectionCoordination(this.db);
+      if (
+        this.closing ||
+        !this.db.open ||
+        c.busy ||
+        c.blocked ||
+        c.connectionUnresolved ||
+        this.db.inTransaction !== false ||
+        !committedStartup(this.db)
+      )
+        return null;
+    } catch {
+      return null;
+    }
+    this.runtime ??= Object.freeze({
+      runtimeActive: true as const,
+      quota: this.quota,
+    });
+    return this.runtime;
   }
   static open(lock: ExclusiveLock): BackendStore {
     lock.assertHeld();
@@ -97,15 +143,17 @@ export class BackendStore {
       configureDatabase(db, 3);
       validateSchema(db, 3);
       validateDatabaseFiles(lock.directory);
-      const owner = new BackendStore(db);
+      const owner = new BackendStore(db, 3);
       const lifecycle = new LifecycleRepository(db);
       const startup = new StartupTransactionService(db, lock);
-      return Object.freeze({
+      const access: StartupStoreAccess = Object.freeze({
         startupComplete: false as const,
         startup: Object.freeze({ execute: startup.execute.bind(startup) }),
         lifecycle: Object.freeze({ read: lifecycle.read.bind(lifecycle) }),
         close: () => owner.close(),
       });
+      startupOwners.set(access, owner);
+      return access;
     } catch (error) {
       db.close();
       throw error;
@@ -114,6 +162,7 @@ export class BackendStore {
     }
   }
   close() {
+    this.closing = true;
     if (this.db.open) this.db.close();
   }
 }
