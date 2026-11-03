@@ -17,6 +17,7 @@ import type { HistoryScope, RuntimeValidFacts } from "../history-evaluation.js";
 const owners = new WeakSet<Database.Database>();
 interface Trial {
   epoch: bigint;
+  registrationGeneration: bigint;
   checks: number;
   pending: boolean;
 }
@@ -26,6 +27,7 @@ export class RuntimeHistory {
   private readonly trials = new WeakMap<QuotaAttempt, Trial>();
   private readonly valid = new Map<number, Readonly<RuntimeValidFacts>>();
   private frozen = false;
+  private registrationGeneration = 0n;
   private readonly cutoff: number | null;
   constructor(
     private readonly db: Database.Database,
@@ -66,6 +68,7 @@ export class RuntimeHistory {
     return db === this.db && this.repository.belongsToConnection(db);
   }
   freeze(): void {
+    this.registrationGeneration++;
     this.frozen = true;
   }
   isFrozen(): boolean {
@@ -100,6 +103,7 @@ export class RuntimeHistory {
       };
     const trial: Trial = {
       epoch: this.clock.epoch(),
+      registrationGeneration: this.registrationGeneration,
       checks: 0,
       pending: false,
     };
@@ -111,7 +115,8 @@ export class RuntimeHistory {
         const trusted =
           this.clock.state() === "TRUSTED" &&
           this.clock.epoch() === trial.epoch &&
-          !this.frozen;
+          !this.frozen &&
+          trial.registrationGeneration === this.registrationGeneration;
         if (trusted) trial.checks++;
         return {
           ...supplied,
@@ -125,7 +130,9 @@ export class RuntimeHistory {
       registered: this.register(reservation, request.attempt),
     };
   }
-  /** Read-only Tx-Q reconciliation may return saved while registration fails.
+  /** Freeze prevents registration, not read-only resolution of persisted Tx-Q.
+   * A resolved result still grants no authority and never unfreezes this owner.
+   * Read-only Tx-Q reconciliation may return saved while registration fails.
    * The same two-result contract as reserve applies; persisted consumption stays.
    */
   reconcile(attempt: QuotaAttempt): {
@@ -135,7 +142,6 @@ export class RuntimeHistory {
     if (
       connectionCoordination(this.db).busy ||
       !this.ready() ||
-      this.frozen ||
       this.trials.get(attempt)?.pending !== true
     )
       return {
@@ -163,6 +169,7 @@ export class RuntimeHistory {
         result.outcome !== "saved" ||
         !t ||
         t.checks < 2 ||
+        t.registrationGeneration !== this.registrationGeneration ||
         this.clock.state() !== "TRUSTED" ||
         this.clock.epoch() !== t.epoch
       )

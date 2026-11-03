@@ -779,3 +779,57 @@ test("Reconcile saved without Runtime registration retains consumption and retur
     f.db.prepare("SELECT last_sequence FROM provider_quota_metadata").get(),
   ).toEqual({ last_sequence: 1 });
 });
+
+test.each([false, true])(
+  "B43-03 Freeze preserves read-only resolution (%s: committed)",
+  (committedAtFailure) => {
+    const f = fixture();
+    const exec = f.db.exec.bind(f.db);
+    const prepare = f.db.prepare.bind(f.db);
+    let committed = false;
+    let failRead = true;
+    vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+      if (sql === "COMMIT" && !committed) {
+        committed = true;
+        if (committedAtFailure) exec(sql);
+        throw busy();
+      }
+      return exec(sql);
+    });
+    vi.spyOn(f.db, "prepare").mockImplementation(((sql: string) => {
+      if (
+        committed &&
+        failRead &&
+        sql.startsWith("SELECT provider_key,history_status")
+      ) {
+        throw busy();
+      }
+      return prepare(sql);
+    }) as typeof f.db.prepare);
+    const q = f.request();
+    const first = f.runtime.reserve(q);
+    expect(first.reservation.outcome).toBe("unknown");
+    expect(first.registered).toBe(false);
+    expect(f.runtime.facts()).toEqual([]);
+    f.runtime.freeze();
+    const unresolved = f.runtime.reconcile(q.attempt);
+    expect(unresolved.reservation.outcome).toBe("unknown");
+    expect(unresolved.registered).toBe(false);
+    failRead = false;
+    const result = f.runtime.reconcile(q.attempt);
+    expect(result.reservation.outcome).toBe(
+      committedAtFailure ? "saved" : "not_saved",
+    );
+    expect(result.registered).toBe(false);
+    expect(f.runtime.isFrozen()).toBe(true);
+    expect(f.runtime.facts()).toEqual([]);
+    expect(
+      f.db
+        .prepare("SELECT COUNT(*) AS n FROM provider_quota_consumptions")
+        .get(),
+    ).toEqual({ n: committedAtFailure ? 1 : 0 });
+    const writes = vi.spyOn(f.db, "exec").mockClear();
+    expect(f.runtime.reserve(q).reservation.outcome).toBe("quota_blocked");
+    expect(writes).not.toHaveBeenCalled();
+  },
+);
