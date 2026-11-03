@@ -141,6 +141,37 @@ PR-B / C-1 / C-2 / C-Impl-3 / Gate / HTTP / H54-related suites remain in the ful
 
 No actual Provider HTTP, Pi validation or production DB work.
 
+## Additional review (Claude Code handover)
+
+Read-only review of `8262c35` found no implementation defect; no source file
+changed. B43-01 to B43-17 keep their meaning. Three internal regression cases
+were added to `history-recovery.test.ts` for paths the mapping did not exercise
+end to end:
+
+- **B43-15/17 Quota hold is reassessed by B/C notifications; lost or untrusted
+  rechecks keep stops**: `recheckHint()` with `HistoryRecheck` and no
+  `recheckAtMs`. A lost B notification and an untrusted-Clock C notification
+  recover nothing; a later C retry recovers. Notification never sends, and the
+  independent management stop remains until its owner releases it.
+- **B43-04/05/09 second in-process Clock failure waits per Range and revokes the
+  interval's Trial**: after a successful recovery, a second failure appends
+  Range 2 without changing Range 1. Range 1's completed 1m Wait does not exclude
+  Range 2. The recovered interval's Trial/reservation is refused; a new Runtime
+  Valid then sends.
+- **B43-06 second-failure Range COMMIT unknown keeps earlier Range and stays
+  closed**: the Connection is blocked; no Wait/authority is issued; Range 1 and
+  Consumption rows remain; recovery stays refused after all Wait periods.
+
+The new per-Range case fails if Wait evidence is matched without its Range ID and
+end Sequence. The B/C case fails if periodic notifications stop after a lost one.
+Production Coordinator/notification wiring remains absent; these cases do not
+claim automatic production resume.
+
+Windows: full suite **1287 PASS / 56 Linux-only Skip, 1343 total**; Lint, Type
+Check, Backend Build and `git diff --check` PASS. Default Format Check fails
+only on CRLF checkout files outside `.gitattributes` (including this file); see
+the LF snapshot note in Verification.
+
 ## Follow-up PR-C
 
 Production OS synchronization/monotonic assurance; trusted HTTP/Body Lifecycle

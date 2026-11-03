@@ -754,6 +754,143 @@ test("B43-04/09 repeated Clock failures append immutable separate ranges and ind
       .every((v) => v!.elapsedNs > 0n),
   ).toBe(true);
 });
+function secondFailure() {
+  const f = uncertain();
+  f.setOs(true);
+  f.stabilize();
+  expect(f.recovery.recover()).toBe(true);
+  const stale = f.reserve();
+  expect(stale.registered).toBe(true);
+  f.gate.endAttempt(stale.attempt);
+  f.setOs(false);
+  f.clock.observe();
+  expect(f.runtime.isFrozen()).toBe(true);
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+  return { ...f, stale };
+}
+const rangeRows = (f: ReturnType<typeof fixture>) =>
+  f.db
+    .prepare(
+      "SELECT range_id,start_sequence,end_sequence FROM history_uncertain_ranges ORDER BY range_id",
+    )
+    .all();
+test("B43-04/05/09 second in-process Clock failure waits per Range and revokes the interval's Trial", () => {
+  const f = secondFailure();
+  f.setOs(true);
+  f.stabilize();
+  // Range 1 has completed its 1m Wait; Range 2 starts its own Wait only now.
+  expect(f.recovery.drainAndClassify()).toBe(true);
+  expect(rangeRows(f)).toEqual([
+    { range_id: 1, start_sequence: 1, end_sequence: 1 },
+    { range_id: 2, start_sequence: 2, end_sequence: 2 },
+  ]);
+  expect(f.recovery.recover()).toBe(false);
+  for (let i = 0; i < 11; i++) f.advance(5000);
+  f.advance(4999);
+  expect(f.recovery.recover()).toBe(false);
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+  f.advance(1);
+  expect(f.recovery.recover()).toBe(true);
+  expect(
+    inspectAuthenticatedHistory(f.recovery.source, f.repo)?.evaluation,
+  ).toBe("CONSERVATIVE");
+  expect(f.runtime.facts()).toEqual([]);
+  expect(f.runtime.register(f.stale.reservation, f.stale.quotaAttempt)).toBe(
+    false,
+  );
+  expect(f.gate.start(f.stale.attempt, f.stale.reservation).kind).toBe(
+    "blocked",
+  );
+  const next = f.reserve();
+  expect(next.registered).toBe(true);
+  expect(f.runtime.facts().map((v) => v.sequence)).toEqual([3]);
+  expect(f.gate.start(next.attempt, next.reservation).kind).toBe("started");
+  f.finish();
+  expect(f.calls()).toBe(1);
+  expect(rangeRows(f)).toHaveLength(2);
+});
+test("B43-06 second-failure Range COMMIT unknown keeps earlier Range and stays closed", () => {
+  const f = secondFailure();
+  const exec = f.db.exec.bind(f.db),
+    prepare = f.db.prepare.bind(f.db);
+  let rangeWrite = false;
+  vi.spyOn(f.db, "prepare").mockImplementation(((sql: string) => {
+    if (sql.startsWith("INSERT INTO history_uncertain_ranges"))
+      rangeWrite = true;
+    return prepare(sql);
+  }) as typeof f.db.prepare);
+  vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+    const out = exec(sql);
+    if (sql === "COMMIT" && rangeWrite)
+      throw Object.assign(Error("private"), { code: "SQLITE_BUSY" });
+    return out;
+  });
+  expect(f.recovery.drainAndClassify()).toBe(false);
+  vi.mocked(f.db.exec).mockRestore();
+  vi.mocked(f.db.prepare).mockRestore();
+  expect(connectionCoordination(f.db).blocked).toBeDefined();
+  expect(f.recovery.waitEvidence()).toEqual([]);
+  expect(rangeRows(f)[0]).toEqual({
+    range_id: 1,
+    start_sequence: 1,
+    end_sequence: 1,
+  });
+  f.advance(90000000, false);
+  f.setOs(true);
+  f.stabilize();
+  expect(f.recovery.recover()).toBe(false);
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+  expect(f.rows()).toHaveLength(2);
+  expect(f.calls()).toBe(0);
+});
+test("B43-15/17 Quota hold is reassessed by B/C notifications; lost or untrusted rechecks keep stops", () => {
+  vi.useFakeTimers();
+  const f = fixture(1),
+    management = f.gate.stopControl(provider);
+  management.stop();
+  // The old row fills the 1s Window until its 1m Wait completes.
+  expect(f.recovery.recover()).toBe(false);
+  const outcomes: boolean[] = [];
+  let lost = true;
+  const timer = new HistoryRecheck(
+    f.time,
+    () => {
+      const hint = f.recovery.recheckHint();
+      return hint.waitAtNs === undefined ? {} : { waitAtNs: hint.waitAtNs };
+    },
+    () => {
+      if (lost) {
+        lost = false;
+        throw Error("notification lost");
+      }
+      outcomes.push(f.recovery.recover());
+    },
+    120000,
+  );
+  timer.start();
+  for (let i = 0; i < 12; i++) f.advance(5000);
+  vi.advanceTimersByTime(60000); // B deadline: notification is lost
+  expect(outcomes).toEqual([]);
+  f.setOs(false);
+  for (let i = 0; i < 24; i++) f.advance(5000);
+  vi.advanceTimersByTime(120000); // C: Quota room, but Clock untrusted
+  expect(outcomes).toEqual([false]);
+  expect(f.runtime.isFrozen()).toBe(true);
+  f.setOs(true);
+  f.stabilize();
+  for (let i = 0; i < 10; i++) f.advance(5000);
+  vi.advanceTimersByTime(120000); // C again: assessment succeeds
+  expect(outcomes).toEqual([false, true]);
+  timer.stop();
+  expect(f.gate.beginAttempt(provider)).toBeNull();
+  expect(f.calls()).toBe(0);
+  expect(f.history.state()).toBe("UNVERIFIED");
+  management.release();
+  const r = f.reserve();
+  expect(r.registered).toBe(true);
+  expect(f.gate.start(r.attempt, r.reservation).kind).toBe("started");
+  f.finish();
+});
 test("B43-08 bound Source cannot be created from structural copies or another Clock", () => {
   const f = active();
   expect(
