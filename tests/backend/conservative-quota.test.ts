@@ -249,7 +249,7 @@ for (const value of [NaN, -1, Number.MAX_SAFE_INTEGER])
     expect(evaluateConservativeQuota(model(), value).evaluation).toBe(
       "BLOCKED",
     ));
-test("Future timestamps and timestamp inversion remain BLOCKED, not relaxed for uncertain history", () => {
+test("B43-07 uncertain future/reversed timestamps retain full Window counts", () => {
   const f = model(2, "uncertain");
   expect(
     evaluateConservativeQuota(
@@ -265,7 +265,7 @@ test("Future timestamps and timestamp inversion remain BLOCKED, not relaxed for 
       },
       now,
     ).evaluation,
-  ).toBe("BLOCKED");
+  ).toBe("QUOTA_BLOCKED");
   expect(
     evaluateConservativeQuota(
       {
@@ -280,5 +280,5 @@ test("Future timestamps and timestamp inversion remain BLOCKED, not relaxed for 
       },
       now,
     ).evaluation,
-  ).toBe("BLOCKED");
+  ).toBe("QUOTA_BLOCKED");
 });

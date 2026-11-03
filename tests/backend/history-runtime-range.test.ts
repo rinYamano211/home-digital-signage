@@ -364,7 +364,7 @@ test("Confirmed Drain + frozen Runtime insert one Range and return opaque Commit
     ranges: [{ ...candidate }],
   });
 });
-test("Production boundary has no issuers; arbitrary drained:true is not accepted", async () => {
+test("Unissued boundary tokens and arbitrary drained:true are not accepted", async () => {
   const actual = await vi.importActual<
     typeof import("../../src/backend/quota/internal/history-boundaries.js")
   >("../../src/backend/quota/internal/history-boundaries.js");

@@ -447,7 +447,7 @@ test("History assessment does not erase independent SUSPENDED Provider status", 
   });
 });
 
-test("Consumption before Metadata initialization is BLOCKED", () => {
+test("B43-07 old Timestamp before Metadata initialization is conservatively classifiable", () => {
   const f = model();
   const result = evaluateHistoryFacts({
     ...f,
@@ -456,13 +456,10 @@ test("Consumption before Metadata initialization is BLOCKED", () => {
       metadata: { ...f.history.metadata!, initializedAtMs: 11 },
     },
   });
-  expect(result).toEqual({
-    evaluation: "BLOCKED",
-    reason: "invalid_history_timestamp",
-  });
+  expect(result.evaluation).toBe("CONSERVATIVE");
 });
 for (const cutoff of [0, 2, 4])
-  test(`Timestamp reversal in Sequence order is BLOCKED (cutoff ${cutoff})`, () => {
+  test(`B43-07 reversal is rejected for Valid, conservatively counted for old/uncertain (cutoff ${cutoff})`, () => {
     const f = model(cutoff);
     const result = evaluateHistoryFacts({
       ...f,
@@ -476,10 +473,12 @@ for (const cutoff of [0, 2, 4])
         r.sequence === 4 ? { ...r, reservedAtMs: 25 } : r,
       ),
     });
-    expect(result).toEqual({
-      evaluation: "BLOCKED",
-      reason: "invalid_history_timestamp",
-    });
+    if (cutoff === 0)
+      expect(result).toEqual({
+        evaluation: "BLOCKED",
+        reason: "invalid_history_timestamp",
+      });
+    else expect(result.evaluation).toBe("CONSERVATIVE");
   });
 test("Timestamp equal to initialization or preceding Consumption is accepted", () => {
   const f = model();

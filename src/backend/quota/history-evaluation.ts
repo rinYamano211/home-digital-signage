@@ -41,7 +41,7 @@ export interface ConfirmedRangeFacts extends HistoryScope {
 /** Declarative facts only, NOT authenticated Runtime evidence or send authority.
  * 4B-2/3 must obtain/validate real Startup, Provisioning, Tx-Q, Clock and Range
  * evidence before supplying these facts. Matching strings/booleans is not that
- * validation. This module issues no evidence and has no production callers.
+ * validation. This module issues no evidence; its caller must authenticate these inputs.
  */
 export interface HistoryEvaluationFacts {
   readonly scope: HistoryScope;
@@ -160,12 +160,9 @@ export function evaluateHistoryFacts(
     });
     if (rows.some((row, i) => row.sequence !== i + 1))
       return blocked("sequence_mismatch");
-    let previousTimestamp = metadata.initializedAtMs;
-    for (const row of rows) {
-      if (row.reservedAtMs < previousTimestamp)
-        return blocked("invalid_history_timestamp");
-      previousTimestamp = row.reservedAtMs;
-    }
+    // D-03: old/uncertain timestamps are structural facts, not window clocks.
+    // Ordering/initialization comparisons across an untrusted clock interval
+    // would prevent conservative counting after a backwards wall-clock jump.
     const validSequences = new Set<number>();
     for (const record of valid) {
       if (
@@ -230,6 +227,14 @@ export function evaluateHistoryFacts(
       else if (!uncertain.has(row.sequence))
         return blocked("classification_gap");
     }
+    // Trusted runtime rows still require ordered timestamps for the existing
+    // Window algorithm. No comparison crosses an old/uncertain clock interval.
+    if (
+      newValid.some(
+        (r, i) => i > 0 && r.reservedAtMs < newValid[i - 1].reservedAtMs,
+      )
+    )
+      return blocked("invalid_history_timestamp");
     const classification: HistoryClassification = Object.freeze({
       old: Object.freeze(old),
       newValid: Object.freeze(newValid),

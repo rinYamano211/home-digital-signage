@@ -19,8 +19,8 @@ export type ConservativeQuotaResult =
       evaluation: "WITHIN_LIMIT" | "QUOTA_BLOCKED";
       windows: readonly { widthMs: number; count: number; limit: number }[];
     };
-/** Assessment only, never a send/QuotaTrust permission. Wait evidence has no
- * production issuer yet; missing/forged waits always retain full contributions.
+/** Assessment only, never a send/QuotaTrust permission. Missing, forged or
+ * expired Wait evidence always retains full contributions.
  */
 export function evaluateConservativeQuota(
   facts: HistoryEvaluationFacts,
@@ -34,8 +34,7 @@ export function evaluateConservativeQuota(
       !quotaTimestamp(now) ||
       !facts.history.metadata ||
       facts.history.metadata.historyStatus !== "ACTIVE" ||
-      facts.history.metadata.initializedAtMs > now ||
-      facts.history.consumptions.some((r) => r.reservedAtMs > now) ||
+      model.classification.newValid.some((r) => r.reservedAtMs > now) ||
       !Array.isArray(waits)
     )
       return { evaluation: "BLOCKED", reason: "invalid_quota_history" };
