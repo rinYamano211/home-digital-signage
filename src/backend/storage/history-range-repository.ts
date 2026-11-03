@@ -37,11 +37,27 @@ export function inspectConfirmedRange(
   )
     return null;
   const context = committedStartup(r.db);
-  return context &&
-    context.scope.generation === r.range.generation &&
-    context.scope.processInstanceId === r.range.processInstanceId
-    ? r.range
-    : null;
+  if (
+    !context ||
+    context.scope.generation !== r.range.generation ||
+    context.scope.processInstanceId !== r.range.processInstanceId
+  )
+    return null;
+  try {
+    const row = r.db
+      .prepare(
+        "SELECT start_sequence,end_sequence FROM history_uncertain_ranges WHERE provider_key=? AND generation=? AND range_id=?",
+      )
+      .safeIntegers(true)
+      .get(r.range.providerKey, r.range.generation, r.range.rangeId) as
+      { start_sequence: bigint; end_sequence: bigint } | undefined;
+    return row?.start_sequence === BigInt(r.range.startSequence) &&
+      row.end_sequence === BigInt(r.range.endSequence)
+      ? r.range
+      : null;
+  } catch {
+    return null;
+  }
 }
 /** read confirms Range retrieval only, not complete History classification,
  * History/Quota Trust, or permission to send. It carries no confirmation token.
@@ -68,8 +84,8 @@ class Rejected extends Error {
     super("Range rejected");
   }
 }
-/** Borrowed Connection only. Production Drain port has no issuer in 4B-2, so
- * INSERT is unreachable in production; tests mock that internal trust boundary.
+/** Borrowed Connection only. INSERT requires authenticated Drain in the same
+ * Startup Scope; only a confirmed COMMIT produces Range evidence.
  */
 export class HistoryRangeRepository {
   private readonly c;

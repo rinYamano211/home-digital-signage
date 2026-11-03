@@ -3,6 +3,7 @@ import { validateSchema } from "../../storage/schema.js";
 import { ClockTrustMonitor } from "../../send/internal/trust.js";
 import {
   QuotaRepository,
+  quotaRepositoryOwnsConnection,
   type QuotaAttempt,
   type QuotaReservationResult,
   type QuotaReservationRequest,
@@ -11,12 +12,34 @@ import { committedStartup } from "../../storage/internal/startup-commit.js";
 import { connectionCoordination } from "../../storage/connection-coordination.js";
 import {
   inspectProvisioningEvidence,
+  inspectDrainEvidence,
+  inspectHistoryResume,
+  type DrainBoundaryEvidence,
+  type HistoryResumeEvidence,
   type RuntimeProvisioningEvidence,
 } from "./history-boundaries.js";
 import type { HistoryScope, RuntimeValidFacts } from "../history-evaluation.js";
 const owners = new WeakSet<Database.Database>();
+const identities = new WeakMap<
+  RuntimeHistory,
+  {
+    db: Database.Database;
+    repository: QuotaRepository;
+    clock: ClockTrustMonitor;
+  }
+>();
+export function runtimeHistoryMatches(
+  runtime: RuntimeHistory,
+  db: Database.Database,
+  repository: QuotaRepository,
+  clock: ClockTrustMonitor,
+): boolean {
+  const r = identities.get(runtime);
+  return !!r && r.db === db && r.repository === repository && r.clock === clock;
+}
 interface Trial {
   epoch: bigint;
+  registrationGeneration: bigint;
   checks: number;
   pending: boolean;
 }
@@ -26,13 +49,17 @@ export class RuntimeHistory {
   private readonly trials = new WeakMap<QuotaAttempt, Trial>();
   private readonly valid = new Map<number, Readonly<RuntimeValidFacts>>();
   private frozen = false;
-  private readonly cutoff: number | null;
+  private registrationGeneration = 0n;
+  private cutoff: number | null;
+  private readonly pendingAttempts = new Set<QuotaAttempt>();
   constructor(
     private readonly db: Database.Database,
     private readonly repository: QuotaRepository,
     private readonly clock: ClockTrustMonitor,
     provisioning?: RuntimeProvisioningEvidence,
   ) {
+    if (!quotaRepositoryOwnsConnection(repository, db))
+      throw new TypeError("Runtime History Connection mismatch");
     if (owners.has(db)) throw new TypeError("Runtime History already owned");
     owners.add(db);
     this.startup = committedStartup(db);
@@ -49,6 +76,7 @@ export class RuntimeHistory {
       )
         this.cutoff = 0;
     }
+    identities.set(this, { db, repository, clock });
   }
   scope(): HistoryScope | null {
     return this.ready() ? this.startup!.scope : null;
@@ -66,6 +94,7 @@ export class RuntimeHistory {
     return db === this.db && this.repository.belongsToConnection(db);
   }
   freeze(): void {
+    this.registrationGeneration++;
     this.frozen = true;
   }
   isFrozen(): boolean {
@@ -89,6 +118,7 @@ export class RuntimeHistory {
       this.frozen ||
       this.cutoff === null ||
       request.providerKey !== this.startup!.scope.providerKey ||
+      this.trials.has(request.attempt) ||
       this.clock.state() !== "TRUSTED"
     )
       return {
@@ -100,6 +130,7 @@ export class RuntimeHistory {
       };
     const trial: Trial = {
       epoch: this.clock.epoch(),
+      registrationGeneration: this.registrationGeneration,
       checks: 0,
       pending: false,
     };
@@ -111,7 +142,8 @@ export class RuntimeHistory {
         const trusted =
           this.clock.state() === "TRUSTED" &&
           this.clock.epoch() === trial.epoch &&
-          !this.frozen;
+          !this.frozen &&
+          trial.registrationGeneration === this.registrationGeneration;
         if (trusted) trial.checks++;
         return {
           ...supplied,
@@ -119,13 +151,18 @@ export class RuntimeHistory {
         };
       },
     });
-    trial.pending = reservation.outcome === "unknown";
+    trial.pending =
+      reservation.outcome === "unknown" &&
+      this.repository.ownsPending(request.attempt);
+    if (trial.pending) this.pendingAttempts.add(request.attempt);
     return {
       reservation,
       registered: this.register(reservation, request.attempt),
     };
   }
-  /** Read-only Tx-Q reconciliation may return saved while registration fails.
+  /** Freeze prevents registration, not read-only resolution of persisted Tx-Q.
+   * A resolved result still grants no authority and never unfreezes this owner.
+   * Read-only Tx-Q reconciliation may return saved while registration fails.
    * The same two-result contract as reserve applies; persisted consumption stays.
    */
   reconcile(attempt: QuotaAttempt): {
@@ -135,7 +172,6 @@ export class RuntimeHistory {
     if (
       connectionCoordination(this.db).busy ||
       !this.ready() ||
-      this.frozen ||
       this.trials.get(attempt)?.pending !== true
     )
       return {
@@ -150,6 +186,7 @@ export class RuntimeHistory {
       this.startup!.scope.providerKey,
     );
     this.trials.get(attempt)!.pending = reservation.outcome === "unknown";
+    if (reservation.outcome !== "unknown") this.pendingAttempts.delete(attempt);
     return { reservation, registered: this.register(reservation, attempt) };
   }
   register(result: QuotaReservationResult, attempt: QuotaAttempt): boolean {
@@ -163,6 +200,7 @@ export class RuntimeHistory {
         result.outcome !== "saved" ||
         !t ||
         t.checks < 2 ||
+        t.registrationGeneration !== this.registrationGeneration ||
         this.clock.state() !== "TRUSTED" ||
         this.clock.epoch() !== t.epoch
       )
@@ -224,6 +262,55 @@ export class RuntimeHistory {
     } catch {
       return false;
     }
+  }
+  /** Only actual owned pending reservations are reconciled; no retry/write. */
+  resolvePending(): boolean {
+    for (const attempt of this.pendingAttempts) {
+      const result = this.reconcile(attempt).reservation;
+      if (result.outcome !== "saved" && result.outcome !== "not_saved")
+        return false;
+    }
+    return this.pendingAttempts.size === 0;
+  }
+  acceptProvisioning(proof: RuntimeProvisioningEvidence): boolean {
+    const p = inspectProvisioningEvidence(proof);
+    const s = this.scope();
+    if (
+      !s ||
+      s.cutoffSequence !== null ||
+      !p ||
+      p.cutoffSequence !== 0 ||
+      p.providerKey !== s.providerKey ||
+      p.generation !== s.generation ||
+      p.processInstanceId !== s.processInstanceId
+    )
+      return false;
+    this.cutoff = 0;
+    return true;
+  }
+  discardAffected(proof: DrainBoundaryEvidence): boolean {
+    const p = inspectDrainEvidence(proof);
+    const s = this.scope();
+    if (
+      !this.frozen ||
+      !p ||
+      !s ||
+      p.providerKey !== s.providerKey ||
+      p.generation !== s.generation ||
+      p.processInstanceId !== s.processInstanceId ||
+      p.cutoffSequence !== s.cutoffSequence
+    )
+      return false;
+    for (const seq of this.valid.keys())
+      if (seq >= p.startSequence && seq <= p.endSequence)
+        this.valid.delete(seq);
+    return true;
+  }
+  resumeAfterRecovery(proof: HistoryResumeEvidence): boolean {
+    if (!this.frozen || !this.ready() || !inspectHistoryResume(proof, this))
+      return false;
+    this.frozen = false;
+    return true;
   }
   private ready(): boolean {
     try {

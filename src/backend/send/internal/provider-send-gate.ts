@@ -1,3 +1,8 @@
+import {
+  historySourceBelongsTo,
+  inspectAuthenticatedHistory,
+  type AuthenticatedHistorySource,
+} from "../../quota/internal/history-boundaries.js";
 import type { TimeSource } from "../../time/source.js";
 import { TOMORROW_IO, type QuotaTrust } from "../../quota/quota-guard.js";
 import type {
@@ -47,10 +52,27 @@ interface Slot {
   reasons: Set<object>;
   historyReason: object;
   failureReason: object;
+  historySource?: AuthenticatedHistorySource;
   repositoryFailure?: "begin_attempt_failed" | "attempt_cleanup_failed";
   cooldownUntil?: bigint;
   flight?: Flight;
   attempts: Set<Attempt>;
+}
+const identities = new WeakMap<
+  ProviderSendGate,
+  { bindings: ReadonlyMap<string, ProviderBinding>; clock: ClockTrustMonitor }
+>();
+export function gateHistoryBindingMatches(
+  gate: ProviderSendGate,
+  provider: string,
+  repository: QuotaRepository,
+  clock: ClockTrustMonitor,
+): boolean {
+  const identity = identities.get(gate);
+  return (
+    identity?.clock === clock &&
+    identity.bindings.get(provider)?.repository === repository
+  );
 }
 export type GateStartResult =
   | { kind: "started"; response: Promise<unknown> }
@@ -76,6 +98,7 @@ export class ProviderSendGate {
     private readonly time: TimeSource,
     private readonly adapter?: HttpStartAdapter,
   ) {
+    identities.set(this, { bindings: new Map(bindings), clock });
     this.globalReasons.add(this.clockReason);
     for (const [provider, binding] of bindings) {
       const historyReason = Object.freeze({});
@@ -94,6 +117,45 @@ export class ProviderSendGate {
     this.unsubscribe.push(
       clock.subscribe(() => this.close("global", this.clockReason)),
     );
+  }
+  /** Internal optional path; old Monitor behavior remains unchanged when absent.
+   * Authenticated CONSERVATIVE is History input, not Monitor TRUSTED or a Permit.
+   */
+  bindHistorySource(
+    provider: string,
+    source: AuthenticatedHistorySource,
+  ): void {
+    const slot = this.slots.get(provider);
+    if (
+      !slot ||
+      slot.historySource ||
+      !historySourceBelongsTo(source, slot.binding.repository)
+    )
+      throw new TypeError("History source unavailable");
+    slot.historySource = source;
+    this.close(provider, slot.historyReason);
+  }
+  /** Existing independent interlocks, without recursive History evaluation.
+   * Only the Gate's own Clock/History reasons are evaluated via current facts;
+   * owner-specific management/Recovery/failure reasons are never ignored.
+   */
+  historyInterlock(provider: string): boolean {
+    const slot = this.slots.get(provider);
+    if (
+      !slot ||
+      this.clock.state() !== "TRUSTED" ||
+      slot.flight ||
+      [...this.globalReasons].some((r) => r !== this.clockReason) ||
+      [...slot.reasons].some((r) => r !== slot.historyReason)
+    )
+      return false;
+    try {
+      return (
+        slot.cooldownUntil === undefined || this.now() >= slot.cooldownUntil
+      );
+    } catch {
+      return false;
+    }
   }
   /** Authority is in this closure; another owner cannot remove its reason. */
   stopControl(scope: "global" | string): StopControl {
@@ -142,6 +204,17 @@ export class ProviderSendGate {
         historyTimestampsTrusted: false,
         historyComplete: false,
       };
+    if (slot.historySource) {
+      // Tx-Q owns busy before invoking this callback, possibly before BEGIN.
+      // Do not re-enter a History read/close an Attempt here. The authenticated
+      // path re-validates actual History under its own BEGIN IMMEDIATE instead.
+      // False legacy fields honestly preserve the old Monitor's meaning.
+      return {
+        clockTrusted: this.historyInterlock(provider),
+        historyTimestampsTrusted: false,
+        historyComplete: false,
+      };
+    }
     this.refreshTrust(slot);
     const history = slot.binding.history.state() === "TRUSTED";
     return {
@@ -214,6 +287,15 @@ export class ProviderSendGate {
       );
       if (!reservation || reservation.providerKey !== record.provider)
         return deny("invalid_evidence");
+      if (
+        slot.historySource &&
+        !inspectAuthenticatedHistory(
+          slot.historySource,
+          record.repository,
+          reservation,
+        )
+      )
+        return deny("runtime_history_unverified");
       const now = this.now();
       if (
         typeof reservation.measurementStartedNs !== "bigint" ||
@@ -227,6 +309,16 @@ export class ProviderSendGate {
         return deny("delay_exceeded");
       }
       if (!this.adapter) return deny("http_adapter_unavailable");
+      // Authenticated History may synchronously detect invalidation during its
+      // DB/Clock checks. Re-check existing authority AFTER those calls, before
+      // issuing/consuming the Permit and invoking the trusted Adapter.
+      if (
+        record.used ||
+        record.epoch !== slot.epoch ||
+        this.globalReasons.size ||
+        slot.reasons.size
+      )
+        return deny("old_epoch_or_stopped");
       const binding = {
         provider: record.provider,
         attempt: record.quotaAttempt,
@@ -302,7 +394,13 @@ export class ProviderSendGate {
       if (!this.globalReasons.has(this.clockReason))
         this.close("global", this.clockReason);
     } else this.globalReasons.delete(this.clockReason);
-    if (slot.binding.history.state() !== "TRUSTED") {
+    const historyReady = slot.historySource
+      ? inspectAuthenticatedHistory(
+          slot.historySource,
+          slot.binding.repository,
+        ) !== null
+      : slot.binding.history.state() === "TRUSTED";
+    if (!historyReady) {
       if (!slot.reasons.has(slot.historyReason))
         this.close(this.providerOf(slot), slot.historyReason);
     } else slot.reasons.delete(slot.historyReason);

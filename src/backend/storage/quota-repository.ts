@@ -1,3 +1,9 @@
+import {
+  historySourceBelongsTo,
+  inspectAuthenticatedHistory,
+  authenticatedReservationReady,
+  type AuthenticatedHistorySource,
+} from "../quota/internal/history-boundaries.js";
 import type Database from "better-sqlite3";
 import {
   connectionCoordination,
@@ -78,6 +84,13 @@ interface Pending {
   reservation: QuotaReservation;
   guard?: WriteGuard;
 }
+const repositoryConnections = new WeakMap<QuotaRepository, Database.Database>();
+export function quotaRepositoryOwnsConnection(
+  repository: QuotaRepository,
+  db: Database.Database,
+): boolean {
+  return repositoryConnections.get(repository) === db;
+}
 const trials = new WeakMap<QuotaAttempt, Trial>();
 const evidenceRegistry = new WeakMap<
   QuotaReservationEvidence,
@@ -113,10 +126,62 @@ export class QuotaRepository {
   private readonly provisioningUnresolved: Set<string>;
   private readonly active = new Map<QuotaProvider, QuotaAttempt>();
   private readonly guard = new QuotaGuard();
+  private historySource?: AuthenticatedHistorySource;
+  private readonly confirmedProvisioning = new Map<QuotaProvider, number>();
+  /** Internal identity-bound path. Once bound, there is no legacy trust fallback. */
+  bindHistorySource(source: AuthenticatedHistorySource): void {
+    if (this.historySource || !historySourceBelongsTo(source, this))
+      throw new TypeError("History source unavailable");
+    this.historySource = source;
+  }
+  ownsPending(attempt: QuotaAttempt): boolean {
+    const trial = trials.get(attempt);
+    return (
+      !!trial &&
+      trial.owner === this &&
+      this.pending.get(trial.providerKey)?.trial === trial
+    );
+  }
+  isDrained(): boolean {
+    try {
+      return (
+        this.db.open &&
+        !this.coordination.busy &&
+        !this.coordination.blocked &&
+        !this.coordination.connectionUnresolved &&
+        this.db.inTransaction === false &&
+        this.pending.size === 0 &&
+        this.provisioningUnresolved.size === 0 &&
+        this.active.size === 0
+      );
+    } catch {
+      return false;
+    }
+  }
+  hasConfirmedProvisioning(provider: QuotaProvider): boolean {
+    const stamp = this.confirmedProvisioning.get(provider);
+    if (
+      stamp === undefined ||
+      this.provisioningUnresolved.has(provider) ||
+      !this.db.open
+    )
+      return false;
+    try {
+      const history = this.history(provider);
+      return (
+        !!history.metadata &&
+        history.metadata.historyStatus === "ACTIVE" &&
+        history.metadata.initializedAtMs === stamp
+      );
+    } catch {
+      return false;
+    }
+  }
   constructor(
     private readonly db: Database.Database,
     private readonly schemaVersion: 2 | 3 = 2,
   ) {
+    repositoryConnections.set(this, db);
     this.coordination = connectionCoordination(db);
     let pending = pendingByConnection.get(db);
     if (!pending) {
@@ -208,10 +273,20 @@ export class QuotaRepository {
       this.db.exec("BEGIN");
       validateSchema(this.db, this.schemaVersion);
       const history = this.history(providerKey);
+      const authenticated = this.historySource
+        ? this.guard.evaluateAuthenticated(
+            this.historySource,
+            this,
+            history,
+            now,
+          )
+        : undefined;
       this.db.exec("COMMIT");
       if (!this.resolved())
         return { allowed: false, reason: this.unresolved().reason };
-      return this.guard.evaluate(providerKey, history, now, trust);
+      return (
+        authenticated ?? this.guard.evaluate(providerKey, history, now, trust)
+      );
     } catch (error) {
       if (!this.resolveTransaction())
         return { allowed: false, reason: this.unresolved().reason };
@@ -281,6 +356,7 @@ export class QuotaRepository {
       this.db.exec("COMMIT");
       if (!this.resolved())
         return { outcome: "unknown", reason: this.unresolved().reason };
+      this.confirmedProvisioning.set(providerKey, now);
       return { outcome: "initialized" };
     } catch (error) {
       if (!this.resolveTransaction())
@@ -300,6 +376,24 @@ export class QuotaRepository {
   reserve(request: QuotaReservationRequest): QuotaReservationResult {
     const connection = this.refusal();
     if (connection) return connection;
+    if (this.historySource) {
+      try {
+        // Preserve pending/unknown precedence before any History precheck.
+        const pending = this.refusal(request.providerKey);
+        if (pending) return pending;
+        if (!inspectAuthenticatedHistory(this.historySource, this))
+          return {
+            outcome: "quota_blocked",
+            reason: "history_source_unverified",
+          };
+      } catch {
+        return {
+          outcome: "not_saved",
+          scope: "input",
+          reason: "invalid_quota_attempt",
+        };
+      }
+    }
     this.coordination.busy = true;
     let attempt: Pending | undefined;
     let committing = false;
@@ -337,7 +431,11 @@ export class QuotaRepository {
         };
       if (!this.resolved()) return this.unresolved();
       const trusted = this.trust(source);
-      const reason = this.trustFailure(trusted);
+      const reason = this.historySource
+        ? authenticatedReservationReady(this.historySource, this)
+          ? undefined
+          : "history_source_unverified"
+        : this.trustFailure(trusted);
       if (reason) return { outcome: "quota_blocked", reason };
       // Keep these adjacent: Timestamp acquisition and all Tx-Q work are inside
       // F-02 elapsed time. Do not restart the origin at COMMIT or reconciliation.
@@ -356,12 +454,14 @@ export class QuotaRepository {
       validateSchema(this.db, this.schemaVersion);
       const currentTrust = this.trust(source);
       const before = this.history(provider);
-      const result = this.guard.evaluate(
-        provider,
-        before,
-        reservedAtMs,
-        currentTrust,
-      );
+      const result = this.historySource
+        ? this.guard.evaluateAuthenticated(
+            this.historySource,
+            this,
+            before,
+            reservedAtMs,
+          )
+        : this.guard.evaluate(provider, before, reservedAtMs, currentTrust);
       if (!result.allowed || !trial.active) {
         this.db.exec("ROLLBACK");
         return {

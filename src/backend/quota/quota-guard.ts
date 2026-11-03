@@ -1,3 +1,8 @@
+import {
+  evaluateAuthenticatedQuota,
+  type AuthenticatedHistorySource,
+} from "./internal/history-boundaries.js";
+import type { QuotaRepository } from "../storage/quota-repository.js";
 export const TOMORROW_IO = "tomorrow.io" as const;
 export type QuotaProvider = typeof TOMORROW_IO;
 export interface QuotaMetadata {
@@ -33,6 +38,17 @@ export function quotaTimestamp(n: number): boolean {
   );
 }
 export class QuotaGuard {
+  /** Internal authenticated D-03 path. Uses the existing conservative evaluator;
+   * no trust booleans are manufactured and the legacy evaluate stays unchanged.
+   */
+  evaluateAuthenticated(
+    source: AuthenticatedHistorySource,
+    repository: QuotaRepository,
+    history: QuotaHistory,
+    now: number,
+  ): QuotaInspectionResult {
+    return evaluateAuthenticatedQuota(source, repository, history, now);
+  }
   evaluate(
     provider: string,
     history: QuotaHistory,
