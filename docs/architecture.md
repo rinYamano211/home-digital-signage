@@ -1346,7 +1346,7 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 | Config変更 | 通知方式（Event / Watch / Callback / Polling等）、Runtime Apply / Retry、Migration Library / 実装方式、Secret切替・Connection Test。Config Revision / Optimistic Lock等はMVPでの必要性を確認し、単一変更元では具体的な競合制御実装を必須としない。不要であればFutureの複数変更元導入時に具体化する |
 | Process / Recovery | 原則1 Backend Process、systemd正式採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdogは未決定。Backoff・HTTP Timeoutの合意値は16.3 |
 | Startup / State更新 | 早期復旧と速やかな外部取得を両立するConcurrency・非同期処理・Task管理、State更新・通知のタイミング・同期方式、Recovery Event / Trigger |
-| Time / Date | systemd-timesyncdが第一候補（Pi OS実構成確認後に最終判断）。Pi 5内蔵RTC・Backup Battery採用、UTC / ISO 8601・Asia/Tokyo・Monotonic Clockの既存方針を維持。RTC設定・同期状態・Time Usability実機確認は後続（技術選定24.3） |
+| Time / Date | systemd-timesyncdをMVP採用（技術選定C-Impl-5B-1、実機確認は後続）。Pi 5内蔵RTC・Backup Battery採用、UTC / ISO 8601・Asia/Tokyo・Monotonic Clockの既存方針を維持。RTC設定・同期状態・Time Usability実機確認は後続（技術選定24.3） |
 | Runtime / Framework | 日時API、Monotonic Clock API、Timer / Scheduler、Polling / Event / Timer等による時間変化検知・再評価起動。標準TimerのMonotonic Time利用を確認し、利用可能なら標準機能を優先する |
 | Logs / Metrics | Pino・persistent journald・OS標準Monitoring・systemd timer＋軽量スクリプトによる72時間計測を正式採用。100MiB・7日・INFO以上・60秒は実機前の初期設定案。最終値・Rate Limit・ログ項目・CSV Schema・Script・合否基準は後続（技術選定24.5） |
 
@@ -1485,7 +1485,7 @@ Gateは本番の信頼済みHTTP開始Adapterを使い、最終判定・一度�
 
 Clock / History Trust監視・判定側は失効をGateへ通知し、Gateが同期的に閉鎖・Send Epoch更新・旧権限失効を行う。Gateの最終確認で異常・鮮度切れを検出した場合も同じ制御とする。対象Providerに未終了HTTPがあればGateがAbortを要求し、Lifecycle終了までは占有を維持する。各Trustの判定責務が自身の停止理由・解除条件を所有し、他の停止理由を解除せず、回復後も旧Attempt / Permitを復活させない。これは検出・通知後のApplication内制御であり、監視間隔中の未検出の外部変化を即時に把握する保証ではない。
 
-今回確定したStep 1〜6、Permit・Trust・F-02境界・テスト計画は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-4-send-gate-trust)を正本とする。C-Impl-4の実装・テストは未実施。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](technology-stack.md#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期取得方法・RTC-only送信許可は未確定で、確認不能なら送信しない。独立制御の完成と、実Provider Client・Coordinator・Startup / Management Stop・Recoveryを含む本番統合の完成を区別する。今回コード・DB操作・実APIアクセス・実機検証は行わない。
+今回確定したStep 1〜6、Permit・Trust・F-02境界・テスト計画は[技術スタック選定 23.11](technology-stack.md#pr-c-c-impl-4-send-gate-trust)を正本とする。C-Impl-4の実装・テストは未実施。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](technology-stack.md#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期取得方法は[C-Impl-5B-1](technology-stack.md#pr-c-c-impl-5b1-os-sync)で採用し、RTC-only送信は禁止とする。確認不能なら送信しない。独立制御の完成と、実Provider Client・Coordinator・Startup / Management Stop・Recoveryを含む本番統合の完成を区別する。今回コード・DB操作・実APIアクセス・実機検証は行わない。
 
 ### 16.4 Validation・Transaction分離・公開
 

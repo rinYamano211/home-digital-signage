@@ -2741,7 +2741,7 @@ Providerごとの未終了Requestは最大1件とする。fetchのPromise resolv
 
 同期閉鎖は失効の検出・通知後のApplication内制御である。定期監視の観測間隔中に発生した未検出の時計異常や外部状態変化まで即時に把握し、完全に防止できるという保証はしない。
 
-History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立確認とし、C-Impl-4の既存Monitorが用いるUNVERIFIED / TRUSTED / SUSPENDEDをDBのhistory_statusと同一視しない。D-04で採用したHistory InterfaceはTRUSTED / CONSERVATIVE / BLOCKEDであり、既存Monitor実装と新Interfaceの結合は未実装である。時計の安定観測だけではHistory Trustを自動回復せず、不明履歴を削除・初期化しない。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の具体的取得手段・RTC-only送信許可条件は引き続き未確定である。
+History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立確認とし、C-Impl-4の既存Monitorが用いるUNVERIFIED / TRUSTED / SUSPENDEDをDBのhistory_statusと同一視しない。D-04で採用したHistory InterfaceはTRUSTED / CONSERVATIVE / BLOCKEDであり、既存Monitor実装と新Interfaceの結合は未実装である。時計の安定観測だけではHistory Trustを自動回復せず、不明履歴を削除・初期化しない。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の取得方式とRTC-only送信の扱いは[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用した（MVP。本番配線・実機検証は未完了）。
 
 **Step 5：F-02遅延判定とProvider Cooldown**
 
@@ -2766,7 +2766,7 @@ History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立�
 
 **後続工程・未確定事項**
 
-C-Impl-5以降へ実HTTP Client・Coordinator全取得フロー・Startup / Management Stop統合、PR-DへTx-A / Tx-P / Pending実連携、PR-EへDB Recovery / Restoreを引き継ぐ。管理停止の永続化・停止完了APIとF-03の実連携は後続Lifecycle工程とする。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の具体的取得手段・RTC-only送信許可条件は引き続き未確定である。Pi実機の時計・RTC・遅延測定、暫定値の妥当性、Quota履歴長期性能は未検証。独立制御の設計確定を、これらの完成・PASSとみなさない。
+C-Impl-5以降へ実HTTP Client・Coordinator全取得フロー・Startup / Management Stop統合、PR-DへTx-A / Tx-P / Pending実連携、PR-EへDB Recovery / Restoreを引き継ぐ。管理停止の永続化・停止完了APIとF-03の実連携は後続Lifecycle工程とする。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の取得方式とRTC-only送信の扱いは[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用した（MVP。本番配線・実機検証は未完了）。Pi実機の時計・RTC・遅延測定、暫定値の妥当性、Quota履歴長期性能は未検証。独立制御の設計確定を、これらの完成・PASSとみなさない。
 
 <a id="pr-c-c-impl-5a-http-lifecycle"></a>
 
@@ -2997,16 +2997,37 @@ Clock TrustとHistory Trustを独立して評価する。壁時計が正常と�
 | Tx-Qからfetch開始までの最大許容遅延 | 1秒 |
 | 遅延超過後のProvider再評価待機 | 5秒 |
 
-これらは数学的な安全保証・実測保証値ではない。安定観測60秒や各窓2秒の余裕だけで、時刻異常履歴や初期Quota使用状況が安全だと判断しない。F-02の方式は設計採用済みだが、1秒・2秒・5秒の安全性・妥当性は未検証である。時計異常の差分閾値1秒を絶対時刻誤差の上限と同一視しない。2秒が時刻誤差・計測誤差・送信開始遅延の合計に十分かも未実証で、詳細は[F-02](#pr-c-c3-f02-delay-margin)を実機検証する。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の具体的取得手段・RTC-only送信許可条件は引き続き未確定である。確認不能なら送信禁止とし、本番で無条件TRUSTEDを返す設定や任意のTrust入力による迂回経路を設けない。
+これらは数学的な安全保証・実測保証値ではない。安定観測60秒や各窓2秒の余裕だけで、時刻異常履歴や初期Quota使用状況が安全だと判断しない。F-02の方式は設計採用済みだが、1秒・2秒・5秒の安全性・妥当性は未検証である。時計異常の差分閾値1秒を絶対時刻誤差の上限と同一視しない。2秒が時刻誤差・計測誤差・送信開始遅延の合計に十分かも未実証で、詳細は[F-02](#pr-c-c3-f02-delay-margin)を実機検証する。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の取得方式とRTC-only送信の扱いは[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用した（MVP。本番配線・実機検証は未完了）。確認不能なら送信禁止とし、本番で無条件TRUSTEDを返す設定や任意のTrust入力による迂回経路を設けない。
 
 **C-1との責務境界（R-01）**：C-1はSchedulerの再スケジュールを目的とする時計変更監視を追加しない方針を維持する。C-3はQuota Guardの送信安全性専用の監視であり、時計変更イベントの発行やScheduler専用再スケジュール機構を追加しない。表示用時刻のRTC利用可否（R-02）とも別判定とし、既存C-1・C-2受入条件は変更しない。
 
+
+<a id="pr-c-c-impl-5b1-os-sync"></a>
+
+#### C-Impl-5B-1：OS同期確認Adapter（MVP）
+
+Provider送信用Clock TrustのOS同期確認入力として、MVPでは次を採用する。表示用時刻の利用可否（Architecture 10.2・R-02）は変更しない。
+
+| 項目 | 採用 |
+|---|---|
+| OS同期方式 | systemd-timesyncd（MVP採用。Pi OS実機での動作確認は後続の実機検証） |
+| 取得方法 | Backend Processから`timedatectl show -p NTPSynchronized --value`を非同期で実行 |
+| 判定 | 出力`yes`のみ同期確認成功。`no`は非同期。実行失敗・Timeout・不正出力は取得失敗 |
+| 確認周期・Timeout | 5秒・3秒（暫定） |
+| 鮮度 | 応答を検証した後に単調時計で記録し、既存の鮮度上限15秒を超えた結果は使わない |
+| 対象外 | D-Busの直接実装、NTP品質（Offset・通信断等）の詳細監視、新規Config・外部依存 |
+
+- Adapterは確認結果の取得・保持だけを担い、既存`ClockTrustMonitor`の同期Callbackへ結果を渡す。Clock Trust・History Trust・Quota Guardの判定、Trust Epoch、状態遷移は変更しない。
+- `no`・取得失敗では以前の成功結果を破棄する。成功を生成するFallbackは設けない。確認できない場合はFail Closedとする。
+- `NTPSynchronized=yes`は、直近のNTP通信成功や絶対時刻誤差の上限を保証しない。MVPはこの残余リスクを受け入れ、暫定値と同様に実機検証の対象とする。
+- RTC-only送信は禁止する（RTCだけで同期確認成功としない）。Window Waitの本番無効と保守的Quota計上は、4B-3のまま維持する。
+- Adapterの実装と、Gate Factory・Startup等への本番配線は別工程とする。本節の採用だけでは本番送信を有効にしない。
 
 <a id="pr-c-c-impl-5b4-history-restart"></a>
 
 #### C-Impl-5B-4：History Trust / Restart Recovery詳細設計（P0・P1整合レビュー反映）
 
-本節はC-Impl-5B-4の設計正本とする。基準main `8544d988db6af29ca7eb105f18bed271bcd4b6f8`を読み取り、P0・P1合意と採用済みR-01〜R-03を詳細化し、PR #51でmainへ反映した。今回D-01〜D-03を同PRのMerge Commit `96e29396b95a1ea02ee06589331230656ef77fd0`に基づいて追加確定する。**設計確定・実装と受入試験は未実施**であり、C-Impl-5Bの本番Trust配線・Restart Recoveryが実装済みという意味ではない。既存F-01〜F-03・U-12、C-1 / C-2、Tx-Q/A/P/C、PR-D / PR-Eの責務は維持する。現行実装との差・受入対応は[専用検証計画](verification/c-impl-5b4-history-trust-restart-recovery.md)に記録する。過去節のHistory管理回復手順「未確定」は本節の採用範囲について更新し、OS同期取得の具体方式・RTC-only送信許可等の未決事項は残す。
+本節はC-Impl-5B-4の設計正本とする。基準main `8544d988db6af29ca7eb105f18bed271bcd4b6f8`を読み取り、P0・P1合意と採用済みR-01〜R-03を詳細化し、PR #51でmainへ反映した。今回D-01〜D-03を同PRのMerge Commit `96e29396b95a1ea02ee06589331230656ef77fd0`に基づいて追加確定する。**設計確定・実装と受入試験は未実施**であり、C-Impl-5Bの本番Trust配線・Restart Recoveryが実装済みという意味ではない。既存F-01〜F-03・U-12、C-1 / C-2、Tx-Q/A/P/C、PR-D / PR-Eの責務は維持する。現行実装との差・受入対応は[専用検証計画](verification/c-impl-5b4-history-trust-restart-recovery.md)に記録する。過去節のHistory管理回復手順「未確定」は本節の採用範囲について更新し、OS同期取得方式は[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用し、他の未決事項は残す。
 
 **基本不変条件と残余リスク**
 
@@ -3936,7 +3957,7 @@ R-01〜R-03により、C-1 / C-3の時計監視の適用範囲、表示用RTCと
 | CLK-01 | Quota Guardが壁時計・単調増加時計の経過差、観測欠落、OS時刻情報の信頼性を評価。異常時はProviderの新規Tx-Q・HTTP送信を抑止し、C-2 Control Stateは更新しない | C1-23・24、R-01・R-02 |
 | CLK-02 | OS / RTCが表示に利用可能ならネットワーク未同期だけで表示を無効化しない。表示可能なRTCだけで送信を許可せず、時計回復後もHistory Trust未回復ならFail Closed、履歴自動修復・削除なし | SCH-16 |
 | CLK-03 | Clock TrustとHistory Trustを独立評価し、履歴の内部整合性・Timestamp信頼性・完全性のいずれか不明ならFail Closed | QH-03 |
-| CLK-04 | 暫定閾値・安定観測・各窓2秒だけで安全確定しない。RTC単独送信許可の具体条件・OS同期確認実装を確定済みとしない | F-01・F-02 |
+| CLK-04 | 暫定閾値・安定観測・各窓2秒だけで安全確定しない。OS同期確認はC-Impl-5B-1の方式に限り、RTC単独では送信を許可しない。本番配線・実機検証の完了とはしない | F-01・F-02 |
 | REC-01 | Startupは閉じたGateからDB・Schema・Transaction・Provider・管理停止・Trust・Controlを復元し、強制HTTPなし | SCH-23〜26・29 |
 | REC-02 | DB Recoveryは既存5秒・Single-flight。復旧後にProvider安全性再検証 | SCH-09・10・30 |
 | REC-03 | DB Recovery後の旧Permit・旧Connection世代の予約／検証結果を拒否 | SG-03・06 |
@@ -3998,7 +4019,7 @@ Quota窓の複数制限・最遅解除見込みとControl State非更新はSCH-1
 | 正式採用 | Node.js 24 LTS、TypeScript、Fastify、SQLite、better-sqlite3、TypeBox、systemd、標準setTimeout / fetch、npm、ESM、tsc（原則Bundlingなし）、Vitest、Pino + persistent journald |
 | 正式採用：Weather | CurrentWeather / HourlyWeather / WeeklyWeatherはOpen-Meteo |
 | 条件付き正式採用 | RainForecastのTomorrow.io。プランのTimelines API 1m rainIntensity可用性、無料枠・課金・Rate Limit・継続条件、規約・商用条件、実降雨品質・安定性の確認が必要。不成立なら代替Provider再検討 |
-| 第一候補・最終判断待ち | systemd-timesyncd。Pi OS実構成を確認して最終判断 |
+| MVP採用 | systemd-timesyncd（[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)）。Pi OS実機での確認は実機検証で行う |
 | 初期方針・設定案 | Backup原則1日1回・3世代。journald100MiB・7日、Production INFO以上、72時間試験計測60秒 |
 | 未検証 | Pi 5 2GBの性能・ARM64互換性・Native Build負荷、実装・障害復旧・長期運用・CI動作 |
 
@@ -4013,7 +4034,7 @@ Snapshot2世代保持・世代別Row、State単位Scheduler、Tx-Q / Tx-A / Tx-P
 
 ### 24.3 Time / RTC
 
-systemd-timesyncdは第一候補とし、Pi OS実構成を確認して最終判断する。Pi 5内蔵RTCとRTC Backup Batteryを利用する。
+systemd-timesyncdをMVPで採用する（[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)）。Pi OS実機での確認は実機検証で行う。Pi 5内蔵RTCとRTC Backup Batteryを利用する。
 保存・通信はUTC / ISO 8601を基本とし、既存Published StateのUTC RFC3339、Schedule / WeeklyWeatherのJST暦日表現は維持する。画面はAsia/Tokyo、経過時間・Timeout等はMonotonic Clockを利用する。
 RTCが適切に動作しているなら、NTP未同期だけを理由にSystem Timeを利用不可としない。利用可能性の判定原則はArchitecture第10章を維持する。
 RTC初期化・同期状態・OS設定・実機確認は#6・#13へ引き継ぐ。
