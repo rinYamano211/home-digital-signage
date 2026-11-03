@@ -3664,7 +3664,7 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 10. Commit成功後、固定境界・単調時計連続性・対象Windowの開始時点を確認してWaitを開始する。
 11. Clock・History・Quota・Recovery・Send Gateの独立条件を再評価する。
 
-RuntimeHistoryは原則同一インスタンスを維持する。内部に局所的な登録世代を設け、Freeze前Trialを再開後に再利用させない。TrialのClock Epochと登録世代を双方検証する。再開権限はRecovery内部に限り、再開しても影響Validを復活させず、Gate開放と同義にしない。汎用Epoch機構・新永続Tableは追加しない。Freeze中にsavedが確定したConsumptionは保持し、Valid登録できなければ保守的分類・Recoveryへ進む。未分類のまま次の送信を許可しない。
+RuntimeHistoryは原則同一インスタンスを維持する。内部に局所的な登録世代を設けFreeze時に更新し、Freeze前Trialを再開後に再利用させない。TrialのClock Epochと登録世代を双方検証する。再開権限はRecovery内部に限り、再開しても影響Validを復活させず、Gate開放と同義にしない。汎用Epoch機構・新永続Tableは追加しない。Freeze中にsavedが確定したConsumptionは保持し、Valid登録できなければ保守的分類・Recoveryへ進む。未分類のまま次の送信を許可しない。
 
 **Drain完了・Commit unknown**
 
@@ -3684,9 +3684,15 @@ Commit unknownは既存Quota RepositoryのRead-only Reconcileで保存前・予�
 
 Range Waitは**Clock Trust回復完了前でも**Range Commit成功と単調時計の連続性を確認できれば開始可能。壁時計Trust失効と単調時計不連続は別であり、Clock Epoch変更だけで連続性を確認できる既存Waitを失効させない。一方、Clock回復だけで失効Waitや不確実TimestampをValidへ戻さない。Sleep / Suspend抑止・常時稼働はMVP運用前提で、複雑な専用監視は追加しない。Piでの単調時計連続性保証は未検証で、抑止だけを証明にしない。
 
-単調時計連続性の判定は、Wait Evidenceの発行・失効を管理する内部責務が所有する。既存TimeSourceとClockTrustMonitorを再利用し、利用可能なMonitor観測情報を用いる。独立した汎用Clock監視Serviceを追加しない。観測間隔超過等で連続性を確認できなければ該当Waitを失効させるが、壁時計Trust失効・Clock Epoch変更だけを単調時計不連続の証拠にしない。現行MonitorのTrust状態・Epochだけでは失効原因を区別できないため、それらだけでWaitの保持・失効を決めず、連続性を確認できなければ失効とする。
+単調時計健全性・連続性の判定は、Wait Evidenceの発行・失効を管理する内部責務が所有する。既存TimeSourceとClockTrustMonitorを再利用し、利用可能な観測情報を用いる。Clock Monitorの5秒周期・15秒鮮度は送信時のClock Trust条件であり変更しないが、長時間Waitの失効しきい値へ転用しない。GC停止・同期I/O等による観測間隔超過だけではWaitを失効させず、壁時計Trust失効・Clock Epoch変更だけでも失効させない。観測間隔超過と実際の単調時計連続性不明は同義ではない。単調時計逆行・取得失敗・不正値、その他実際に健全性・連続性を保証できない異常では該当証拠を失効させFail Closedとする。Trust状態・Epochだけでこの区別を推測せず、新しい汎用Clock監視Serviceや専用Suspend監視は追加しない。
 
-失効WaitはClock Trust回復だけでは復活させない。再開始時は対象の確定Startup境界またはRange CommitとScopeを再検証し、新しい単調時計開始時刻から対象Windowの待機時間を計測する。失効前の経過時間を無条件に引き継がない。単調時計逆行・取得失敗・連続性不明・Process再起動のFail Closedを維持する。既存のClock Trust回復前のWait開始許可、Sleep / Suspend抑止方針、実機連続性未検証という境界は変更しない。
+失効WaitはClock Trust回復だけでは復活させない。再開始時は対象の確定Startup境界またはRange CommitとScopeを再検証し、新しい単調時計開始時刻から対象Windowの待機時間を計測する。失効前の経過時間を無条件に引き継がない。単調時計逆行・取得失敗・不正値・実際の連続性不明・Process再起動のFail Closedを維持する。既存のClock Trust回復前のWait開始許可、Sleep / Suspend抑止方針、実機連続性未検証という境界は変更しない。
+
+**単調時計の根拠・保証境界（実機未検証）**
+
+TimeSourceの単調時計はprocess.hrtime.bigint()を使う。[Node.js 24のAPI説明](https://nodejs.org/docs/latest-v24.x/api/process.html#processhrtimebigint)は任意起点の高精度経過時間であり、壁時計日時として使わない。[Linux CLOCK_MONOTONIC](https://docs.kernel.org/core-api/timekeeping.html)は一般にSuspend中を計上せず、NTP等の周波数補正を受ける。Suspend中の非計上は待機完了を遅らせる側だが、Sleep抑止や単調非減少だけで実時間に対する速度精度まで証明できない。補正で時計が速く進む場合には、必要な実経過時間を満たす前に完了判定するリスクを評価する必要がある。
+
+既存の1分・65分・25時間を維持し、各Windowで必要な実経過時間より早い完了判定・履歴除外が生じない前提・制約を独立に検証する。特に1秒Quota窓に対する1分Waitも個別対象で、65分・25時間の余裕から全窓の安全性を推論しない。PiのNode.js / libuv / Linux clocksource対応、NTP補正・ドリフト、Sleep抑止と単調時計挙動・誤差の評価は後続PR-C統合・実機検証へ残す。NTP補正上限やPi保証値を確定しない。必要な健全性前提を確認できない場合はWait完了による履歴除外を許可しない。これは観測間隔の長さだけを異常証拠とすることではない。
 
 **Recovery停止理由の保持とGate開放**
 
@@ -3700,9 +3706,23 @@ TRUSTED / CONSERVATIVE / BLOCKEDを維持し、各Windowの計数はD-03の `C_w
 
 不確実Timestampの逆行だけで保守的分類全体を拒否しない。整数型・安全範囲・Timestamp表現等の構造検証と、Timestampによる信頼性 / 窓評価を分離する。Sequence欠落、二重分類、境界・証拠不一致、DB構造不整合は引き続きBLOCKED。履歴を書換え・削除・自動修復して整合させない。
 
-既存Quota RepositoryのBEGIN IMMEDIATE内で最新Metadata・全Consumption・Rangeと認証済み証拠を再検証し、分類・窓計数を再評価する。事前評価だけで予約しない。historyComplete=true等の固定値を渡さず、全件整合性と内部証拠を検証した評価を既存History評価経路へ集約する。不確実Timestampから解除時刻recheckAtMsを推測しない。予約抑止時は信頼できる再評価根拠のみを返し、具体的な型・通知方法は既存Scheduler / Repository契約との実装前照合事項として残す。偽造 / 失効証拠は除外根拠に使わず、全件保守計上またはBLOCKEDとする。
+既存Quota RepositoryのBEGIN IMMEDIATE内で最新Metadata・全Consumption・Rangeと認証済み証拠を再検証し、分類・窓計数を再評価する。事前評価だけで予約しない。historyComplete=true等の固定値を渡さず、全件整合性と内部証拠を検証した評価を既存History評価経路へ集約する。不確実Timestampから解除時刻recheckAtMsを推測しない。予約抑止後の再評価は以下のA〜Cで扱い、具体的な型・通知配線は既存Scheduler / Repository契約と照合して実装する。偽造 / 失効証拠は除外根拠に使わず、全件保守計上またはBLOCKEDとする。
 
 Commit済みConsumptionはHTTP未開始・中止でも取り消さない。保存成功とRuntime Valid登録は独立結果で、登録失敗なら未分類送信を止める。CONSERVATIVE評価・窓内余裕だけでClock / Recovery / SUSPENDED / Send Gate等を解除しない。
+
+**Quota抑止後の再評価契機（設計要件・未実装）**
+
+| 契機 | 安全な扱い |
+|---|---|
+| A：信頼できるTimestampの解除見込み | 既存Quota Repositoryが安全に算出できるrecheckAtMsを利用し、到達時に全条件を再評価する |
+| B：認証済みWaitの単調時計期限 | H_oldまたは各Range・Windowの有効な待機期限で再評価を通知する。信頼できない壁時計で無条件にrecheckAtMsへ変換しない。Wait完了だけで送信しない |
+| C：解除時刻不明 | 実行可能なStateの既存再評価経路を利用する。A/Bで次の機会を確保できない場合はMVPの最小限の周期的再評価を実装要件とし、通知欠落後も再評価機会を残す。具体周期は未確定で、提案5分を採用済みにしない |
+
+現行StateSchedulerはStateごとのsetTimeoutとCoordinatorが返すscheduled.recheckAtで再予約し、requestRecheck()は実行可能Stateの前倒し・inFlight中の要求集約を行う。固定の通常ポーリング周期はなく、held / globalHeld / stoppingではrequestRecheck()も実行しない。AcquisitionCoordinatorはInterfaceだけで、本番のQuota / Wait期限通知・周期再評価・Recovery接続は未実装。既存機構が全て揃っているとは扱わない。
+
+4B-3では内部Recovery・Wait期限とCの周期再評価をテスト可能にし、本番Scheduler / Coordinatorへの通知配線は後続PR-C統合に残す。held Schedulerの解除をrequestRecheck()で代用したり、既存の安全な再開境界を変更したりしない。Scheduler停止中は送信停止を維持し、内部評価の実行を新規予約・HTTP開始へ直結させない。通知欠落・停止があっても安全性を下げず、稼働・安全再開後に再評価する。
+
+A〜Cのすべてで認証済みHistory評価とTx-Q内最新再検証・Send Gate最終判定を維持し、Clock / Recovery / 管理停止を迂回しない。不確実Timestampから解除時刻を捏造しない。正常回復時は必要な条件が成立すれば新規Attemptで再開候補となり、Wait全窓完了を一律の必須条件にしない。
 
 **Restart Recovery・本番統合境界**
 
