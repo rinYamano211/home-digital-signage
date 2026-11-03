@@ -8,6 +8,11 @@ export interface OsSyncObservation {
 const second = 1_000_000_000n;
 const fresh = 15n * second;
 export class ClockTrustMonitor {
+  private trustEpoch = 0n;
+  /** Internal reservation binding; any detected invalidation changes this epoch. */
+  epoch(): bigint {
+    return this.trustEpoch;
+  }
   private current: TrustState = "UNVERIFIED";
   private last?: { wall: number; mono: bigint };
   private os?: OsSyncObservation;
@@ -96,6 +101,7 @@ export class ClockTrustMonitor {
     );
   }
   private fail(): void {
+    this.trustEpoch++;
     const changed = this.current !== "SUSPENDED";
     this.current = "SUSPENDED";
     this.recovering = true;

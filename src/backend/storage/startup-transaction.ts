@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { recordStartupCommit } from "./internal/startup-commit.js";
 import type { ExclusiveLock } from "./lock.js";
 import { normalizedBootId, readOsBootId } from "../time/boot-id.js";
 import {
@@ -210,6 +211,7 @@ export class StartupTransactionService {
       committing = true;
       this.db.exec("COMMIT");
       if (this.transactionActive() !== false) return this.unresolved();
+      recordStartupCommit(this.db, generation, id);
       return { outcome: "committed", generation };
     } catch (error) {
       let original: StartupResult =
