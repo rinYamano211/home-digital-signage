@@ -74,6 +74,11 @@ export class RuntimeHistory {
   facts(): readonly Readonly<RuntimeValidFacts>[] {
     return Object.freeze([...this.valid.values()]);
   }
+  /** Tx-Q persistence and Runtime Valid registration are independent results.
+   * saved && !registered establishes no Runtime Valid evidence or send
+   * authorization. Never cancel the saved Consumption or blindly reserve again.
+   * Neither saved nor registered grants History Trust or permission to send.
+   */
   reserve(request: QuotaReservationRequest): {
     reservation: QuotaReservationResult;
     registered: boolean;
@@ -120,6 +125,9 @@ export class RuntimeHistory {
       registered: this.register(reservation, request.attempt),
     };
   }
+  /** Read-only Tx-Q reconciliation may return saved while registration fails.
+   * The same two-result contract as reserve applies; persisted consumption stays.
+   */
   reconcile(attempt: QuotaAttempt): {
     reservation: QuotaReservationResult;
     registered: boolean;

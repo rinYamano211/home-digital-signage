@@ -43,6 +43,9 @@ export function inspectConfirmedRange(
     ? r.range
     : null;
 }
+/** read confirms Range retrieval only, not complete History classification,
+ * History/Quota Trust, or permission to send. It carries no confirmation token.
+ */
 export type RangeResult =
   | { outcome: "read"; ranges: readonly ConfirmedRangeFacts[] }
   | { outcome: "saved"; evidence: ConfirmedRangeEvidence }
@@ -76,6 +79,7 @@ export class HistoryRangeRepository {
   ) {
     this.c = connectionCoordination(db);
   }
+  /** Unclassified consumption can remain; callers must not infer Trust here. */
   read(): RangeResult {
     return this.run();
   }
@@ -207,6 +211,9 @@ export class HistoryRangeRepository {
             }
           : {}),
       });
+      // Reads must expose existing Ranges while unclassified consumption awaits
+      // Drain/Range registration. Only classification_gap is tolerated for read;
+      // INSERT still requires complete classification and confirmed boundaries.
       if (
         assessment.evaluation === "BLOCKED" &&
         (candidate || assessment.reason !== "classification_gap")

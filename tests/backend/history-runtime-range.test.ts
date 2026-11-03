@@ -6,6 +6,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { initializeSchema } from "../../src/backend/storage/schema.js";
 import { configureDatabase } from "../../src/backend/storage/store.js";
 import { LIFECYCLE_DDL } from "../../src/backend/storage/lifecycle-ddl.js";
+import { committedStartup } from "../../src/backend/storage/internal/startup-commit.js";
 import { StartupTransactionService } from "../../src/backend/storage/startup-transaction.js";
 import {
   QuotaRepository,
@@ -369,6 +370,9 @@ test("Production boundary has no issuers; arbitrary drained:true is not accepted
   >("../../src/backend/quota/internal/history-boundaries.js");
   expect(actual.inspectDrainEvidence({ drained: true } as never)).toBeNull();
   expect(actual.inspectWaitEvidence({ complete: true } as never)).toBeNull();
+  expect(
+    actual.inspectProvisioningEvidence({ committed: true } as never),
+  ).toBeNull();
   const f = pendingRange();
   const exec = vi.spyOn(f.db, "exec");
   expect(f.ranges.insert(candidate, { drained: true } as never)).toMatchObject({
@@ -415,7 +419,12 @@ test("Unclassified Consumption may be read but cannot be hidden by a partial Ran
   reserveRaw(f);
   f.advance(3001);
   reserveRaw(f);
-  expect(f.ranges.read().outcome).toBe("read");
+  const read = f.ranges.read();
+  expect(read).toEqual({ outcome: "read", ranges: [] });
+  expect(read).not.toHaveProperty("evidence");
+  expect(read).not.toHaveProperty("classification");
+  expect(read).not.toHaveProperty("historyComplete");
+  expect(read).not.toHaveProperty("allowed");
   f.runtime.freeze();
   expect(f.ranges.insert(candidate, drain(f, candidate, 2)).outcome).toBe(
     "rejected",
@@ -668,4 +677,105 @@ test("Already-saved Attempt does not reconcile a different pending reservation",
   const reconcile = vi.spyOn(f.repository, "reconcile");
   expect(f.runtime.reconcile(q.attempt).registered).toBe(false);
   expect(reconcile).not.toHaveBeenCalled();
+});
+
+for (const failure of ["read_error", "invalid_snapshot"] as const)
+  test(`Startup Commit completed but memory evidence recording ${failure} is never adopted`, () => {
+    const f = fixture(false);
+    const original = f.db.prepare.bind(f.db);
+    const exec = vi.spyOn(f.db, "exec");
+    vi.spyOn(f.db, "prepare").mockImplementation(((sql: string) => {
+      if (
+        sql ===
+        "SELECT * FROM startup_provider_boundaries WHERE generation=? ORDER BY provider_key"
+      ) {
+        if (failure === "read_error") throw busy();
+        // Let the real handoff validation reject a missing snapshot after Commit.
+        return original(
+          "SELECT * FROM startup_provider_boundaries WHERE generation=? AND 0",
+        );
+      }
+      return original(sql);
+    }) as typeof f.db.prepare);
+    expect(f.startup.execute({ bootId: boot })).toEqual({
+      outcome: "unknown",
+      reason: "startup_commit_unknown",
+    });
+    expect(f.db.inTransaction).toBe(false);
+    expect(
+      f.db.prepare("SELECT generation,state FROM backend_lifecycle").get(),
+    ).toEqual({ generation: 2, state: "RUNNING" });
+    expect(
+      f.db.prepare("SELECT count(*) AS n FROM startup_generations").get(),
+    ).toEqual({ n: 1 });
+    expect(
+      f.db
+        .prepare("SELECT count(*) AS n FROM startup_provider_boundaries")
+        .get(),
+    ).toEqual({ n: 1 });
+    expect(exec.mock.calls.map((c) => c[0])).toEqual([
+      "BEGIN IMMEDIATE",
+      "COMMIT",
+    ]);
+    expect(committedStartup(f.db)).toBeNull();
+    expect(committedStartup(f.db)).toBeNull();
+    expect(f.startup.execute({ bootId: boot })).toEqual({
+      outcome: "rejected",
+      reason: "startup_already_attempted",
+    });
+    expect(exec.mock.calls.map((c) => c[0])).toEqual([
+      "BEGIN IMMEDIATE",
+      "COMMIT",
+    ]);
+    expect(f.runtime.scope()).toBeNull();
+    expect(f.runtime.facts()).toEqual([]);
+  });
+test("Reconcile saved without Runtime registration retains consumption and returns no permission", () => {
+  const f = fixture();
+  const exec = f.db.exec.bind(f.db);
+  const prepare = f.db.prepare.bind(f.db);
+  let committed = false;
+  let failRead = true;
+  vi.spyOn(f.db, "exec").mockImplementation((sql) => {
+    const r = exec(sql);
+    if (sql === "COMMIT" && !committed) {
+      committed = true;
+      throw busy();
+    }
+    return r;
+  });
+  vi.spyOn(f.db, "prepare").mockImplementation(((sql: string) => {
+    if (
+      committed &&
+      failRead &&
+      sql.startsWith("SELECT provider_key,history_status")
+    )
+      throw busy();
+    return prepare(sql);
+  }) as typeof f.db.prepare);
+  const q = f.request();
+  const first = f.runtime.reserve(q);
+  expect(first.reservation.outcome).toBe("unknown");
+  expect(first.registered).toBe(false);
+  failRead = false;
+  f.clock.stop();
+  const result = f.runtime.reconcile(q.attempt);
+  expect(result.reservation).toMatchObject({
+    outcome: "saved",
+    reconciled: true,
+  });
+  expect(result.registered).toBe(false);
+  expect(f.runtime.facts()).toEqual([]);
+  expect(result).not.toHaveProperty("permit");
+  expect(result).not.toHaveProperty("allowed");
+  expect(
+    f.db
+      .prepare(
+        "SELECT sequence,reserved_at_ms FROM provider_quota_consumptions",
+      )
+      .all(),
+  ).toEqual([{ sequence: 1, reserved_at_ms: f.wall() }]);
+  expect(
+    f.db.prepare("SELECT last_sequence FROM provider_quota_metadata").get(),
+  ).toEqual({ last_sequence: 1 });
 });
