@@ -243,3 +243,49 @@ U-01〜U-03・D04-R01〜R07、R55-01の統合DDLとD04-R05のバイト列仕様�
 - **Sleep / 時刻**：systemd等のSleep / Suspend抑止・常時稼働運用を採用し、複雑な独自検出機構は追加しない。OS設定とPi単調時計は未検証。抑止だけで連続性を証明せず、不明時は該当待機未完了。Clock本番確認・RTC-only許可は新たに固定しない。
 - **耐久性・外部前提**：WAL + FULLでも電源断・microSD・管理外Restoreの完全検出／耐久保証はしない。Provider計上遅延上限不明はレベルB受容。外部Sender不在は管理者確認の前提であって技術的証明ではない。
 - **C-Impl-5B-5前の確認**：上記未指定事項をレビューし、H54対応を既存テストへ割り当て、実Startup / Shutdown / Gate / Quotaの結合範囲を確定してから実装する。今回実装・テスト実行・Migration・実Provider通信・実機試験は行っていない。
+
+<a id="pr-c-2b-4b3-plan"></a>
+
+## PR-C-2B-4B-3：実装仕様との照合・受入計画（未実施）
+
+基準main：77fcdd9b4836092a16fc37685a858ee6df2586b6。詳細契約は[4B-3 MVP実装仕様](../technology-stack.md#pr-c-2b-4b3-mvp)へ一元化する。本節は工程の状態・既存コードとの差・受入対応を記録し、上の過去工程時点の未実装記録を全面的に書き換えない。新しい試験実績ではない。
+
+| 工程・資料                                                                   | 最新mainで確認した内容                                                                                              | 残る接続・今回の扱い                                                           |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| [PR #67：4B-1](https://github.com/rinYamano211/home-digital-signage/pull/67) | history-evaluation.tsによる副作用のない排他的分類・評価。PR記録は新規76件、Linux全体1216 PASS / Skip 0              | 入力Facts自体は認証証拠でなく、TRUSTEDも送信許可ではない。今回再実行していない |
+| [PR #68：4B-2](https://github.com/rinYamano211/home-digital-signage/pull/68) | Runtime Valid管理、Range Repository、保守的窓計数、Startup確認引継ぎ。PR記録は新規68件、Linux全体1284 PASS / Skip 0 | Drain / Wait / Provisioning本番発行口は閉鎖中。今回再実行していない            |
+| 4B-3                                                                         | Clock停止・Drain・証拠・Wait・再開、既存Tx-Qへの認証済み評価接続を設計詳細化                                        | 実装・受入試験は未実施。本番配線と実Provider / Pi検証は後続                    |
+
+### 現行コードと実装前確認
+
+- [RuntimeHistory](../../src/backend/quota/internal/runtime-history.ts)はClock Epoch、同一Attempt / Connection / Startup Scope、保存済みRowを検証するが、freezeは不可逆。局所登録世代・影響Valid失効・Recovery限定再開は未実装。Freeze中の保存結果解決を、Valid登録可否から分離して既存Reconcileへ接続する必要がある。
+- [history-boundaries.ts](../../src/backend/quota/internal/history-boundaries.ts)の3つのinspect関数はnullを返す。既存テストの内部モックは本番Authorityでない。Drain / Wait / F-01の実事実を検証して発行・認証・失効する内部管理を実装し、公開自己申告Factoryへ置き換えない。
+- [HistoryRangeRepository](../../src/backend/storage/history-range-repository.ts)のTx内再Read・非重複・分類検証とCommit unknown保護を維持する。現行[分類](../../src/backend/quota/history-evaluation.ts)は全Timestamp非減少を要求し、[保守計数](../../src/backend/quota/conservative-quota.ts)にも全行の未来Timestamp拒否がある。4B-3の不確実Timestampは構造検証と窓評価を分離する必要がある。既存テスト期待値への影響は実装時に明示して更新し、既存D-03 / D-04の保守計上を弱めない。
+- [Quota Guard](../../src/backend/quota/quota-guard.ts) / [Quota Repository](../../src/backend/storage/quota-repository.ts)は全TimestampのTrustを前提とするため、現状のCONSERVATIVE計算だけでは予約できない。既存History評価経路へ認証済み評価を集約し、BEGIN IMMEDIATE内で最新履歴・証拠を再検証する接続が必要。固定Trust値・別Guardで通過させない。
+- [Send Gate](../../src/backend/send/internal/provider-send-gate.ts)はClock失効時の同期閉鎖・Attempt失効・Abort要求・Lifecycle通知までのFlight保持を持つ。4B-3はこれと予約停止・Runtime Freeze・Drainを内部で調整する。Abort要求を終了と読み替えない。停止理由の解除とRuntimeHistory再開は別操作。
+- 構造検証と不確実Timestamp評価の差は現行4B-1 / 4B-2からの実装変更点として明示する。D-03・D-04の安全契約を変更する矛盾は見つかっていない。具体的な内部型・依存注入、信頼できる再評価時刻を返せない場合の通知は、既存Scheduler / Repository APIとの実装前照合事項である。
+
+### 追加受入観点（設計確定・未実施）
+
+B43-01〜16は4B-3の追跡用観点。既存H54・TQ・SG・HTTP等のID・本文を置換せず、ID数と同数の独立テスト関数を要求しない。実装時には既存回帰と再利用・拡張し、内部結合テストと後続本番配線・実機検証を区別する。
+
+| ID     | 期待結果・検証対象                                                                                                                             | 既存条件との対応           |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| B43-01 | Clock異常と予約が競合しても同期Gate閉鎖・新規Tx-Q / HTTP禁止・旧Attempt失効を先行し、Drain後の最終Sequenceを使う                               | H54-08・34、TQ、SG         |
+| B43-02 | HTTP Abort要求後も所有Lifecycleが継続すればDrain未完了・Flight保持、Drain証拠なし                                                              | H54-08・12、HTTP-02・03    |
+| B43-03 | Commit unknownを既存Read-only Reconcileでsaved / not_savedへ解決した場合のみDrainを進める。解決不能ではDrain / Range証拠なし、再予約・再送禁止 | H54-01・08・34、TQ-04      |
+| B43-04 | 影響Validを失効し、信頼できる開始境界がなければ保守的拡大。既存Range / 残存Validとの非重複・全件排他的分類を維持                               | H54-07〜10・33〜36         |
+| B43-05 | Freeze前TrialはClock Epoch・局所登録世代を検証して再開後も拒否。同一RuntimeHistoryを維持しRecovery以外は再開できない                           | H54-08・34、TQ             |
+| B43-06 | Range Commit失敗・unknownでは確定証拠とWaitを発行しない。保存済みConsumptionや既存Rangeを取り消さない                                          | H54-01・08・34             |
+| B43-07 | 不確実Timestamp逆行でも構造正常なら全件保守計上を可能とし、Timestamp窓評価は認証済みH_new_validだけ。安全範囲等の構造検証は維持                | H54-07・09・27、QH         |
+| B43-08 | Sequence欠落・重複分類・分類漏れ・証拠不一致・DB不整合はBLOCKED。自動修復しない                                                                | H54-07・27・35・36         |
+| B43-09 | H_oldと各Rangeの1分 / 65分 / 25時間を独立判定し、完了した対象Windowだけ除外。別対象の証拠流用・偽造を拒否                                      | H54-02・03・09・37         |
+| B43-10 | Range Commit後に連続単調時計を確認できればClock Trust回復前でもWait開始可。壁時計失効・Epoch変更だけで既存Waitを失効させない                   | H54-04・10・37             |
+| B43-11 | 単調時計逆行・取得失敗・連続性不明で該当Wait失効、未完了計上。Sleep抑止だけで連続性を証明しない                                                | H54-04・25・37             |
+| B43-12 | 再起動後は旧Evidence・Trialを拒否。新Cutoff以前をH_oldとして案D適用。空履歴だけでProvisioning証拠を発行せず、F-01成功を要求                    | H54-01・24・31・32         |
+| B43-13 | Tx-Q内で最新履歴と証拠を再検証し、事前評価後の変更・偽造・失効を拒否。savedでもValid登録失敗なら未分類送信を止める                             | H54-07・27・34、TQ         |
+| B43-14 | いずれかのQuota窓で上限なら予約・HTTPを許可しない。不確実Timestamp由来の解除時刻を推測しない。HTTP未開始でもCommit済み履歴を保持               | TQ、SG、H54-09             |
+| B43-15 | Clock回復・RuntimeHistory再開だけではGateを開かず、History / Quota / Recovery / 管理停止の独立条件を要求                                       | H54-10・28・33、SG         |
+| B43-16 | CONSERVATIVE送信候補とCLEANを分離。通常クラッシュに毎回管理者隔離を要求せず、重大不整合の手動復旧・独立25時間隔離は維持                        | H54-11〜18・26・31・38〜43 |
+
+本番OS時刻情報・本番HTTP / Startup / Shutdown配線、Pi単調時計・Sleep抑止・SQLite耐久性・時刻閾値、実APIは後続のPR-C統合・実機検証。管理者隔離・CLEAN・公開 / Pending（PR-D）・継続DB Recovery（PR-E）の既存責務を先取りしない。今回の文書作業ではテスト・Build・Lint・Migration・実DB・実API・実機操作を行っていない。

@@ -3632,6 +3632,76 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 今回採用した待機・承認・CLEAN・v3 / FULL方針は詳細設計であり、既存GuardのTimestamp全件検証、Schema v2、NORMAL設定、Trustの本番配線未完了を実装済みへ読み替えない。D-01〜D-03の4 Table DDL、Startup Transactionの構造検証・Generation契約、Range永続化とRuntime証拠の分離・再開案Aは確定済みである。D-04のU-01 / U-02 / U-03とD04-R01〜R07、Fingerprintの承認仕様も採用済みである。Fingerprintのタグ・バイト表現とSnapshotの統合DDLも追加承認済みである。独立テストベクトル、証拠管理の具体型・API、R-03のB_clean値、Token・UDS実装方式、Suspend検出方式、Pi耐久検証は[専用文書の要確認事項](verification/c-impl-5b4-history-trust-restart-recovery.md#実装前の要確認事項と保証境界)に残す。未確認項目は安全側停止とし、今回C-Impl-5B-5の実装やPR-E全体を先取りしない。
 
 
+<a id="pr-c-2b-4b3-mvp"></a>
+
+##### PR-C-2B-4B-3：Clock異常・Drain・Wait・Restart Recovery（MVP実装仕様）
+
+本節は[D-03](#pr-c-c-impl-5b4-d03)・[D-04](#pr-c-c-impl-5b4-d04)の実装詳細化であり、安全契約・Schema・Quota上限を変更しない。基準mainは77fcdd9b4836092a16fc37685a858ee6df2586b6（PR #68）。4B-3は**設計確定・実装未完了・受入試験未実施**。既存工程の結果と今回の検証計画は[工程別の照合・受入対応](verification/c-impl-5b4-history-trust-restart-recovery.md#pr-c-2b-4b3-plan)で区別する。
+
+**再利用する責務と現在の不足**
+
+| 対象 | 4B-3での役割・現在との差 |
+|---|---|
+| RuntimeHistory / Runtime Valid | 4B-2の同一Connection・Startup Scope・予約証拠・Clock Epoch検証を再利用。同一インスタンス内の影響証拠失効、局所登録世代、Recovery限定再開を追加する設計。現行freezeは不可逆で再開機能なし |
+| history-boundaries.ts | Drain Boundary / Window Wait / Runtime Provisioningの内部発行・認証・失効を実装する設計。現在のinspect関数はnullを返す閉じた発行境界で、本番証拠は未発行 |
+| HistoryRangeRepository | 共有Connection・BEGIN IMMEDIATE・全履歴再読込・Range非重複検証・Commit確認を再利用。Drain発行元と接続し、不確実Timestampの扱いを構造検証から分離する |
+| History評価・Quota Guard / Repository | 既存の分類・保守計数・予約・Read-only Reconcileを再利用。認証済み評価を既存History評価経路へ集約し、既存Guard / Tx-Q内へ接続する。別Repository・別Guardは追加しない |
+| Recovery内部制御 | Clock失効・同期停止・Freeze・Drain・Range・Wait・再判定を調整する。History再開、Gate開放、CLEAN適格性は別操作・別判定 |
+
+4B-1 / 4B-2の現行分類・保守計数は全履歴のTimestamp非減少や未来Timestamp拒否を含み、旧Quota Guardも全Timestampの信頼を要求する。これは不確実履歴の保守計上に必要な経路が未接続の状態である。4B-3では以下の構造 / Timestamp責務分離を実装する必要があり、現行コードで既に可能・検証済みとは扱わない。信頼フラグを固定trueにする迂回では解決しない。
+
+**Clock異常時の順序・Freezeと再開**
+
+1. Clock Trust失効を検出する。
+2. Provider Send Gateを同期的に閉じる。
+3. 新規Tx-Q・HTTP開始を禁止し、旧Attempt・Permitを失効させる。予約開始・送信開始との同期競合制御を維持する。
+4. Runtime Valid証拠の新規登録をFreezeする。
+5. 進行中Quota TransactionとHTTP Adapter所有LifecycleをDrainする。
+6. Drain後の最終Sequenceと、信頼できる影響開始境界を検証する。検出時lastSequenceを最終値にしない。
+7. 影響した可能性のあるSequenceのRuntime Valid証拠を失効させる。開始境界を証明できなければ保守的に拡大し、安全な分類不能なら停止する。
+8. 全ConsumptionのH_old / H_new_valid / H_new_uncertainへの排他的所属、既存Range・残存Validとの非重複、分類漏れなしを検証する。
+9. 不確実Rangeを既存Repository Transactionで確定し、Commit成功を確認する。空Rangeは作らず、既存Rangeの変更・統合で重複を解消しない。
+10. Commit成功後、固定境界・単調時計連続性・対象Windowの開始時点を確認してWaitを開始する。
+11. Clock・History・Quota・Recovery・Send Gateの独立条件を再評価する。
+
+RuntimeHistoryは原則同一インスタンスを維持する。内部に局所的な登録世代を設け、Freeze前Trialを再開後に再利用させない。TrialのClock Epochと登録世代を双方検証する。再開権限はRecovery内部に限り、再開しても影響Validを復活させず、Gate開放と同義にしない。汎用Epoch機構・新永続Tableは追加しない。Freeze中にsavedが確定したConsumptionは保持し、Valid登録できなければ保守的分類・Recoveryへ進む。未分類のまま次の送信を許可しない。
+
+**Drain完了・Commit unknown**
+
+Drainは新規Tx-Q / HTTP禁止、Adapter所有Lifecycle終了、進行中Quota Transaction解決、対象予約結果saved / not_saved確定、未解決unknownなし、DB Connection / Transaction整合をすべて要求する。Abort要求・Timeout通知・Promise Rejectだけで終了としない。未終了LifecycleはFlight保持を維持する。
+
+Commit unknownは既存Quota RepositoryのRead-only Reconcileで保存前・予定・保存後と競合排除を照合する。FreezeによってRuntime Valid登録が禁止されていても、保存結果の解決責務と混同しない。saved確定は履歴保持、not_saved確定は未保存として扱い、どちらも送信権限ではない。解決不能ならDrain Boundary Evidence・Range確定証拠を発行せずFail Closed。未解決Connectionで次のTransactionを開始せず、無条件再予約・再送信しない。Range Commit unknownも確定証拠なし・停止を維持する。
+
+**Evidenceの内部発行・認証・失効**
+
+既存history-boundaries.ts等の不透明な内部認証境界を拡張し、新しい汎用Evidence Frameworkや自己申告Booleanの発行口を作らない。Process内の所有者・実オブジェクト認証と現行Connection / Startup確認を使い、同値のフィールドだけをコピーした偽造・別Scope流用を拒否する。
+
+| 証拠 | 発行条件・拘束 | 失効・拒否 |
+|---|---|---|
+| Drain Boundary | 同期Gate閉鎖、新規予約禁止、実Drain終了と最終Sequence検証後のみ。Provider / Generation / Process / Startup Scope・cutoff・start / end / lastSequenceへ拘束 | 未終了HTTP、未解決Tx / unknown、Connection / Startup Scope変更、境界不一致では発行・採用しない |
+| Window Wait | 確定Startup境界、またはRange Commit成功後の固定境界・開始時点・連続単調時計を確認。H_oldと各Rangeを独立に識別し、Scope / 対象Range・終端Sequence / Windowへ拘束 | 単調時計逆行・取得失敗・連続性不明・Process再起動で該当証拠失効。別Window / Range / Scopeへの流用不可 |
+| Runtime Provisioning | F-01明示Provisioning成功確定と現行Startup Scope確認後のみ。Provider / Generation / ProcessとRuntime Cutoff 0へ拘束 | 通常Startup・空履歴だけから発行しない。F-01 unknown、Scope / Connection変更、再起動では不採用。永続NULLを0へ書換えない |
+
+Range Waitは**Clock Trust回復完了前でも**Range Commit成功と単調時計の連続性を確認できれば開始可能。壁時計Trust失効と単調時計不連続は別であり、Clock Epoch変更だけで連続性を確認できる既存Waitを失効させない。一方、Clock回復だけで失効Waitや不確実TimestampをValidへ戻さない。Sleep / Suspend抑止・常時稼働はMVP運用前提で、複雑な専用監視は追加しない。Piでの単調時計連続性保証は未検証で、抑止だけを証明にしない。
+
+**History・Quotaの認証済み評価とTx-Q再検証**
+
+TRUSTED / CONSERVATIVE / BLOCKEDを維持し、各Windowの計数はD-03の `C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w` に従う。H_oldと各Rangeは1秒窓の1分、60分窓の65分、24時間窓の25時間を独立に待ち、未完了窓では全件計上、認証された完了窓だけ除外可能とする。H_new_validだけが信頼できるTimestamp・既存暫定2秒マージンによる窓内評価を受ける。上限1 / 20 / 400は変更しない。
+
+不確実Timestampの逆行だけで保守的分類全体を拒否しない。整数型・安全範囲・Timestamp表現等の構造検証と、Timestampによる信頼性 / 窓評価を分離する。Sequence欠落、二重分類、境界・証拠不一致、DB構造不整合は引き続きBLOCKED。履歴を書換え・削除・自動修復して整合させない。
+
+既存Quota RepositoryのBEGIN IMMEDIATE内で最新Metadata・全Consumption・Rangeと認証済み証拠を再検証し、分類・窓計数を再評価する。事前評価だけで予約しない。historyComplete=true等の固定値を渡さず、全件整合性と内部証拠を検証した評価を既存History評価経路へ集約する。不確実Timestampから解除時刻recheckAtMsを推測しない。予約抑止時は信頼できる再評価根拠のみを返し、具体的な型・通知方法は既存Scheduler / Repository契約との実装前照合事項として残す。偽造 / 失効証拠は除外根拠に使わず、全件保守計上またはBLOCKEDとする。
+
+Commit済みConsumptionはHTTP未開始・中止でも取り消さない。保存成功とRuntime Valid登録は独立結果で、登録失敗なら未分類送信を止める。CONSERVATIVE評価・窓内余裕だけでClock / Recovery / SUSPENDED / Send Gate等を解除しない。
+
+**Restart Recovery・本番統合境界**
+
+Process再起動で旧Runtime Evidenceはすべて失効し、成功確定した新Startup Cutoff以前をH_oldとして案Dの窓別待機・保守計上へ進む。旧Rangeの永続記録は保持しても前ProcessのWait完了を復元しない。通常クラッシュにはH54-31の条件付き自動復旧を使い、毎回管理者25時間隔離を課さない。重大不整合は例外的管理者復旧とし、その独立25時間隔離と案Dは別証拠で管理する。
+
+Startup成功はHistory Trust・Gate許可ではない。CONSERVATIVEの再開候補とCLEANを分け、OperationallyDrained AND RecoveryCleanEligible、History TRUSTED・未完了Rangeなし等のD-04 / R-01〜R-03を維持する。
+
+4B-3は内部停止・Drain・Range・Evidence・Wait・認証済みHistory評価・Tx-Q再検証・Recovery判定をテスト可能にする範囲。本番OS同期情報、本番HTTP Adapter、本番Startup / Shutdown Lifecycleへの接続、実Provider通信、PiのSleep抑止 / 単調時計 / SQLite耐久 / 時刻閾値の実測は後続PR-C統合・実機検証へ残す。内部実装完了を本番送信可能としない。公開 / PendingはPR-D、継続DB Recovery / Restore / BackupはPR-Eのまま維持する。
+
 <a id="pr-c-c3-f02-delay-margin"></a>
 
 #### F-02：固定安全余裕・送信直前の経過時間チェック
