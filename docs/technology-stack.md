@@ -3684,6 +3684,16 @@ Commit unknownは既存Quota RepositoryのRead-only Reconcileで保存前・予�
 
 Range Waitは**Clock Trust回復完了前でも**Range Commit成功と単調時計の連続性を確認できれば開始可能。壁時計Trust失効と単調時計不連続は別であり、Clock Epoch変更だけで連続性を確認できる既存Waitを失効させない。一方、Clock回復だけで失効Waitや不確実TimestampをValidへ戻さない。Sleep / Suspend抑止・常時稼働はMVP運用前提で、複雑な専用監視は追加しない。Piでの単調時計連続性保証は未検証で、抑止だけを証明にしない。
 
+単調時計連続性の判定は、Wait Evidenceの発行・失効を管理する内部責務が所有する。既存TimeSourceとClockTrustMonitorを再利用し、利用可能なMonitor観測情報を用いる。独立した汎用Clock監視Serviceを追加しない。観測間隔超過等で連続性を確認できなければ該当Waitを失効させるが、壁時計Trust失効・Clock Epoch変更だけを単調時計不連続の証拠にしない。現行MonitorのTrust状態・Epochだけでは失効原因を区別できないため、それらだけでWaitの保持・失効を決めず、連続性を確認できなければ失効とする。
+
+失効WaitはClock Trust回復だけでは復活させない。再開始時は対象の確定Startup境界またはRange CommitとScopeを再検証し、新しい単調時計開始時刻から対象Windowの待機時間を計測する。失効前の経過時間を無条件に引き継がない。単調時計逆行・取得失敗・連続性不明・Process再起動のFail Closedを維持する。既存のClock Trust回復前のWait開始許可、Sleep / Suspend抑止方針、実機連続性未検証という境界は変更しない。
+
+**Recovery停止理由の保持とGate開放**
+
+Clock異常のRecovery処理では、既存Send Gateの所有者別停止理由管理（stopControl等）を再利用し、Clock由来の停止理由とは独立したRecovery停止条件を保持する。Clock TrustがTRUSTEDへ回復しClock由来の理由が更新・解除されても、Recovery停止条件は自動解除しない。Drain完了、必要なRange Commit、History再評価、RuntimeHistory再開等の必要条件を確認するまで、新規Tx-Q・HTTP開始を禁止する。
+
+Recovery完了判定とClock回復通知は別処理とし、RuntimeHistory再開だけでGateを開かない。Clock回復通知とRecovery完了処理が競合しても未完了のRecovery理由を解除しない。Recovery停止条件を解除した後もHistory Trust・Quota・管理停止・その他の独立停止理由を再評価する。既存理由の所有権を維持し、別所有者の理由を削除したり、新しい汎用状態管理Frameworkを追加したりしない。
+
 **History・Quotaの認証済み評価とTx-Q再検証**
 
 TRUSTED / CONSERVATIVE / BLOCKEDを維持し、各Windowの計数はD-03の `C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w` に従う。H_oldと各Rangeは1秒窓の1分、60分窓の65分、24時間窓の25時間を独立に待ち、未完了窓では全件計上、認証された完了窓だけ除外可能とする。H_new_validだけが信頼できるTimestamp・既存暫定2秒マージンによる窓内評価を受ける。上限1 / 20 / 400は変更しない。
