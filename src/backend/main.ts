@@ -16,6 +16,11 @@ import {
   createRuntimeSend,
   type RuntimeSend,
 } from "./send/provider-send-gate.js";
+import { StateScheduler } from "./scheduler/state-scheduler.js";
+import {
+  PRODUCTION_PROVIDERS,
+  StateAcquisitionCoordinator,
+} from "./acquisition/coordinator.js";
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
 import type { StartupResult } from "./storage/startup-transaction.js";
 import {
@@ -78,6 +83,7 @@ export async function startBackend(
   let ownedStore: StartupStoreAccess | undefined;
   let runtime: RuntimeStoreAccess | null = null;
   let send: RuntimeSend | null = null;
+  let scheduler: StateScheduler | null = null;
   let finishInitialization!: () => void;
   const initialized = new Promise<void>((resolve) => {
     finishInitialization = resolve;
@@ -88,7 +94,12 @@ export async function startBackend(
     ownedStore = undefined; // One close owner, including failure / Shutdown races.
     const monitoring = send;
     send = null;
+    const acquisition = scheduler;
+    scheduler = null;
     try {
+      // No new Task, then wait for in-flight cycles before closing anything.
+      await acquisition?.stop();
+      runtime?.acquisitionControl.context.beginShutdown();
       monitoring?.stopMonitoring(); // Close the Gate and Recovery before the DB.
     } finally {
       store?.close();
@@ -161,13 +172,29 @@ export async function startBackend(
                 // DB read access only; no Trust, Quota or send authority.
                 runtime = BackendStore.activateRuntime(ownedStore);
                 // Trust/History monitoring only; no HTTP adapter yet (C-Impl-5C).
-                send = runtime ? createRuntimeSend(ownedStore) : null;
+                send = runtime
+                  ? createRuntimeSend(
+                      ownedStore,
+                      PRODUCTION_PROVIDERS.find((p) => p.quota)?.http,
+                    )
+                  : null;
                 if (send) send.startMonitoring();
                 else
                   logger.warn(
                     { event: "send_monitoring_unavailable" },
                     "Provider send monitoring unavailable",
                   );
+                if (runtime) {
+                  scheduler = new StateScheduler(
+                    new StateAcquisitionCoordinator(
+                      runtime,
+                      send,
+                      PRODUCTION_PROVIDERS,
+                    ),
+                    logger,
+                  );
+                  scheduler.start();
+                }
               }
             }
             // Drain Signals queued during synchronous SQLite before any route

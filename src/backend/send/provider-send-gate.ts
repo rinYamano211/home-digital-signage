@@ -6,6 +6,8 @@ import { systemTime } from "../time/source.js";
 import { OsSyncReader } from "./internal/os-sync.js";
 import { ClockTrustMonitor, HistoryTrustMonitor } from "./internal/trust.js";
 import { ProviderSendGate } from "./internal/provider-send-gate.js";
+import { createHttpAdapter } from "../http/native-http-adapter.js";
+import type { HttpAdapterConfig } from "../http/outcome.js";
 
 /** Periodic recheck C (PR-C completion plan, provisional). Assessment only. */
 const RECHECK_PERIOD_MS = 5 * 60 * 1000;
@@ -37,15 +39,19 @@ export function createProviderSendGate(repository: QuotaRepository) {
 /** 5B production Trust wiring on the committed Runtime Store: OS sync (5B-1)
  * feeds the existing ClockTrustMonitor, and the single authenticated
  * HistoryRecovery (5B-R2B) owns History for the Gate. Recovery starts closed
- * and reopens only through its own recover() on B/C rechecks. No HTTP adapter
- * is attached until C-Impl-5C, so this instance still cannot send.
+ * and reopens only through its own recover() on B/C rechecks. The HTTP adapter
+ * is attached only when the Tomorrow.io Provider supplies its configuration.
  */
-export function createRuntimeSend(startup: StartupStoreAccess) {
+export function createRuntimeSend(
+  startup: StartupStoreAccess,
+  http?: HttpAdapterConfig,
+) {
   const runtime = BackendStore.activateRuntime(startup);
   if (!runtime) return null;
   const reader = new OsSyncReader();
   const clock = new ClockTrustMonitor(systemTime, () => reader.current());
-  if (!BackendStore.createRuntimeHistory(startup, clock)) return null;
+  const history = BackendStore.createRuntimeHistory(startup, clock);
+  if (!history) return null;
   const gate = new ProviderSendGate(
     new Map([
       [
@@ -55,6 +61,8 @@ export function createRuntimeSend(startup: StartupStoreAccess) {
     ]),
     clock,
     systemTime,
+    // Tomorrow.io only, from the Provider definition (C-Impl-5C).
+    http ? createHttpAdapter(http) : undefined,
   );
   const recovery = BackendStore.createHistoryRecovery(startup, gate, clock);
   if (!recovery) {
@@ -98,6 +106,8 @@ export function createRuntimeSend(startup: StartupStoreAccess) {
     quotaTrust: gate.quotaTrust.bind(gate),
     beginAttempt: gate.beginAttempt.bind(gate),
     endAttempt: gate.endAttempt.bind(gate),
+    /** Tx-Q with Runtime Valid registration; neither result permits HTTP. */
+    reserve: history.history.reserve.bind(history.history),
     start: gate.start.bind(gate),
     stopControl: gate.stopControl.bind(gate),
     snapshot: gate.snapshot.bind(gate),
