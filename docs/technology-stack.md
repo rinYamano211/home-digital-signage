@@ -554,7 +554,7 @@ State自体が未公開であることと、公開済みStateのデータが未�
 }
 ```
 
-Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章、RainForecastは第21章、WeeklyWeatherは第22章で設計方針を定義済みである。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章、RainForecastは第21章、WeeklyWeatherは第22章で設計方針を定義済みである。Endpointの正式なPathは10.9節で定める（`GET /api/published-states`）。
 FrontendのResponse取得・更新ルールは7.3に従う。
 
 ### 10.8 期限切れデータの表示用APIでの扱い
@@ -2354,7 +2354,7 @@ better-sqlite3の同期処理はEvent Loopとアプリ内Timerをブロックし
 |---|---|
 | C-2 | Acquisition Control Repository・Tx-A・Backoffの設計とレビュー指摘3点の方針は23.10に確定。実装・受入検証は未着手 |
 | C-3 | Quota Guardの具体Interface・Tx-Q実装、Provider送信とGlobal停止の競合を防ぐPermit方式。停止理由別Tx-A可否は23.10を参照 |
-| PR-D | Tx-P / Tx-Cを含む公開処理の連携、Pending Publication |
+| PR-D | Pending Publication、Tx-Cとの連携、Commit結果不明時の照合・復旧の本格化（正常系のTx-A→Tx-P保存・公開はC-Impl-5C。[PR-C完成方針](#pr-c-completion-mvp)） |
 | PR-E | 継続DB Recovery、安全確認後のScheduler再開Interface |
 | Issue #12 / #13 | systemdの具体停止猶予・OS停止制御・実機検証 |
 
@@ -2583,7 +2583,7 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 - Shutdown中の初回Authorization発行・再発行と初回INSERTは禁止として確定した。開始済みTaskの通常UPDATEだけを上記全条件のもとで許可可能とし、初回保存の要確認事項は解消した。
 - 新規性はApplication / Coordinatorが既存永続情報・State構成から判断し、確定できない場合は欠損相当の保守的待機へ進む方針で確定した。既存Row不存在だけで過去データ非消失を厳密に証明できない限界を残し、専用Table・VersionカラムやSnapshot / Counter Schemaは追加・変更しない。
 - C-3：Quota Guard・Tx-Qの具体Interfaceと、Provider送信開始に対する停止ゲートのPermit・競合対策。C-2で定めた停止理由別Tx-A可否を接続する。
-- PR-D：Tx-A確定後のTx-P / Tx-C連携、Pending・採用候補対応。PR-E：不正Control Row修復、継続Recovery、再起動時再評価、安全なScheduler再開。
+- PR-D：Tx-Cとの連携、Pending・採用候補対応、Commit結果不明時の照合・復旧の本格化（正常系のTx-A確定後のTx-P保存・公開はC-Impl-5C）。PR-E：不正Control Row修復、継続Recovery、再起動時再評価、安全なScheduler再開。
 - 単一Writer前提、外部Writer・ABA・再起動をまたぐ完全操作識別の限界を維持する。具体SQL・トークン管理・照合の実装検証は未実施であり、既存DDL・Schema Versionを変更しない。
 
 
@@ -2766,7 +2766,7 @@ History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立�
 
 **後続工程・未確定事項**
 
-C-Impl-5以降へ実HTTP Client・Coordinator全取得フロー・Startup / Management Stop統合、PR-DへTx-A / Tx-P / Pending実連携、PR-EへDB Recovery / Restoreを引き継ぐ。管理停止の永続化・停止完了APIとF-03の実連携は後続Lifecycle工程とする。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の取得方式とRTC-only送信の扱いは[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用した（MVP。本番配線・実機検証は未完了）。Pi実機の時計・RTC・遅延測定、暫定値の妥当性、Quota履歴長期性能は未検証。独立制御の設計確定を、これらの完成・PASSとみなさない。
+C-Impl-5以降へ実HTTP Client・Coordinator全取得フロー・Startup / Management Stop統合、正常系のTx-A→Tx-P保存・公開をC-Impl-5Cへ、Pending・Tx-C連携・Commit結果不明照合の本格化をPR-Dへ、PR-EへDB Recovery / Restoreを引き継ぐ。管理停止の永続化・停止完了APIとF-03の実連携は後続Lifecycle工程とする。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の取得方式とRTC-only送信の扱いは[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用した（MVP。本番配線・実機検証は未完了）。Pi実機の時計・RTC・遅延測定、暫定値の妥当性、Quota履歴長期性能は未検証。独立制御の設計確定を、これらの完成・PASSとみなさない。
 
 <a id="pr-c-c-impl-5a-http-lifecycle"></a>
 
@@ -3764,12 +3764,12 @@ PR-Cは既存のScheduler・Acquisition Control・Quota Repository / Guard・Sen
 | Quota・Trustの対象 | Send Gate・Quota・Clock / History TrustはTomorrow.ioだけに適用する（既存Allowlist）。Open-Meteo・Google CalendarはGateを経由せず、既存のBackoff・429方針で取得する |
 | Wait用の単調時計（MVP） | 本番の`verifiedWaitReading()`は`process.hrtime.bigint()`と、Processごとの継続性IDを返す。Suspend中は計上されず、待機完了を遅らせる側である。NTPの周波数補正による誤差は残余リスクとして受け入れ、実機検証の対象とする。Process再起動ではWaitを引き継がない。逆行・取得失敗では既存の失効規則に従う |
 | 再評価C（解除時刻不明）の周期 | 5分（暫定）。通知は評価の契機であり、送信許可ではない |
-| C-Impl-5C | 既存`AcquisitionCoordinator.runOnce()`を実装する。Control State読取 → 周期・Backoff判定 → Tomorrow.ioだけGate・Tx-Q → HTTP Adapter → 結果分類（429はBackoff）→ Tx-A → 既存のPublished State保存。Schedulerを`main.ts`に配線する。Mock Providerで検証する |
+| C-Impl-5C | 既存`AcquisitionCoordinator.runOnce()`を実装する。Control State読取 → 周期・Backoff判定 → Tomorrow.ioだけGate・Tx-Q → HTTP Adapter → 結果分類（429はBackoff）→ Tx-A → 正常系のTx-PによるPublished State保存・公開。Schedulerを`main.ts`に配線する。既存Repositoryの整合性確認・Commit照合は削除・迂回しない。Mock Providerで検証する |
 | C-Impl-6 | PR-C統合受入。正常起動・再起動・取得成功 / 失敗・Quota不足・Backoff・Shutdown・DB異常・重複取得防止を検証し、SCHの該当ケースとの対応を記録する |
-| PR-D・PR-Eへの引継ぎ | Pending Publication・Tx-C連携・Commit結果不明照合の本格化はPR-D。継続DB Recovery・Backup・RECOVERINGはPR-E |
-| Future | 管理者Recovery・25時間隔離、CLEAN Lifecycle、F-03の永続化、NTP品質の詳細監視、D-Bus、Process再起動をまたぐWait、RTC-only送信（禁止のまま） |
+| PR-D・PR-Eへの引継ぎ | Pending Publicationの本格的な処理、Tx-Cとの連携、Commit結果不明時の照合・復旧処理の本格化はPR-D。継続DB Recovery・Backup・RECOVERINGはPR-E |
+| Future | 重大な履歴不整合等に対する例外的な管理者Recovery操作と、管理者承認後に開始する独立した25時間隔離の実装（延期は重大不整合時の自動送信再開を許可しない。C-Impl-5B-4の安全条件を維持）、CLEAN Lifecycle、F-03の永続化、NTP品質の詳細監視、D-Bus、Process再起動をまたぐWait、RTC-only送信（禁止のまま） |
 
-不確実な履歴を安全に扱えない場合は送信を停止して待機する。保守的待機でもQuota遵守を保証できない場合は、自動で送信を再開しない。
+MVPは、通常の停電・クラッシュ後に既存条件を満たした場合の自動復旧、H_old等を用いた保守的Quota評価、案Dの窓別Wait（1分・65分・25時間）、履歴不整合・Trust不足時のFail Closedを維持する。不確実な履歴を安全に扱えない場合は送信を停止して待機する。保守的待機でもQuota遵守を保証できない場合は、自動で送信を再開しない。
 
 <a id="pr-c-c3-f02-delay-margin"></a>
 
