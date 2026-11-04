@@ -244,7 +244,7 @@ Display Component
 
 図は概念的な責務と通信経路を示す。Backend技術の正式採用は第11章、MVP実行モデルはArchitecture第16章を参照する。具体的なAPI提供Process構成・Port番号は未決定。
 
-`/api/...`はパスの例であり、具体的なEndpointは未決定。
+Published State APIのEndpointは10.9節で定める。
 
 API提供処理のためだけに新しい独立Serviceを追加することは、現時点では決定していない。
 
@@ -554,7 +554,7 @@ State自体が未公開であることと、公開済みStateのデータが未�
 }
 ```
 
-Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章、RainForecastは第21章、WeeklyWeatherは第22章で設計方針を定義済みである。Endpointの正式なPathも未決定とし、`/api/display-state`は例示として扱う。
+Schedule Domain Dataは18.1、CurrentWeatherは第19章、HourlyWeatherは第20章、RainForecastは第21章、WeeklyWeatherは第22章で設計方針を定義済みである。Endpointの正式なPathは10.9節で定める（`GET /api/published-states`）。
 FrontendのResponse取得・更新ルールは7.3に従う。
 
 ### 10.8 期限切れデータの表示用APIでの扱い
@@ -580,7 +580,7 @@ SQLite全体が利用不能な場合、Published State APIは`503 Service Unavai
 
 SQLiteが正常な場合、State単位の未公開・期限切れ・不正は既存契約に従い、正常な他Stateの提供を妨げない。Frontendは503をPolling失敗として扱い、保持済みの有効なComponent Stateを既存TTLルールに従って利用する。
 
-PR-Aの`/ping`は疎通確認専用であり、DB HealthやReadinessを意味しない。Published State APIの正式Endpoint Pathと503時のJSON Error Schemaは未決定である。
+PR-Aの`/ping`は疎通確認専用であり、DB HealthやReadinessを意味しない。Published State APIは`GET /api/published-states`とする。503時のBodyは`{ "error": "database_unavailable" }`とし、`states`を含めない。
 
 ---
 
@@ -2354,7 +2354,7 @@ better-sqlite3の同期処理はEvent Loopとアプリ内Timerをブロックし
 |---|---|
 | C-2 | Acquisition Control Repository・Tx-A・Backoffの設計とレビュー指摘3点の方針は23.10に確定。実装・受入検証は未着手 |
 | C-3 | Quota Guardの具体Interface・Tx-Q実装、Provider送信とGlobal停止の競合を防ぐPermit方式。停止理由別Tx-A可否は23.10を参照 |
-| PR-D | Tx-P / Tx-Cを含む公開処理の連携、Pending Publication |
+| PR-D | Pending Publication、Tx-Cとの連携、Commit結果不明時の照合・復旧の本格化（正常系のTx-A→Tx-P保存・公開はC-Impl-5C。[PR-C完成方針](#pr-c-completion-mvp)） |
 | PR-E | 継続DB Recovery、安全確認後のScheduler再開Interface |
 | Issue #12 / #13 | systemdの具体停止猶予・OS停止制御・実機検証 |
 
@@ -2516,7 +2516,7 @@ initializeはINSERTのみで、既存RowをUPSERTで上書きしない。保存�
 
 unknownでは同一Stateの後続Tx-A、通常Read・Evidence発行を保留し、Tx-Pへ進まない。無条件再保存・HTTP即時再送を行わず、保持したAttemptの保存前後情報でRead-only照合する。結果確定後の再評価も保存済みControl Stateを尊重し、新たな保存には有効な証跡・必要な許可を要求する。Transaction状態未解決なら共有Connection全体を保護する。正常Connection上のState単位保留を正常な他Stateへ無条件に波及させない。既存L1〜L4と原因・scopeに従い、Layer番号だけで全体障害へ昇格させない。
 
-PR-BのTx-P / Tx-C・Read Evidence・照合成功条件は変更しない。Tx-Aの照合は保存再実行を伴わず、再起動や外部Writerをまたぐ完全な操作識別を保証しない。Tx-A成功後の公開連携・PendingはPR-D、継続RecoveryはPR-Eが担当する。
+PR-BのTx-P / Tx-C・Read Evidence・照合成功条件は変更しない。Tx-Aの照合は保存再実行を伴わず、再起動や外部Writerをまたぐ完全な操作識別を保証しない。Tx-A成功後の公開連携は正常系をC-Impl-5C、Pending・Tx-C連携・Commit結果不明時の本格的な照合・復旧はPR-D、継続RecoveryはPR-Eが担当する。
 
 #### nextAttemptAt・Backoff
 
@@ -2583,7 +2583,7 @@ Global停止確定後は新たなProvider送信を開始しない。送信開始
 - Shutdown中の初回Authorization発行・再発行と初回INSERTは禁止として確定した。開始済みTaskの通常UPDATEだけを上記全条件のもとで許可可能とし、初回保存の要確認事項は解消した。
 - 新規性はApplication / Coordinatorが既存永続情報・State構成から判断し、確定できない場合は欠損相当の保守的待機へ進む方針で確定した。既存Row不存在だけで過去データ非消失を厳密に証明できない限界を残し、専用Table・VersionカラムやSnapshot / Counter Schemaは追加・変更しない。
 - C-3：Quota Guard・Tx-Qの具体Interfaceと、Provider送信開始に対する停止ゲートのPermit・競合対策。C-2で定めた停止理由別Tx-A可否を接続する。
-- PR-D：Tx-A確定後のTx-P / Tx-C連携、Pending・採用候補対応。PR-E：不正Control Row修復、継続Recovery、再起動時再評価、安全なScheduler再開。
+- PR-D：Tx-Cとの連携、Pending・採用候補対応、Commit結果不明時の照合・復旧の本格化（正常系のTx-A確定後のTx-P保存・公開はC-Impl-5C）。PR-E：不正Control Row修復、継続Recovery、再起動時再評価、安全なScheduler再開。
 - 単一Writer前提、外部Writer・ABA・再起動をまたぐ完全操作識別の限界を維持する。具体SQL・トークン管理・照合の実装検証は未実施であり、既存DDL・Schema Versionを変更しない。
 
 
@@ -2766,7 +2766,7 @@ History Trustは内部整合性・Timestamp信頼性・履歴完全性の独立�
 
 **後続工程・未確定事項**
 
-C-Impl-5以降へ実HTTP Client・Coordinator全取得フロー・Startup / Management Stop統合、PR-DへTx-A / Tx-P / Pending実連携、PR-EへDB Recovery / Restoreを引き継ぐ。管理停止の永続化・停止完了APIとF-03の実連携は後続Lifecycle工程とする。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の取得方式とRTC-only送信の扱いは[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用した（MVP。本番配線・実機検証は未完了）。Pi実機の時計・RTC・遅延測定、暫定値の妥当性、Quota履歴長期性能は未検証。独立制御の設計確定を、これらの完成・PASSとみなさない。
+C-Impl-5以降へ実HTTP Client・Coordinator全取得フロー・Startup / Management Stop統合、正常系のTx-A→Tx-P保存・公開をC-Impl-5Cへ、Pending・Tx-C連携・Commit結果不明照合の本格化をPR-Dへ、PR-EへDB Recovery / Restoreを引き継ぐ。管理停止の永続化・停止完了APIとF-03の実連携は後続Lifecycle工程とする。History Trustの管理確認・Restart Recoveryは[C-Impl-5B-4](#pr-c-c-impl-5b4-history-restart)で詳細設計を採用し、実装・検証は未完了。OS同期確認の取得方式とRTC-only送信の扱いは[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)で採用した（MVP。本番配線・実機検証は未完了）。Pi実機の時計・RTC・遅延測定、暫定値の妥当性、Quota履歴長期性能は未検証。独立制御の設計確定を、これらの完成・PASSとみなさない。
 
 <a id="pr-c-c-impl-5a-http-lifecycle"></a>
 
@@ -3646,7 +3646,7 @@ inspectで短時間有効・一度限りの確認Tokenを発行し、今回Proce
 | PROVISIONED：Metadataと履歴整合 | Restart RecoveryとTrust評価へ。整合だけで自動送信しない |
 | 異常：Metadataなし・Consumptionあり等 | Fail Closed。空履歴に修復しない |
 
-F-01では管理者がキー排他利用・過去利用状況・Clock Trust・安全余裕を確認し、専用TransactionでQuota MetadataをlastSequence=0として明示初期化する。完了後にHistory・Quotaを再検証する。初回Provisioningは異常終了後の管理者隔離と別手続きであり、F-01成功だけでは異常復帰条件を解除しない。DB Recoveryだけで管理停止を解除せず、案D・隔離待機も新規送信の直接許可にしない。継続DB Recovery / Restore / BackupはPR-E、公開・PendingはPR-D、systemd実配置と実機受入はIssue #12 / #13の境界を維持する。
+F-01では管理者がキー排他利用・過去利用状況・Clock Trust・安全余裕を確認し、専用TransactionでQuota MetadataをlastSequence=0として明示初期化する。完了後にHistory・Quotaを再検証する。初回Provisioningは異常終了後の管理者隔離と別手続きであり、F-01成功だけでは異常復帰条件を解除しない。DB Recoveryだけで管理停止を解除せず、案D・隔離待機も新規送信の直接許可にしない。継続DB Recovery / Restore / BackupはPR-E、正常系の公開はC-Impl-5C、Pending・Tx-C連携・Commit結果不明時の本格的な照合・復旧はPR-D、systemd実配置と実機受入はIssue #12 / #13の境界を維持する。
 
 **反映状態と実装前確認**
 
@@ -3713,7 +3713,7 @@ Range Waitは**Clock Trust回復完了前でも**Range Commit成功と単調時�
 
 TimeSourceの単調時計はprocess.hrtime.bigint()を使う。[Node.js 24のAPI説明](https://nodejs.org/docs/latest-v24.x/api/process.html#processhrtimebigint)は任意起点の高精度経過時間であり、壁時計日時として使わない。[Linux CLOCK_MONOTONIC](https://docs.kernel.org/core-api/timekeeping.html)は一般にSuspend中を計上せず、NTP等の周波数補正を受ける。Suspend中の非計上は待機完了を遅らせる側だが、Sleep抑止や単調非減少だけで実時間に対する速度精度まで証明できない。補正で時計が速く進む場合には、必要な実経過時間を満たす前に完了判定するリスクを評価する必要がある。
 
-既存の1分・65分・25時間を維持し、各Windowで必要な実経過時間より早い完了判定・履歴除外が生じない前提・制約を独立に検証する。特に1秒Quota窓に対する1分Waitも個別対象で、65分・25時間の余裕から全窓の安全性を推論しない。PiのNode.js / libuv / Linux clocksource対応、NTP補正・ドリフト、Sleep抑止と単調時計挙動・誤差の評価は後続PR-C統合・実機検証へ残す。NTP補正上限やPi保証値を確定しない。必要な健全性前提を確認できない場合はWait完了による履歴除外を許可しない。これは観測間隔の長さだけを異常証拠とすることではない。
+既存の1分・65分・25時間を維持し、各Windowで必要な実経過時間より早い完了判定・履歴除外が生じない前提・制約を独立に検証する。特に1秒Quota窓に対する1分Waitも個別対象で、65分・25時間の余裕から全窓の安全性を推論しない。PiのNode.js / libuv / Linux clocksource対応、NTP補正・ドリフト、Sleep抑止と単調時計挙動・誤差の評価は後続PR-C統合・実機検証へ残す。MVPの本番Wait入力は[PR-C完成方針](#pr-c-completion-mvp)の方式を採用し、実機での評価結果によって見直す。NTP補正上限やPi保証値を確定しない。必要な健全性前提を確認できない場合はWait完了による履歴除外を許可しない。これは観測間隔の長さだけを異常証拠とすることではない。
 
 **Recovery停止理由の保持とGate開放**
 
@@ -3737,7 +3737,7 @@ Commit済みConsumptionはHTTP未開始・中止でも取り消さない。保�
 |---|---|
 | A：信頼できるTimestampの解除見込み | 既存Quota Repositoryが安全に算出できるrecheckAtMsを利用し、到達時に全条件を再評価する |
 | B：認証済みWaitの単調時計期限 | H_oldまたは各Range・Windowの有効な待機期限で再評価を通知する。信頼できない壁時計で無条件にrecheckAtMsへ変換しない。Wait完了だけで送信しない |
-| C：解除時刻不明 | 実行可能なStateの既存再評価経路を利用する。A/Bで次の機会を確保できない場合はMVPの最小限の周期的再評価を実装要件とし、通知欠落後も再評価機会を残す。具体周期は未確定で、提案5分を採用済みにしない |
+| C：解除時刻不明 | 実行可能なStateの既存再評価経路を利用する。A/Bで次の機会を確保できない場合はMVPの最小限の周期的再評価を実装要件とし、通知欠落後も再評価機会を残す。周期は[PR-C完成方針](#pr-c-completion-mvp)で5分（暫定）とする |
 
 現行StateSchedulerはStateごとのsetTimeoutとCoordinatorが返すscheduled.recheckAtで再予約し、requestRecheck()は実行可能Stateの前倒し・inFlight中の要求集約を行う。固定の通常ポーリング周期はなく、held / globalHeld / stoppingではrequestRecheck()も実行しない。AcquisitionCoordinatorはInterfaceだけで、本番のQuota / Wait期限通知・周期再評価・Recovery接続は未実装。既存機構が全て揃っているとは扱わない。
 
@@ -3751,7 +3751,25 @@ Process再起動で旧Runtime Evidenceはすべて失効し、成功確定した
 
 Startup成功はHistory Trust・Gate許可ではない。CONSERVATIVEの再開候補とCLEANを分け、OperationallyDrained AND RecoveryCleanEligible、History TRUSTED・未完了Rangeなし等のD-04 / R-01〜R-03を維持する。
 
-4B-3は内部停止・Drain・Range・Evidence・Wait・認証済みHistory評価・Tx-Q再検証・Recovery判定をテスト可能にする範囲。本番OS同期情報、本番HTTP Adapter、本番Startup / Shutdown Lifecycleへの接続、実Provider通信、PiのSleep抑止 / 単調時計 / SQLite耐久 / 時刻閾値の実測は後続PR-C統合・実機検証へ残す。内部実装完了を本番送信可能としない。公開 / PendingはPR-D、継続DB Recovery / Restore / BackupはPR-Eのまま維持する。
+4B-3は内部停止・Drain・Range・Evidence・Wait・認証済みHistory評価・Tx-Q再検証・Recovery判定をテスト可能にする範囲。本番OS同期情報、本番HTTP Adapter、本番Startup / Shutdown Lifecycleへの接続、実Provider通信、PiのSleep抑止 / 単調時計 / SQLite耐久 / 時刻閾値の実測は後続PR-C統合・実機検証へ残す。内部実装完了を本番送信可能としない。正常系の公開処理はC-Impl-5C、Pending Publication・Tx-C連携・Commit結果不明時の本格的な照合・復旧はPR-D、継続DB Recovery / Restore / BackupはPR-Eが担当する。
+
+<a id="pr-c-completion-mvp"></a>
+
+#### PR-C完成方針（MVP）
+
+PR-Cは既存のScheduler・Acquisition Control・Quota Repository / Guard・Send Gate・HTTP Adapter・HistoryRecoveryを再利用して完成させる。同じ責務の新しいService・Repository、Schema・Migrationは追加しない。
+
+| 項目 | 採用 |
+|---|---|
+| Quota・Trustの対象 | Send Gate・Quota・Clock / History TrustはTomorrow.ioだけに適用する（既存Allowlist）。Open-Meteo・Google CalendarはGateを経由せず、既存のBackoff・429方針で取得する |
+| Wait用の単調時計（MVP） | 本番の`verifiedWaitReading()`は`process.hrtime.bigint()`と、Processごとの継続性IDを返す。Suspend中は計上されず、待機完了を遅らせる側である。NTPの周波数補正による誤差は残余リスクとして受け入れ、実機検証の対象とする。Process再起動ではWaitを引き継がない。逆行・取得失敗では既存の失効規則に従う |
+| 再評価C（解除時刻不明）の周期 | 5分（暫定）。通知は評価の契機であり、送信許可ではない |
+| C-Impl-5C | 既存`AcquisitionCoordinator.runOnce()`を実装する。Control State読取 → 周期・Backoff判定 → Tomorrow.ioだけGate・Tx-Q → HTTP Adapter → 結果分類（429はBackoff）→ Tx-A → 正常系のTx-PによるPublished State保存・公開。Schedulerを`main.ts`に配線する。既存Repositoryの整合性確認・Commit照合は削除・迂回しない。Mock Providerで検証する |
+| C-Impl-6 | PR-C統合受入。正常起動・再起動・取得成功 / 失敗・Quota不足・Backoff・Shutdown・DB異常・重複取得防止を検証し、SCHの該当ケースとの対応を記録する |
+| PR-D・PR-Eへの引継ぎ | Pending Publicationの本格的な処理、Tx-Cとの連携、Commit結果不明時の照合・復旧処理の本格化はPR-D。継続DB Recovery・Backup・RECOVERINGはPR-E |
+| Future | 重大な履歴不整合等に対する例外的な管理者Recovery操作と、管理者承認後に開始する独立した25時間隔離の実装（延期は重大不整合時の自動送信再開を許可しない。C-Impl-5B-4の安全条件を維持）、CLEAN Lifecycle、F-03の永続化、NTP品質の詳細監視、D-Bus、Process再起動をまたぐWait、RTC-only送信（禁止のまま） |
+
+MVPは、通常の停電・クラッシュ後に既存条件を満たした場合の自動復旧、H_old等を用いた保守的Quota評価、案Dの窓別Wait（1分・65分・25時間）、履歴不整合・Trust不足時のFail Closedを維持する。不確実な履歴を安全に扱えない場合は送信を停止して待機する。保守的待機でもQuota遵守を保証できない場合は、自動で送信を再開しない。
 
 <a id="pr-c-c3-f02-delay-margin"></a>
 
