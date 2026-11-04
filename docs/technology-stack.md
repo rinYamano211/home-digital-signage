@@ -2516,7 +2516,7 @@ initializeはINSERTのみで、既存RowをUPSERTで上書きしない。保存�
 
 unknownでは同一Stateの後続Tx-A、通常Read・Evidence発行を保留し、Tx-Pへ進まない。無条件再保存・HTTP即時再送を行わず、保持したAttemptの保存前後情報でRead-only照合する。結果確定後の再評価も保存済みControl Stateを尊重し、新たな保存には有効な証跡・必要な許可を要求する。Transaction状態未解決なら共有Connection全体を保護する。正常Connection上のState単位保留を正常な他Stateへ無条件に波及させない。既存L1〜L4と原因・scopeに従い、Layer番号だけで全体障害へ昇格させない。
 
-PR-BのTx-P / Tx-C・Read Evidence・照合成功条件は変更しない。Tx-Aの照合は保存再実行を伴わず、再起動や外部Writerをまたぐ完全な操作識別を保証しない。Tx-A成功後の公開連携・PendingはPR-D、継続RecoveryはPR-Eが担当する。
+PR-BのTx-P / Tx-C・Read Evidence・照合成功条件は変更しない。Tx-Aの照合は保存再実行を伴わず、再起動や外部Writerをまたぐ完全な操作識別を保証しない。Tx-A成功後の公開連携は正常系をC-Impl-5C、Pending・Tx-C連携・Commit結果不明時の本格的な照合・復旧はPR-D、継続RecoveryはPR-Eが担当する。
 
 #### nextAttemptAt・Backoff
 
@@ -3646,7 +3646,7 @@ inspectで短時間有効・一度限りの確認Tokenを発行し、今回Proce
 | PROVISIONED：Metadataと履歴整合 | Restart RecoveryとTrust評価へ。整合だけで自動送信しない |
 | 異常：Metadataなし・Consumptionあり等 | Fail Closed。空履歴に修復しない |
 
-F-01では管理者がキー排他利用・過去利用状況・Clock Trust・安全余裕を確認し、専用TransactionでQuota MetadataをlastSequence=0として明示初期化する。完了後にHistory・Quotaを再検証する。初回Provisioningは異常終了後の管理者隔離と別手続きであり、F-01成功だけでは異常復帰条件を解除しない。DB Recoveryだけで管理停止を解除せず、案D・隔離待機も新規送信の直接許可にしない。継続DB Recovery / Restore / BackupはPR-E、公開・PendingはPR-D、systemd実配置と実機受入はIssue #12 / #13の境界を維持する。
+F-01では管理者がキー排他利用・過去利用状況・Clock Trust・安全余裕を確認し、専用TransactionでQuota MetadataをlastSequence=0として明示初期化する。完了後にHistory・Quotaを再検証する。初回Provisioningは異常終了後の管理者隔離と別手続きであり、F-01成功だけでは異常復帰条件を解除しない。DB Recoveryだけで管理停止を解除せず、案D・隔離待機も新規送信の直接許可にしない。継続DB Recovery / Restore / BackupはPR-E、正常系の公開はC-Impl-5C、Pending・Tx-C連携・Commit結果不明時の本格的な照合・復旧はPR-D、systemd実配置と実機受入はIssue #12 / #13の境界を維持する。
 
 **反映状態と実装前確認**
 
@@ -3751,7 +3751,7 @@ Process再起動で旧Runtime Evidenceはすべて失効し、成功確定した
 
 Startup成功はHistory Trust・Gate許可ではない。CONSERVATIVEの再開候補とCLEANを分け、OperationallyDrained AND RecoveryCleanEligible、History TRUSTED・未完了Rangeなし等のD-04 / R-01〜R-03を維持する。
 
-4B-3は内部停止・Drain・Range・Evidence・Wait・認証済みHistory評価・Tx-Q再検証・Recovery判定をテスト可能にする範囲。本番OS同期情報、本番HTTP Adapter、本番Startup / Shutdown Lifecycleへの接続、実Provider通信、PiのSleep抑止 / 単調時計 / SQLite耐久 / 時刻閾値の実測は後続PR-C統合・実機検証へ残す。内部実装完了を本番送信可能としない。公開 / PendingはPR-D、継続DB Recovery / Restore / BackupはPR-Eのまま維持する。
+4B-3は内部停止・Drain・Range・Evidence・Wait・認証済みHistory評価・Tx-Q再検証・Recovery判定をテスト可能にする範囲。本番OS同期情報、本番HTTP Adapter、本番Startup / Shutdown Lifecycleへの接続、実Provider通信、PiのSleep抑止 / 単調時計 / SQLite耐久 / 時刻閾値の実測は後続PR-C統合・実機検証へ残す。内部実装完了を本番送信可能としない。正常系の公開処理はC-Impl-5C、Pending Publication・Tx-C連携・Commit結果不明時の本格的な照合・復旧はPR-D、継続DB Recovery / Restore / BackupはPR-Eが担当する。
 
 <a id="pr-c-completion-mvp"></a>
 
