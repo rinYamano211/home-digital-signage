@@ -22,6 +22,8 @@ import { committedStartup } from "./internal/startup-commit.js";
 import { HistoryRangeRepository } from "./history-range-repository.js";
 import { RuntimeHistory } from "../quota/internal/runtime-history.js";
 import { ClockTrustMonitor } from "../send/internal/trust.js";
+import { HistoryRecovery } from "../quota/internal/history-boundaries.js";
+import type { ProviderSendGate } from "../send/internal/provider-send-gate.js";
 
 export function configureDatabase(db: Database.Database, version: 2 | 3 = 2) {
   enableForeignKeys(db);
@@ -69,6 +71,8 @@ export class BackendStore {
   private runtime?: RuntimeStoreAccess;
   private history?: { clock: ClockTrustMonitor; access: RuntimeHistoryAccess };
   private historyFailed = false;
+  private recovery?: { gate: ProviderSendGate; owner: HistoryRecovery };
+  private recoveryFailed = false;
   private constructor(
     private readonly db: Database.Database,
     version: 2 | 3 = 2,
@@ -104,6 +108,19 @@ export class BackendStore {
   ): RuntimeHistoryAccess | null {
     const owner = startupOwners.get(startup);
     return owner ? owner.historyAccess(clock) : null;
+  }
+  /** The single HistoryRecovery for this Connection, after createRuntimeHistory()
+   * with the same Clock. Creation closes the Gate and freezes RuntimeHistory;
+   * it grants no Trust or send authority. Another Gate/Clock, Close or a failed
+   * creation returns null without re-creation.
+   */
+  static createHistoryRecovery(
+    startup: StartupStoreAccess,
+    gate: ProviderSendGate,
+    clock: ClockTrustMonitor,
+  ): HistoryRecovery | null {
+    const owner = startupOwners.get(startup);
+    return owner ? owner.recoveryOwner(gate, clock) : null;
   }
   private runtimeReady(): boolean {
     try {
@@ -155,6 +172,38 @@ export class BackendStore {
       }
     }
     return this.history.access;
+  }
+  private recoveryOwner(
+    gate: ProviderSendGate,
+    clock: ClockTrustMonitor,
+  ): HistoryRecovery | null {
+    const history = this.history;
+    if (
+      this.recoveryFailed ||
+      !history ||
+      history.clock !== clock ||
+      (this.recovery && this.recovery.gate !== gate) ||
+      !this.runtimeReady()
+    )
+      return null;
+    if (!this.recovery) {
+      try {
+        // The constructor re-checks Runtime/Gate/Clock identity itself.
+        const owner = new HistoryRecovery(
+          this.db,
+          this.quota,
+          history.access.history,
+          gate,
+          clock,
+        );
+        this.recovery = { gate, owner };
+      } catch {
+        // Gate/Repository bindings may be partially made; never retry them.
+        this.recoveryFailed = true;
+        return null;
+      }
+    }
+    return this.recovery.owner;
   }
   static open(lock: ExclusiveLock): BackendStore {
     lock.assertHeld();

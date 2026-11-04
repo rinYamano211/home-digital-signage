@@ -350,6 +350,8 @@ test("Default production opener is v3, real SQLite Atomic Startup and restart ad
     const api = await result!.app.inject({ url: "/api/published-states" });
     expect(api.statusCode).toBe(200);
     expect(api.json()).toEqual({ schemaVersion: 1, states: {} });
+    // Trust/History monitoring is wired on the committed Store (no adapter).
+    expect(f.logs()).not.toContain("send_monitoring_unavailable");
     await result?.shutdown.shutdown();
     const db = new Database(data.path, { readonly: true });
     try {

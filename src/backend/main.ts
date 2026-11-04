@@ -12,6 +12,10 @@ import {
   type StartupStoreAccess,
 } from "./storage/store.js";
 import { readPublishedStates } from "./published-state-api.js";
+import {
+  createRuntimeSend,
+  type RuntimeSend,
+} from "./send/provider-send-gate.js";
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
 import type { StartupResult } from "./storage/startup-transaction.js";
 import {
@@ -73,6 +77,7 @@ export async function startBackend(
   const app = buildApp(logger, false);
   let ownedStore: StartupStoreAccess | undefined;
   let runtime: RuntimeStoreAccess | null = null;
+  let send: RuntimeSend | null = null;
   let finishInitialization!: () => void;
   const initialized = new Promise<void>((resolve) => {
     finishInitialization = resolve;
@@ -81,7 +86,13 @@ export async function startBackend(
     await initialized;
     const store = ownedStore;
     ownedStore = undefined; // One close owner, including failure / Shutdown races.
-    store?.close();
+    const monitoring = send;
+    send = null;
+    try {
+      monitoring?.stopMonitoring(); // Close the Gate and Recovery before the DB.
+    } finally {
+      store?.close();
+    }
     if (store) logger.info({ event: "database_closed" }, "Database closed");
   });
   const shutdown = installShutdown(
@@ -149,6 +160,14 @@ export async function startBackend(
                 );
                 // DB read access only; no Trust, Quota or send authority.
                 runtime = BackendStore.activateRuntime(ownedStore);
+                // Trust/History monitoring only; no HTTP adapter yet (C-Impl-5C).
+                send = runtime ? createRuntimeSend(ownedStore) : null;
+                if (send) send.startMonitoring();
+                else
+                  logger.warn(
+                    { event: "send_monitoring_unavailable" },
+                    "Provider send monitoring unavailable",
+                  );
               }
             }
             // Drain Signals queued during synchronous SQLite before any route
