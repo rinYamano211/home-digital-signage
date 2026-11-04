@@ -183,12 +183,18 @@ test("R1-09 Close prevents activation and fails the previously activated Runtime
   ).not.toBe("initialized");
   expect(() => h.close()).not.toThrow();
 });
-test("R1-10 Runtime exposes only Quota; the Startup facade keeps its restricted shape", () => {
+test("R1-10 Runtime exposes only Quota and Published State read; the Startup facade keeps its restricted shape", () => {
   const { h } = open();
   commit(h);
   const runtime = BackendStore.activateRuntime(h)!;
-  expect(Object.keys(runtime).sort()).toEqual(["quota", "runtimeActive"]);
+  expect(Object.keys(runtime).sort()).toEqual([
+    "publishedStates",
+    "quota",
+    "runtimeActive",
+  ]);
   expect(Object.isFrozen(runtime)).toBe(true);
+  expect(Object.keys(runtime.publishedStates)).toEqual(["read"]);
+  expect(Object.isFrozen(runtime.publishedStates)).toBe(true);
   for (const key of ["db", "startup", "lifecycle", "close", "exec", "send"])
     expect(runtime).not.toHaveProperty(key);
   expect(Object.keys(h).sort()).toEqual([

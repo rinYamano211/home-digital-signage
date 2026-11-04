@@ -6,6 +6,10 @@ import Fastify, {
   type RawReplyDefaultExpression,
 } from "fastify";
 import type { Logger } from "pino";
+import {
+  DATABASE_UNAVAILABLE,
+  type PublishedStatesResponse,
+} from "./published-state-api.js";
 
 export function buildApp(logger: Logger, routes = true) {
   const app = Fastify({
@@ -31,6 +35,12 @@ export function registerRoutes(
     RawReplyDefaultExpression,
     Logger
   >,
+  publishedStates: () => PublishedStatesResponse = () => DATABASE_UNAVAILABLE,
 ) {
   app.get("/ping", async () => ({ message: "pong" }));
+  // Registered whether or not the DB is usable; unusable DB answers 503.
+  app.get("/api/published-states", async (_request, reply) => {
+    const response = publishedStates();
+    return reply.code(response.status).send(response.body);
+  });
 }

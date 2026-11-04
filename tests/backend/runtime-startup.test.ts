@@ -127,6 +127,10 @@ for (const [result, state] of cases)
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ message: "pong" });
     expect((await b.app.inject({ url: "/health" })).statusCode).toBe(404);
+    // A non-Store facade never activates Runtime, even when "committed".
+    const api = await b.app.inject({ url: "/api/published-states" });
+    expect(api.statusCode).toBe(503);
+    expect(api.json()).toEqual({ error: "database_unavailable" });
     expect(f.store.startupComplete).toBe(false);
     expect(b.result).not.toHaveProperty("store");
     expect(b.result).not.toHaveProperty("permit");
@@ -343,6 +347,9 @@ test("Default production opener is v3, real SQLite Atomic Startup and restart ad
     expect(result?.status).toEqual({ state: "HEALTHY" });
     if (result) apps.push(result.app);
     expect(f.logs()).toContain("storage_startup_committed");
+    const api = await result!.app.inject({ url: "/api/published-states" });
+    expect(api.statusCode).toBe(200);
+    expect(api.json()).toEqual({ schemaVersion: 1, states: {} });
     await result?.shutdown.shutdown();
     const db = new Database(data.path, { readonly: true });
     try {

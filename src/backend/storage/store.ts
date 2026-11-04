@@ -49,6 +49,10 @@ export interface StartupStoreAccess {
 export interface RuntimeStoreAccess {
   readonly runtimeActive: true;
   readonly quota: QuotaRepository;
+  /** Read only; saving belongs to the Coordinator (C-Impl-5C). */
+  readonly publishedStates: Readonly<{
+    read: PublishedStateRepository["read"];
+  }>;
 }
 /** Thin bundle of existing components; neither Trust nor a Send Permit. */
 export interface RuntimeHistoryAccess {
@@ -69,9 +73,13 @@ export class BackendStore {
     private readonly db: Database.Database,
     version: 2 | 3 = 2,
   ) {
-    this.publishedStates = new PublishedStateRepository(db);
-    this.cache = new BackendCacheRepository(db);
-    this.acquisitionControl = new AcquisitionControlRepository(db);
+    this.publishedStates = new PublishedStateRepository(db, undefined, version);
+    this.cache = new BackendCacheRepository(db, undefined, version);
+    this.acquisitionControl = new AcquisitionControlRepository(
+      db,
+      undefined,
+      version,
+    );
     this.quota = new QuotaRepository(db, version);
   }
   /** Opens Runtime DB access on the same Connection only after this facade's
@@ -118,6 +126,9 @@ export class BackendStore {
     this.runtime ??= Object.freeze({
       runtimeActive: true as const,
       quota: this.quota,
+      publishedStates: Object.freeze({
+        read: this.publishedStates.read.bind(this.publishedStates),
+      }),
     });
     return this.runtime;
   }
