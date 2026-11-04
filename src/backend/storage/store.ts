@@ -51,9 +51,15 @@ export interface StartupStoreAccess {
 export interface RuntimeStoreAccess {
   readonly runtimeActive: true;
   readonly quota: QuotaRepository;
-  /** Read only; saving belongs to the Coordinator (C-Impl-5C). */
+  /** Saving is used only by the Acquisition Coordinator (C-Impl-5C). */
   readonly publishedStates: Readonly<{
     read: PublishedStateRepository["read"];
+    save: PublishedStateRepository["save"];
+  }>;
+  readonly acquisitionControl: Readonly<{
+    context: AcquisitionControlRepository["context"];
+    read: AcquisitionControlRepository["read"];
+    saveConditionally: AcquisitionControlRepository["saveConditionally"];
   }>;
 }
 /** Thin bundle of existing components; neither Trust nor a Send Permit. */
@@ -145,6 +151,14 @@ export class BackendStore {
       quota: this.quota,
       publishedStates: Object.freeze({
         read: this.publishedStates.read.bind(this.publishedStates),
+        save: this.publishedStates.save.bind(this.publishedStates),
+      }),
+      acquisitionControl: Object.freeze({
+        context: this.acquisitionControl.context,
+        read: this.acquisitionControl.read.bind(this.acquisitionControl),
+        saveConditionally: this.acquisitionControl.saveConditionally.bind(
+          this.acquisitionControl,
+        ),
       }),
     });
     return this.runtime;
