@@ -21,6 +21,8 @@ import { readPublishedStates } from "../../src/backend/published-state-api.js";
 import { TOMORROW_IO } from "../../src/backend/quota/quota-guard.js";
 import type { ExclusiveLock } from "../../src/backend/storage/lock.js";
 import { readOsBootId } from "../../src/backend/time/boot-id.js";
+import { PublishedStateRepository } from "../../src/backend/storage/published-state-repository.js";
+import type { RuntimeStoreAccess } from "../../src/backend/storage/store.js";
 vi.mock("node:child_process", () => ({
   execFile: (...args: unknown[]) =>
     (args.at(-1) as (e: Error | null, out: string) => void)(null, "yes\n"),
@@ -376,3 +378,125 @@ test("Scheduler + Coordinator never run the same State concurrently", async () =
   await scheduler.stop();
   expect(fetchMock).toHaveBeenCalledOnce();
 });
+
+// ---- Published State read anomalies are not "no data" (PR #78 review) ----
+const quiet = { warn: () => {}, error: () => {} };
+/** Test-only writer of an invalid Snapshot (bypassing the Coordinator). */
+const corrupt = (db: Database.Database, key = "currentWeather") =>
+  expect(
+    new PublishedStateRepository(db, quiet, 3).save(
+      key,
+      JSON.stringify({ data: [], meta: {} }),
+    ),
+  ).toMatchObject({ outcome: "saved" });
+const snapshots = (db: Database.Database) =>
+  db.prepare("SELECT * FROM published_state_snapshots ORDER BY 1, 2").all();
+/** Runtime whose Published State read returns a forced result. */
+const forcedRead = (
+  runtime: RuntimeStoreAccess,
+  result: ReturnType<RuntimeStoreAccess["publishedStates"]["read"]>,
+): RuntimeStoreAccess => ({
+  ...runtime,
+  publishedStates: { ...runtime.publishedStates, read: () => result as never },
+});
+const held = { kind: "blocked", scope: "state", reason: "integrity_error" };
+test("Control Row present + isolated Snapshot: no HTTP, Tx-A or Tx-P; nothing overwritten", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [mock()]);
+  await c.runOnce("currentWeather");
+  corrupt(db);
+  corrupt(db); // both retained generations invalid -> isolated
+  expect(states(runtime).currentWeather).toBeUndefined();
+  const before = { control: control(db), snapshots: snapshots(db) };
+  fetchMock.mockImplementation(async () => new Response("", { status: 500 }));
+  move(600_000);
+  expect(await c.runOnce("currentWeather")).toEqual(held);
+  expect(fetchMock).toHaveBeenCalledOnce(); // only the first, successful run
+  expect({ control: control(db), snapshots: snapshots(db) }).toEqual(before);
+});
+test("Control Row present + validator_error: no HTTP, Tx-A or Tx-P", async () => {
+  const { db, runtime } = committed();
+  await new StateAcquisitionCoordinator(runtime, null, [mock()]).runOnce(
+    "currentWeather",
+  );
+  const before = { control: control(db), snapshots: snapshots(db) };
+  move(600_000);
+  const c = new StateAcquisitionCoordinator(
+    forcedRead(runtime, {
+      outcome: "validator_error",
+      stage: "schema",
+      reason: "validator_threw",
+    }),
+    null,
+    [mock()],
+  );
+  expect(await c.runOnce("currentWeather")).toEqual(held);
+  expect(fetchMock).toHaveBeenCalledOnce();
+  expect({ control: control(db), snapshots: snapshots(db) }).toEqual(before);
+});
+test.each(["isolated", "validator_error"] as const)(
+  "Control Row missing + %s: no HTTP, Tx-A or Tx-P, even after the 5-minute wait",
+  async (kind) => {
+    const { db, runtime } = committed();
+    let store = runtime;
+    if (kind === "isolated") corrupt(db);
+    else
+      store = forcedRead(runtime, {
+        outcome: "validator_error",
+        stage: "semantic",
+        reason: "validator_threw",
+      });
+    const before = snapshots(db);
+    const c = new StateAcquisitionCoordinator(store, null, [mock()]);
+    expect(await c.runOnce("currentWeather")).toEqual(held);
+    move(300_000);
+    expect(await c.runOnce("currentWeather")).toEqual(held);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(control(db)).toBeNull();
+    expect(snapshots(db)).toEqual(before);
+  },
+);
+test("a valid previous generation stays usable: failure keeps its data and saves", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [mock()]);
+  await c.runOnce("currentWeather");
+  corrupt(db); // latest invalid, previous valid -> previous
+  fetchMock.mockImplementation(async () => new Response("", { status: 500 }));
+  move(600_000);
+  await c.runOnce("currentWeather");
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(control(db)).toMatchObject({ consecutiveFailures: 1 });
+  expect(states(runtime).currentWeather).toMatchObject({
+    data: { temperature: 18 },
+    meta: { lastAttemptResult: "failure" },
+  });
+});
+test.each([
+  [
+    "L1",
+    { kind: "suspended", scope: "global", reason: "database_unavailable" },
+  ],
+  [
+    "L2",
+    { kind: "suspended", scope: "global", reason: "database_unavailable" },
+  ],
+  ["L3", { kind: "blocked", scope: "global", reason: "integrity_error" }],
+  ["L4", { kind: "blocked", scope: "global", reason: "integrity_error" }],
+] as const)(
+  "Published State database_error %s keeps the DB failure mapping before HTTP",
+  async (layer, result) => {
+    const { db, runtime } = committed();
+    const c = new StateAcquisitionCoordinator(
+      forcedRead(runtime, {
+        outcome: "database_error",
+        layer,
+        reason: "synthetic",
+      }),
+      null,
+      [mock()],
+    );
+    expect(await c.runOnce("currentWeather")).toEqual(result);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(control(db)).toBeNull();
+  },
+);

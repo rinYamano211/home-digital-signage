@@ -113,6 +113,10 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     // Simplification approved for the MVP: hold the State at once (PR-E repairs).
     if (read.outcome === "invalid")
       return { kind: "blocked", scope: "state", reason: "integrity_error" };
+    // Before any HTTP: an unreadable Snapshot is never treated as "no data".
+    const published = this.published(key);
+    if (!("existing" in published)) return published;
+    const existing = published.existing;
     const now = Date.now();
     let previous: AcquisitionControlState;
     let eligibility:
@@ -130,13 +134,7 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
       if (now < at) return scheduled(at);
       previous = read.state;
     } else {
-      const published = this.store.publishedStates.read(
-        key,
-        publishedStateValidator,
-      );
-      if (published.outcome === "database_error")
-        return databaseFailure(published.layer);
-      if (published.outcome === "empty" && published.kind === "new")
+      if (published.isNew)
         eligibility = {
           kind: "confirmed_new",
           pastRecordsAbsent: true,
@@ -145,7 +143,8 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
           newnessConfirmed: true,
         };
       else {
-        // Past records exist without a Control Row: conservative wait first.
+        // Valid past records exist without a Control Row: wait first. Each
+        // cycle re-reads them above, so wait completion proves no validity.
         const wait = this.wait.check(key, provider.periodMs);
         if (!wait.readyForRecheck) return scheduled(now + wait.remainingMs);
         eligibility = {
@@ -159,8 +158,6 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     const http = await this.acquire(provider, key);
     if (http === "suppressed")
       return scheduled(Date.now() + SUPPRESSED_RECHECK_MS);
-    const existing = this.published(key);
-    if (existing === "database_error") return databaseFailure("L4");
     const completedAt = iso(Date.now());
     let parsed: ReturnType<StateProvider["parse"]>;
     try {
@@ -262,12 +259,25 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     const schema = publishedStateValidator.schema(snapshot);
     return schema.valid && publishedStateValidator.semantic(schema.value).valid;
   }
-  private published(key: StateKey): PublishedState | null | "database_error" {
+  /** latest / previous are existing data and empty is "none" (keeping its
+   * kind for newness). isolated / validator_error hold the State; the
+   * Snapshot is neither replaced nor repaired here (PR-E).
+   */
+  private published(
+    key: StateKey,
+  ): RunOnceResult | { existing: PublishedState | null; isNew: boolean } {
     const read = this.store.publishedStates.read(key, publishedStateValidator);
-    if (read.outcome === "database_error") return "database_error";
-    return read.outcome === "latest" || read.outcome === "previous"
-      ? read.snapshot
-      : null;
+    switch (read.outcome) {
+      case "latest":
+      case "previous":
+        return { existing: read.snapshot, isNew: false };
+      case "empty":
+        return { existing: null, isNew: read.kind === "new" };
+      case "database_error":
+        return databaseFailure(read.layer);
+      default:
+        return { kind: "blocked", scope: "state", reason: "integrity_error" };
+    }
   }
   /** HTTP never runs inside a Transaction. Gate/Tx-Q refusal is suppression:
    * the Control State stays unchanged and the State is re-evaluated later.

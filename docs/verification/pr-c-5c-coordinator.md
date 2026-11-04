@@ -30,9 +30,20 @@ Runtime昇格とRuntime Send生成の後にSchedulerを開始する（Provider�
 
 周期判定・5分待機・Envelope検証を外すと各テストがFAILすることを確認した。Tx-Q未登録時の抑止は、外してもGateが`runtime_history_unverified`で拒否するため二重の防御である。
 
+## レビュー修正：Published State読取異常の分類（PR #78）
+
+HTTPの前に、対象StateのPublished Stateを1回だけ読み取り、結果を次のとおり分類する。読取異常を「データなし」として扱わない。
+
+- `latest` / `previous`：既存Snapshotとして扱う。取得失敗時はそのdataと正常取得履歴を維持して保存する。
+- `empty`：保存済みSnapshotなし。`kind: "new"`だけを新規判定に使い、Control Row欠損時の初回取得条件に従う。
+- `isolated` / `validator_error`：`blocked / state / integrity_error`。HTTP・Tx-A・Tx-Pへ進まず、既存Snapshotを上書き・修復しない（修復はPR-E）。Control Row欠損時も同じで、5分待機の完了を正常性の証拠にしない（各判定の冒頭で毎回再Readする）。
+- `database_error`：既存のL1〜L4分類（L1・L2は`suspended / global / database_unavailable`、L3・L4は`blocked / global / integrity_error`）。修正前はこの経路だけL4に固定していた。
+
+追加テスト：Control Rowあり＋`isolated`（2世代とも不正）・＋`validator_error`でHTTP・Tx-A・Tx-Pなし・DB不変、Control Row欠損＋`isolated` / `validator_error`で5分経過後も同様、有効な`previous`は利用継続、Published Stateの`database_error` L1〜L4の分類維持。修正前の分類に戻すと追加4件がFAILすることを確認した。
+
 ## 残余事項
 
 - 本番Providerは未登録（Domain Service側で定義する）。
 - 取得失敗時は既存Published Stateを維持し、期限切れはAPIが変換する。Cacheからの供給はPR-D。
-- 実行中のHTTPはShutdown時に待機する。Adapter Timeoutは10秒で、Shutdown Timeoutと同じ値のため、Provider登録後にShutdown時のAbortを確認する（F-03とあわせて後続）。
+- **本番Provider登録前に必須**：Shutdownは`Scheduler停止待ち → 取得制御のShutdown開始 → 監視停止 → DB Close`の順で、実行中のHTTPを待つ。HTTP Adapter Timeout（10秒）とShutdown Timeout（10秒）が同じため、HTTP実行中のShutdownは停止期限を超えるおそれがある。Provider登録前に、Shutdown時のHTTP Abortと停止期限を検証する。今回はProvider登録が空のためShutdown設計を拡張しない（F-03・PR-D・PR-Eは対象外）。
 - `recover()`の早期化は行っていない（再開まで最大約10分、計画2の記録どおり）。
