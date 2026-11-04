@@ -264,6 +264,7 @@ export class AcquisitionControlRepository {
   constructor(
     private readonly db: Database.Database,
     readonly context = new ControlAttemptManager(),
+    private readonly schemaVersion: 2 | 3 = 2,
   ) {
     this.coordination = connectionCoordination(db);
     let pending = attempts.get(db);
@@ -289,7 +290,7 @@ export class AcquisitionControlRepository {
       try {
         if (!this.resolved()) return this.readFailure(this.unresolved());
         this.db.exec("BEGIN");
-        validateSchema(this.db);
+        validateSchema(this.db, this.schemaVersion);
         row = this.row(stateKey);
         this.db.exec("COMMIT");
         if (!this.resolved()) return this.readFailure(this.unresolved());
@@ -364,7 +365,7 @@ export class AcquisitionControlRepository {
       // Re-read immediately at authorization issuance. Its absence alone never
       // proves newness: the Application's positive eligibility is also required.
       this.db.exec("BEGIN");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const row = this.row(record.trial.stateKey);
       this.db.exec("COMMIT");
       if (!this.resolved()) {
@@ -485,7 +486,7 @@ export class AcquisitionControlRepository {
       record.consumed = true;
       if (authorization) authorization.consumed = true;
       this.db.exec("BEGIN IMMEDIATE");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const before = this.row(request.stateKey);
       if (!same(before, record.row)) throw new StaleControlEvidence();
       attempt = { owner: this, before, planned };
@@ -570,7 +571,7 @@ export class AcquisitionControlRepository {
     try {
       if (!this.resolved()) return this.unresolved();
       this.db.exec("BEGIN");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const current = this.row(stateKey);
       const guard = this.guard();
       this.db.exec("COMMIT");

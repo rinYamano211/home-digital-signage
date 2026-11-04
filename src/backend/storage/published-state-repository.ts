@@ -131,6 +131,7 @@ export class PublishedStateRepository {
   constructor(
     private readonly db: Database.Database,
     private readonly logger: Pick<Logger, "warn" | "error"> = createLogger(),
+    private readonly schemaVersion: 2 | 3 = 2,
   ) {
     this.coordination = connectionCoordination(db);
     let pending = publishedAttempts.get(db);
@@ -208,7 +209,7 @@ export class PublishedStateRepository {
     try {
       if (!this.transactionResolved()) return this.unresolvedConnection();
       this.db.exec("BEGIN IMMEDIATE");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       let before: StateImage;
       try {
         before = this.readImage(stateKey);
@@ -291,7 +292,7 @@ export class PublishedStateRepository {
       try {
         if (!this.transactionResolved()) return this.unresolvedRead();
         this.db.exec("BEGIN");
-        validateSchema(this.db);
+        validateSchema(this.db, this.schemaVersion);
         image = this.readImage(stateKey);
         this.db.exec("COMMIT");
         if (!this.transactionResolved()) return this.unresolvedRead();
@@ -543,7 +544,7 @@ export class PublishedStateRepository {
   ): SaveResult {
     try {
       if (!this.transactionResolved()) return this.unresolvedConnection();
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const actual = this.readImage(stateKey);
       if (!this.transactionResolved()) return this.unresolvedConnection();
       if (same(actual, attempt.expected)) {

@@ -126,6 +126,7 @@ export class BackendCacheRepository {
   constructor(
     private readonly db: Database.Database,
     private readonly logger: Pick<Logger, "warn" | "error"> = createLogger(),
+    private readonly schemaVersion: 2 | 3 = 2,
   ) {
     this.coordination = connectionCoordination(db);
     let pending = cacheAttempts.get(db);
@@ -158,7 +159,7 @@ export class BackendCacheRepository {
       try {
         if (!this.resolved()) return this.readUnresolved();
         this.db.exec("BEGIN");
-        validateSchema(this.db);
+        validateSchema(this.db, this.schemaVersion);
         row = this.readRow(stateKey);
         this.db.exec("COMMIT");
         if (!this.resolved()) return this.readUnresolved();
@@ -280,7 +281,7 @@ export class BackendCacheRepository {
       // All preflight refusals leave the evidence intact. Every BEGIN attempt consumes it.
       record.consumed = true;
       this.db.exec("BEGIN IMMEDIATE");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const before = this.readRow(request.stateKey);
       if (!same(before, record.row)) throw new StaleCacheEvidence();
       attempt = { before, planned };
@@ -348,7 +349,7 @@ export class BackendCacheRepository {
     try {
       if (!this.resolved()) return this.unresolved();
       this.db.exec("BEGIN");
-      validateSchema(this.db);
+      validateSchema(this.db, this.schemaVersion);
       const actual = this.readRow(stateKey);
       this.db.exec("COMMIT");
       if (!this.resolved()) return this.unresolved();

@@ -6,7 +6,12 @@ import { ConfigError, loadConfig } from "./config/loader.js";
 import { createLogger } from "./logging/logger.js";
 import { installShutdown } from "./shutdown.js";
 import { ExclusiveLock } from "./storage/lock.js";
-import { BackendStore, type StartupStoreAccess } from "./storage/store.js";
+import {
+  BackendStore,
+  type RuntimeStoreAccess,
+  type StartupStoreAccess,
+} from "./storage/store.js";
+import { readPublishedStates } from "./published-state-api.js";
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
 import type { StartupResult } from "./storage/startup-transaction.js";
 import {
@@ -67,6 +72,7 @@ export async function startBackend(
   logger.info({ event: "startup_begin" }, "Backend starting");
   const app = buildApp(logger, false);
   let ownedStore: StartupStoreAccess | undefined;
+  let runtime: RuntimeStoreAccess | null = null;
   let finishInitialization!: () => void;
   const initialized = new Promise<void>((resolve) => {
     finishInitialization = resolve;
@@ -136,11 +142,14 @@ export async function startBackend(
               status = startupDatabaseStatus(
                 ownedStore.startup.execute({ bootId }),
               );
-              if (status.state === "HEALTHY")
+              if (status.state === "HEALTHY") {
                 logger.info(
                   { event: "storage_startup_committed" },
                   "Storage Startup committed",
                 );
+                // DB read access only; no Trust, Quota or send authority.
+                runtime = BackendStore.activateRuntime(ownedStore);
+              }
             }
             // Drain Signals queued during synchronous SQLite before any route
             // registration / Listen. Native code is not interrupted by JS.
@@ -163,7 +172,7 @@ export async function startBackend(
       await shutdown.shutdown();
       return;
     }
-    registerRoutes(app);
+    registerRoutes(app, () => readPublishedStates(runtime));
     stage = "listen_failed";
     await app.listen({ host: config.host, port: config.port });
     if (shutdown.requested) {
