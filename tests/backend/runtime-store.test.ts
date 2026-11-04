@@ -16,6 +16,12 @@ import { createProviderSendGate } from "../../src/backend/send/provider-send-gat
 import { TOMORROW_IO } from "../../src/backend/quota/quota-guard.js";
 import type { ExclusiveLock } from "../../src/backend/storage/lock.js";
 import { readOsBootId } from "../../src/backend/time/boot-id.js";
+import { ClockTrustMonitor } from "../../src/backend/send/internal/trust.js";
+import {
+  RuntimeHistory,
+  runtimeHistoryMatches,
+} from "../../src/backend/quota/internal/runtime-history.js";
+import type { DrainBoundaryEvidence } from "../../src/backend/quota/internal/history-boundaries.js";
 vi.mock("../../src/backend/time/boot-id.js", async (original) => ({
   ...(await original<typeof import("../../src/backend/time/boot-id.js")>()),
   readOsBootId: vi.fn(),
@@ -50,7 +56,7 @@ afterEach(() => {
 /** Real v3 file reopened through the restricted facade. The private Connection
  * is captured only so tests can create Connection-level conditions.
  */
-function open() {
+function open(provisioned = false) {
   const dir = mkdtempSync(join(tmpdir(), "signage-runtime-store-"));
   dirs.push(dir);
   const seed = new Database(join(dir, "signage.db"));
@@ -60,6 +66,10 @@ function open() {
   seed
     .prepare("INSERT INTO backend_lifecycle VALUES (1,'RUNNING',?,1)")
     .run(boot);
+  if (provisioned)
+    seed
+      .prepare("INSERT INTO provider_quota_metadata VALUES (?,'ACTIVE',0,0)")
+      .run(TOMORROW_IO);
   seed.pragma("user_version=3");
   seed.close();
   const lock = {
@@ -227,6 +237,157 @@ test("R1-12 Runtime activation grants no Trust or send authority", () => {
   const gate = createProviderSendGate(quota);
   expect(gate.reservationStatus(TOMORROW_IO).allowed).toBe(false);
   expect(gate.quotaTrust(TOMORROW_IO)).toEqual(untrusted);
+  expect(gate.beginAttempt(TOMORROW_IO)).toBeNull();
+  gate.dispose();
+});
+const clockOf = () =>
+  new ClockTrustMonitor(
+    { wallMs: () => 200_000_000, monotonicNs: () => 1_000_000_000n },
+    () => null,
+  );
+test.each(["before", "rejected", "unknown"])(
+  "R2A-01 Startup state %s creates no Runtime History",
+  (kind) => {
+    const { h, db } = open();
+    const clock = clockOf();
+    if (kind === "rejected")
+      h.startup.execute({ bootId: "11111111-2222-3333-4444-555555555555" });
+    if (kind === "unknown") {
+      const exec = db.exec.bind(db);
+      vi.spyOn(db, "exec").mockImplementation((sql) => {
+        const out = exec(sql);
+        if (sql === "COMMIT")
+          throw Object.assign(Error("private"), { code: "SQLITE_BUSY" });
+        return out;
+      });
+      h.startup.execute({ bootId: boot });
+      vi.mocked(db.exec).mockRestore();
+    }
+    expect(BackendStore.createRuntimeHistory(h, clock)).toBeNull();
+    expect(BackendStore.createRuntimeHistory({ ...h }, clock)).toBeNull();
+    // A refused precondition does not consume the single owner slot.
+    if (kind === "before") {
+      commit(h);
+      expect(BackendStore.createRuntimeHistory(h, clock)).not.toBeNull();
+    } else
+      expect(h.startup.execute({ bootId: boot })).toMatchObject({
+        reason: "startup_already_attempted",
+      });
+  },
+);
+test("R2A-02/03 same Connection and QuotaRepository; repeated calls return one bundle", () => {
+  const { h, db } = open(true);
+  commit(h);
+  const clock = clockOf();
+  const quota = BackendStore.activateRuntime(h)!.quota;
+  const access = BackendStore.createRuntimeHistory(h, clock)!;
+  expect(runtimeHistoryMatches(access.history, db, quota, clock)).toBe(true);
+  expect(access.history.scope()).toMatchObject({ generation: 2 });
+  // Ranges reads through the bundled History's provisioned Startup cutoff.
+  expect(access.history.effectiveCutoff()).toBe(0);
+  expect(access.ranges.read()).toEqual({ outcome: "read", ranges: [] });
+  expect(BackendStore.createRuntimeHistory(h, clock)).toBe(access);
+  expect(Object.keys(access).sort()).toEqual(["history", "ranges"]);
+  expect(Object.isFrozen(access)).toBe(true);
+  expect(Object.isFrozen(access.history)).toBe(false);
+  expect(BackendStore.activateRuntime(h)!.quota).toBe(quota);
+});
+test("R2A-04 another or forged Clock is refused; the single owner stays", () => {
+  const { h, db } = open();
+  commit(h);
+  const clock = clockOf();
+  const access = BackendStore.createRuntimeHistory(h, clock)!;
+  expect(BackendStore.createRuntimeHistory(h, clockOf())).toBeNull();
+  expect(
+    BackendStore.createRuntimeHistory(h, {
+      ...clock,
+    } as unknown as ClockTrustMonitor),
+  ).toBeNull();
+  expect(BackendStore.createRuntimeHistory(h, clock)).toBe(access);
+  const quota = BackendStore.activateRuntime(h)!.quota;
+  expect(() => new RuntimeHistory(db, quota, clock)).toThrow(
+    "Runtime History already owned",
+  );
+});
+test("R2A-04 a failed creation is not retried and returns no partial bundle", () => {
+  const { h, db } = open();
+  commit(h);
+  const clock = clockOf();
+  // Another owner already took the Connection: the Store's creation throws.
+  new RuntimeHistory(db, BackendStore.activateRuntime(h)!.quota, clock);
+  expect(BackendStore.createRuntimeHistory(h, clock)).toBeNull();
+  expect(BackendStore.createRuntimeHistory(h, clock)).toBeNull();
+  expect(BackendStore.activateRuntime(h)).not.toBeNull();
+});
+test.each(["busy", "blocked", "unresolved", "transaction", "closed"])(
+  "R2A-05 %s Connection refuses creation and later reuse",
+  (kind) => {
+    const { h, db } = open();
+    commit(h);
+    const clock = clockOf();
+    const access = BackendStore.createRuntimeHistory(h, clock)!;
+    const c = connectionCoordination(db);
+    if (kind === "busy") c.busy = true;
+    else if (kind === "blocked")
+      c.blocked = { scope: "database", layer: "L4", reason: "synthetic" };
+    else if (kind === "unresolved") c.connectionUnresolved = true;
+    else if (kind === "transaction") db.exec("BEGIN");
+    else h.close();
+    expect(BackendStore.createRuntimeHistory(h, clock)).toBeNull();
+    if (kind === "busy") c.busy = false;
+    if (kind === "transaction") db.exec("ROLLBACK");
+    if (kind === "busy" || kind === "transaction")
+      expect(BackendStore.createRuntimeHistory(h, clock)).toBe(access);
+    if (kind === "closed") expect(access.history.scope()).toBeNull();
+  },
+);
+test("R2A-05 a fresh Connection condition also refuses the first creation", () => {
+  const { h, db } = open();
+  commit(h);
+  const clock = clockOf();
+  db.exec("BEGIN");
+  expect(BackendStore.createRuntimeHistory(h, clock)).toBeNull();
+  db.exec("ROLLBACK");
+  expect(BackendStore.createRuntimeHistory(h, clock)).not.toBeNull();
+});
+test("R2A-06 Runtime History creation grants no Trust, reservation, Range or send authority", () => {
+  const { h, db } = open();
+  commit(h);
+  const clock = clockOf();
+  const quota = BackendStore.activateRuntime(h)!.quota;
+  expect(quota.provisionProvider(TOMORROW_IO, confirmed).outcome).toBe(
+    "initialized",
+  );
+  const { history, ranges } = BackendStore.createRuntimeHistory(h, clock)!;
+  clock.observe();
+  expect(clock.state()).not.toBe("TRUSTED");
+  const attempt = quota.beginAttempt(TOMORROW_IO);
+  expect(
+    history.reserve({
+      providerKey: TOMORROW_IO,
+      attempt,
+      trust: () => untrusted,
+    }),
+  ).toEqual({
+    reservation: {
+      outcome: "quota_blocked",
+      reason: "runtime_history_unverified",
+    },
+    registered: false,
+  });
+  quota.endAttempt(attempt);
+  expect(history.facts()).toEqual([]);
+  expect(
+    ranges.insert(
+      { rangeId: 1, startSequence: 1, endSequence: 1 },
+      {} as DrainBoundaryEvidence,
+    ),
+  ).toEqual({ outcome: "rejected", reason: "drain_unverified" });
+  expect(
+    db.prepare("SELECT COUNT(*) AS n FROM provider_quota_consumptions").get(),
+  ).toEqual({ n: 0 });
+  const gate = createProviderSendGate(quota);
+  expect(gate.reservationStatus(TOMORROW_IO).allowed).toBe(false);
   expect(gate.beginAttempt(TOMORROW_IO)).toBeNull();
   gate.dispose();
 });
