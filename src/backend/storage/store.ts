@@ -19,6 +19,9 @@ import { PublishedStateRepository } from "./published-state-repository.js";
 import { AcquisitionControlRepository } from "./acquisition-control-repository.js";
 import { BackendCacheRepository } from "./backend-cache-repository.js";
 import { committedStartup } from "./internal/startup-commit.js";
+import { HistoryRangeRepository } from "./history-range-repository.js";
+import { RuntimeHistory } from "../quota/internal/runtime-history.js";
+import { ClockTrustMonitor } from "../send/internal/trust.js";
 
 export function configureDatabase(db: Database.Database, version: 2 | 3 = 2) {
   enableForeignKeys(db);
@@ -47,6 +50,11 @@ export interface RuntimeStoreAccess {
   readonly runtimeActive: true;
   readonly quota: QuotaRepository;
 }
+/** Thin bundle of existing components; neither Trust nor a Send Permit. */
+export interface RuntimeHistoryAccess {
+  readonly history: RuntimeHistory;
+  readonly ranges: HistoryRangeRepository;
+}
 const startupOwners = new WeakMap<StartupStoreAccess, BackendStore>();
 export class BackendStore {
   readonly publishedStates: PublishedStateRepository;
@@ -55,6 +63,8 @@ export class BackendStore {
   readonly quota: QuotaRepository;
   private closing = false;
   private runtime?: RuntimeStoreAccess;
+  private history?: { clock: ClockTrustMonitor; access: RuntimeHistoryAccess };
+  private historyFailed = false;
   private constructor(
     private readonly db: Database.Database,
     version: 2 | 3 = 2,
@@ -74,27 +84,66 @@ export class BackendStore {
     const owner = startupOwners.get(startup);
     return owner ? owner.activate() : null;
   }
-  private activate(): RuntimeStoreAccess | null {
+  /** Existing History components on the same Connection and QuotaRepository,
+   * under the same conditions as activateRuntime(). Clock TRUSTED is not
+   * required; creation grants no Clock/History Trust, quota or send authority.
+   * One RuntimeHistory per Connection: another Clock or a failed creation is
+   * refused permanently rather than re-created.
+   */
+  static createRuntimeHistory(
+    startup: StartupStoreAccess,
+    clock: ClockTrustMonitor,
+  ): RuntimeHistoryAccess | null {
+    const owner = startupOwners.get(startup);
+    return owner ? owner.historyAccess(clock) : null;
+  }
+  private runtimeReady(): boolean {
     try {
       const c = connectionCoordination(this.db);
-      if (
-        this.closing ||
-        !this.db.open ||
-        c.busy ||
-        c.blocked ||
-        c.connectionUnresolved ||
-        this.db.inTransaction !== false ||
-        !committedStartup(this.db)
-      )
-        return null;
+      return (
+        !this.closing &&
+        this.db.open &&
+        !c.busy &&
+        !c.blocked &&
+        !c.connectionUnresolved &&
+        this.db.inTransaction === false &&
+        !!committedStartup(this.db)
+      );
     } catch {
-      return null;
+      return false;
     }
+  }
+  private activate(): RuntimeStoreAccess | null {
+    if (!this.runtimeReady()) return null;
     this.runtime ??= Object.freeze({
       runtimeActive: true as const,
       quota: this.quota,
     });
     return this.runtime;
+  }
+  private historyAccess(clock: ClockTrustMonitor): RuntimeHistoryAccess | null {
+    if (
+      this.historyFailed ||
+      !(clock instanceof ClockTrustMonitor) ||
+      (this.history && this.history.clock !== clock) ||
+      !this.runtimeReady()
+    )
+      return null;
+    if (!this.history) {
+      try {
+        const history = new RuntimeHistory(this.db, this.quota, clock);
+        const ranges = new HistoryRangeRepository(this.db, history);
+        this.history = {
+          clock,
+          access: Object.freeze({ history, ranges }),
+        };
+      } catch {
+        // RuntimeHistory may already own this Connection; never retry it.
+        this.historyFailed = true;
+        return null;
+      }
+    }
+    return this.history.access;
   }
   static open(lock: ExclusiveLock): BackendStore {
     lock.assertHeld();
