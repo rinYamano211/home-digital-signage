@@ -25,9 +25,17 @@ import { utcInstant } from "../time/utc-instant.js";
  * `quota` is true only for Tomorrow.io: it then goes through the Send Gate and
  * Tx-Q, and its `http` configuration is bound to the Gate's adapter.
  */
-export interface StateProvider {
+interface ProviderTiming {
   readonly stateKey: StateKey;
   readonly periodMs: number;
+  /** Optional success period from the attempt start (epoch ms), e.g. capped at
+   * the next JST midnight (technology-stack 18.7). Only a smaller positive
+   * integer than `periodMs` takes effect; Backoff is never changed.
+   */
+  nextPeriodMs?(startedAtMs: number): number;
+}
+/** Single-HTTP Provider: one fixed GET, then `parse()`. */
+export interface StateProvider extends ProviderTiming {
   readonly quota: boolean;
   readonly http: HttpAdapterConfig;
   parse(
@@ -36,6 +44,33 @@ export interface StateProvider {
     | { kind: "success"; data: Record<string, unknown>; expiresAt: string }
     | { kind: "failure" };
 }
+export interface AcquireContext {
+  /** Attempt start (UTC RFC 3339), fixed before any HTTP. */
+  readonly startedAt: string;
+  /** Aborted at Shutdown; checked by the Provider after every await. */
+  readonly signal: AbortSignal;
+  /** All HTTP goes through the common Adapter (Timeout / Body limit). */
+  http(config: HttpAdapterConfig): Promise<HttpOutcome>;
+}
+export type AcquireResult =
+  | { kind: "success"; data: Record<string, unknown>; expiresAt: string }
+  /** Status / Retry-After of the failing Request feed the 429 Backoff. */
+  | { kind: "failure"; httpStatus?: number; retryAfter?: string }
+  /** Result is not adopted (e.g. the target date rolled forward): no Tx-A /
+   * Tx-P, the Control State is unchanged, and the Coordinator re-evaluates.
+   */
+  | { kind: "discard" };
+/** Multi-HTTP Provider (Issue #10): owns one whole attempt (authentication,
+ * paging). Quota Providers are excluded: the Send Gate allows one HTTP per
+ * reservation. It never touches the DB.
+ */
+export interface MultiHttpProvider extends ProviderTiming {
+  readonly quota: false;
+  acquire(context: AcquireContext): Promise<AcquireResult>;
+}
+export type AcquisitionProvider = StateProvider | MultiHttpProvider;
+const isMulti = (p: AcquisitionProvider): p is MultiHttpProvider =>
+  "acquire" in p;
 const NO_PROVIDER_RECHECK_MS = 60 * 60 * 1000;
 const SUPPRESSED_RECHECK_MS = 60 * 1000;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -43,6 +78,18 @@ const scheduled = (atMs: number): RunOnceResult => ({
   kind: "scheduled",
   recheckAt: iso(Math.max(atMs, Date.now() + 1000)),
 });
+/** Success period: `nextPeriodMs` may only shorten `periodMs` (18.7). */
+function period(provider: ProviderTiming, startedAtMs: number): number {
+  let value: number;
+  try {
+    value = provider.nextPeriodMs?.(startedAtMs) ?? provider.periodMs;
+  } catch {
+    return provider.periodMs;
+  }
+  return Number.isSafeInteger(value) && value > 0 && value < provider.periodMs
+    ? value
+    : provider.periodMs;
+}
 const unresolved = (scope: "state" | "global"): RunOnceResult => ({
   kind: "suspended",
   scope,
@@ -72,21 +119,33 @@ function saveFailure(result: SaveOutcome): RunOnceResult | null {
  * commit-unknown reconciliation belong to PR-D; repairs belong to PR-E.
  */
 export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
-  private readonly providers = new Map<StateKey, StateProvider>();
+  private readonly providers = new Map<StateKey, AcquisitionProvider>();
   private readonly adapters = new Map<StateKey, HttpStartAdapter>();
   private readonly wait = new ConservativeControlWait();
+  private readonly stopping = new AbortController();
   constructor(
     private readonly store: RuntimeStoreAccess,
     private readonly send: RuntimeSend | null,
-    providers: readonly StateProvider[],
+    providers: readonly AcquisitionProvider[],
   ) {
     for (const provider of providers) {
       if (this.providers.has(provider.stateKey))
         throw new TypeError("Duplicate State Provider");
+      if (isMulti(provider) && provider.quota !== false)
+        throw new TypeError("Quota Providers must be single-HTTP");
       this.providers.set(provider.stateKey, provider);
     }
   }
+  /** Shutdown: abort in-flight non-quota HTTP before the Scheduler is awaited
+   * (technology-stack 18.7). Aborted attempts save nothing and are final.
+   */
+  abort(): void {
+    this.stopping.abort();
+  }
   async runOnce(stateKey: StateKey): Promise<RunOnceResult> {
+    // After abort() the Scheduler is stopping and ignores results; holding is
+    // the fail-closed answer if it were not.
+    if (this.stopping.signal.aborted) return unresolved("global");
     const provider = this.providers.get(stateKey);
     if (!provider) return scheduled(Date.now() + NO_PROVIDER_RECHECK_MS);
     const control = this.store.acquisitionControl;
@@ -103,7 +162,7 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     }
   }
   private async cycle(
-    provider: StateProvider,
+    provider: AcquisitionProvider,
     key: StateKey,
   ): Promise<RunOnceResult> {
     const control = this.store.acquisitionControl;
@@ -154,17 +213,36 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
       }
       previous = { consecutiveFailures: 0, nextAttemptAt: iso(now) };
     }
-    const startedAt = iso(Date.now());
-    const http = await this.acquire(provider, key);
-    if (http === "suppressed")
-      return scheduled(Date.now() + SUPPRESSED_RECHECK_MS);
-    const completedAt = iso(Date.now());
-    let parsed: ReturnType<StateProvider["parse"]>;
-    try {
-      parsed = provider.parse(http);
-    } catch {
-      parsed = { kind: "failure" };
+    const startedAtMs = Date.now();
+    const startedAt = iso(startedAtMs);
+    let parsed: AcquireResult;
+    if (isMulti(provider)) {
+      parsed = await this.acquireMulti(provider, startedAt);
+    } else {
+      const http = await this.acquire(provider, key);
+      if (http === "suppressed")
+        return scheduled(Date.now() + SUPPRESSED_RECHECK_MS);
+      try {
+        parsed = provider.parse(http);
+      } catch {
+        parsed = { kind: "failure" };
+      }
+      if (parsed.kind === "failure" && http.http)
+        parsed = {
+          kind: "failure",
+          httpStatus: http.http.status,
+          ...(http.http.retryAfter !== undefined
+            ? { retryAfter: http.http.retryAfter }
+            : {}),
+        };
     }
+    // An aborted attempt is not a Provider failure: no Tx-A / Tx-P (18.7).
+    // The Tomorrow.io Gate path is unchanged (its Abort is confirmed in #9).
+    const abortable = isMulti(provider) || !provider.quota;
+    if (abortable && this.stopping.signal.aborted) return unresolved("global");
+    // Re-evaluation only: the next cycle re-reads the Control State (18.7).
+    if (parsed.kind === "discard") return scheduled(Date.now());
+    const completedAt = iso(Date.now());
     let snapshot: PublishedState | null =
       parsed.kind === "success"
         ? {
@@ -203,14 +281,17 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
               dataSource: null,
             },
           };
+    const failure = parsed.kind === "failure" ? parsed : undefined;
     const outcome: AcquisitionOutcome = succeeded
-      ? { kind: "success", startedAt, periodMs: provider.periodMs }
+      ? { kind: "success", startedAt, periodMs: period(provider, startedAtMs) }
       : {
           kind: "failure",
           completedAt,
-          ...(http.http ? { httpStatus: http.http.status } : {}),
-          ...(http.http?.retryAfter !== undefined
-            ? { retryAfter: http.http.retryAfter }
+          ...(failure?.httpStatus !== undefined
+            ? { httpStatus: failure.httpStatus }
+            : {}),
+          ...(failure?.retryAfter !== undefined
+            ? { retryAfter: failure.retryAfter }
             : {}),
         };
     const next = nextControlState(previous, outcome);
@@ -279,6 +360,36 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
         return { kind: "blocked", scope: "state", reason: "integrity_error" };
     }
   }
+  /** One whole multi-HTTP attempt. Provider exceptions are failures; every
+   * Request uses a fresh common Adapter bound to the Shutdown signal.
+   */
+  private async acquireMulti(
+    provider: MultiHttpProvider,
+    startedAt: string,
+  ): Promise<AcquireResult> {
+    const signal = this.stopping.signal;
+    const http = async (config: HttpAdapterConfig): Promise<HttpOutcome> => {
+      if (signal.aborted) return { kind: "aborted" };
+      try {
+        return (await createHttpAdapter(config).start(
+          signal,
+          () => {},
+        )) as HttpOutcome;
+      } catch {
+        return { kind: "network_error" };
+      }
+    };
+    try {
+      const result = await provider.acquire({ startedAt, signal, http });
+      return result.kind === "success" ||
+        result.kind === "failure" ||
+        result.kind === "discard"
+        ? result
+        : { kind: "failure" };
+    } catch {
+      return { kind: "failure" };
+    }
+  }
   /** HTTP never runs inside a Transaction. Gate/Tx-Q refusal is suppression:
    * the Control State stays unchanged and the State is re-evaluated later.
    */
@@ -314,7 +425,7 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     }
     try {
       return (await adapter.start(
-        new AbortController().signal,
+        this.stopping.signal,
         () => {},
       )) as HttpOutcome;
     } catch {
@@ -326,4 +437,5 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
 /** Production registry. Empty until the Domain Services define Providers:
  * every State is then re-evaluated hourly with no HTTP or DB writes.
  */
-export const PRODUCTION_PROVIDERS: readonly StateProvider[] = Object.freeze([]);
+export const PRODUCTION_PROVIDERS: readonly AcquisitionProvider[] =
+  Object.freeze([]);

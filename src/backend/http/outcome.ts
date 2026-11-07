@@ -11,4 +11,8 @@ export interface HttpAdapterConfig {
   url: string;
   maxBodyBytes: number;
   headers?: HeadersInit;
+  /** GET by default. POST is for Provider authentication (Issue #10). */
+  method?: "GET" | "POST";
+  /** Request body; only with POST. */
+  body?: string;
 }

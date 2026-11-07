@@ -13,8 +13,10 @@ import {
 import { connectionCoordination } from "../../src/backend/storage/connection-coordination.js";
 import {
   StateAcquisitionCoordinator,
+  type MultiHttpProvider,
   type StateProvider,
 } from "../../src/backend/acquisition/coordinator.js";
+import type { HttpOutcome } from "../../src/backend/http/outcome.js";
 import { StateScheduler } from "../../src/backend/scheduler/state-scheduler.js";
 import { createRuntimeSend } from "../../src/backend/send/provider-send-gate.js";
 import { readPublishedStates } from "../../src/backend/published-state-api.js";
@@ -500,3 +502,276 @@ test.each([
     expect(control(db)).toBeNull();
   },
 );
+
+// ---- Issue #10 (technology-stack 18.7): multi-HTTP, Abort, discard, period ----
+const decode = (o: HttpOutcome) =>
+  o.kind === "response" ? JSON.parse(new TextDecoder().decode(o.body)) : null;
+const failureOf = (o: HttpOutcome) =>
+  o.http
+    ? {
+        kind: "failure" as const,
+        httpStatus: o.http.status,
+        ...(o.http.retryAfter !== undefined
+          ? { retryAfter: o.http.retryAfter }
+          : {}),
+      }
+    : { kind: "failure" as const };
+/** Mock multi-HTTP Provider: a token POST and two pages, all via ctx.http. */
+const multi = (over: Partial<MultiHttpProvider> = {}): MultiHttpProvider => ({
+  stateKey: "currentWeather",
+  periodMs: 600_000,
+  quota: false,
+  async acquire(ctx) {
+    const token = await ctx.http({
+      url: "https://auth.example.test/token",
+      maxBodyBytes: 4096,
+      method: "POST",
+      body: "grant=synthetic",
+    });
+    if (token.kind !== "response" || token.http.status !== 200)
+      return failureOf(token);
+    const pages: unknown[] = [];
+    for (const page of [1, 2]) {
+      const r = await ctx.http({
+        url: `https://calendar.example.test/page${page}`,
+        maxBodyBytes: 4096,
+      });
+      if (r.kind !== "response" || r.http.status !== 200) return failureOf(r);
+      pages.push(decode(r));
+    }
+    return {
+      kind: "success",
+      data: { pages },
+      expiresAt: iso(Date.now() + 3_600_000),
+    };
+  },
+  ...over,
+});
+/** fetch that never answers and rejects only when its signal aborts. */
+const hanging: typeof fetch = (_input, init) =>
+  new Promise((_resolve, reject) => {
+    const signal = init?.signal;
+    signal?.addEventListener("abort", () => reject(signal.reason));
+  });
+const until = async (condition: () => boolean) => {
+  for (let i = 0; i < 200 && !condition(); i++)
+    await new Promise((resolve) => setImmediate(resolve));
+  expect(condition()).toBe(true);
+};
+test("multi-HTTP Provider: POST then pages through the common Adapter, one Tx-A / Tx-P", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [multi()]);
+  const start = wall;
+  expect(await c.runOnce("currentWeather")).toEqual({
+    kind: "scheduled",
+    recheckAt: iso(start + 600_000),
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+    method: "POST",
+    body: "grant=synthetic",
+  });
+  expect(fetchMock.mock.calls[1]?.[1]).not.toHaveProperty("method");
+  expect(control(db)).toEqual({
+    consecutiveFailures: 0,
+    nextAttemptAt: iso(start + 600_000),
+  });
+  expect(states(runtime).currentWeather).toMatchObject({
+    data: { pages: [{ temperature: 18 }, { temperature: 18 }] },
+    meta: { lastAttemptResult: "success", dataSource: "externalApi" },
+  });
+});
+test("multi-HTTP failure carries HTTP 429 and Retry-After into the Backoff", async () => {
+  const { db, runtime } = committed();
+  let call = 0;
+  fetchMock.mockImplementation(async () =>
+    ++call === 3
+      ? new Response("", { status: 429, headers: { "Retry-After": "900" } })
+      : Response.json({ temperature: 18 }),
+  );
+  const c = new StateAcquisitionCoordinator(runtime, null, [multi()]);
+  const at = wall;
+  await c.runOnce("currentWeather");
+  expect(control(db)).toEqual({
+    consecutiveFailures: 1,
+    nextAttemptAt: iso(at + 900_000),
+  });
+  expect(states(runtime).currentWeather).toMatchObject({
+    data: null,
+    meta: { lastAttemptResult: "failure" },
+  });
+});
+test("a throwing multi-HTTP Provider is an ordinary failure", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    multi({
+      acquire: async () => {
+        throw new Error("synthetic");
+      },
+    }),
+  ]);
+  await c.runOnce("currentWeather");
+  expect(control(db)).toMatchObject({ consecutiveFailures: 1 });
+});
+test("discard saves nothing and only schedules a re-evaluation of the Control State", async () => {
+  const { db, runtime } = committed();
+  let discard = false;
+  const base = multi();
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    multi({
+      acquire: async (ctx) =>
+        discard ? { kind: "discard" } : base.acquire(ctx),
+    }),
+  ]);
+  await c.runOnce("currentWeather");
+  const savedControl = control(db);
+  const savedState = states(runtime).currentWeather;
+  move(600_000);
+  discard = true;
+  expect(await c.runOnce("currentWeather")).toEqual({
+    kind: "scheduled",
+    recheckAt: iso(wall + 1000),
+  });
+  expect(control(db)).toEqual(savedControl);
+  expect(states(runtime).currentWeather).toEqual(savedState);
+  // The re-evaluation is the normal cycle: still due, so it acquires again.
+  discard = false;
+  move(1000);
+  const calls = fetchMock.mock.calls.length;
+  await c.runOnce("currentWeather");
+  expect(fetchMock.mock.calls.length).toBe(calls + 3);
+  expect(control(db)).toEqual({
+    consecutiveFailures: 0,
+    nextAttemptAt: iso(wall + 600_000),
+  });
+});
+test("a re-evaluation after discard still waits for a future nextAttemptAt", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    multi({ acquire: async () => ({ kind: "discard" }) }),
+  ]);
+  // Seed a due-later Control Row through a normal success first.
+  const ok = new StateAcquisitionCoordinator(runtime, null, [multi()]);
+  await ok.runOnce("currentWeather");
+  const due = control(db).nextAttemptAt as string;
+  const calls = fetchMock.mock.calls.length;
+  expect(await c.runOnce("currentWeather")).toEqual({
+    kind: "scheduled",
+    recheckAt: due,
+  });
+  expect(fetchMock.mock.calls.length).toBe(calls);
+});
+test("discard on the first attempt keeps the State new (no Control Row)", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    multi({ acquire: async () => ({ kind: "discard" }) }),
+  ]);
+  expect(await c.runOnce("currentWeather")).toEqual({
+    kind: "scheduled",
+    recheckAt: iso(wall + 1000),
+  });
+  expect(control(db)).toBeNull();
+  expect(states(runtime).currentWeather).toBeUndefined();
+});
+test.each([
+  [1000, 1000],
+  [0, 600_000],
+  [600_000, 600_000],
+  [700_000, 600_000],
+  [Number.NaN, 600_000],
+  [1.5, 600_000],
+])(
+  "nextPeriodMs %s shortens only a successful period (expected %s)",
+  async (value, expected) => {
+    const { db, runtime } = committed();
+    const c = new StateAcquisitionCoordinator(runtime, null, [
+      mock({ nextPeriodMs: () => value }),
+    ]);
+    const start = wall;
+    await c.runOnce("currentWeather");
+    expect(control(db)).toEqual({
+      consecutiveFailures: 0,
+      nextAttemptAt: iso(start + expected),
+    });
+  },
+);
+test("nextPeriodMs never changes the failure Backoff", async () => {
+  const { db, runtime } = committed();
+  fetchMock.mockImplementation(async () => new Response("", { status: 500 }));
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    mock({ nextPeriodMs: () => 1000 }),
+  ]);
+  const at = wall;
+  await c.runOnce("currentWeather");
+  expect(control(db)).toEqual({
+    consecutiveFailures: 1,
+    nextAttemptAt: iso(at + 60_000),
+  });
+});
+test("a throwing nextPeriodMs falls back to the normal period", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    mock({
+      nextPeriodMs: () => {
+        throw new Error("synthetic");
+      },
+    }),
+  ]);
+  const start = wall;
+  await c.runOnce("currentWeather");
+  expect(control(db)).toMatchObject({ nextAttemptAt: iso(start + 600_000) });
+});
+test.each([
+  ["multi-HTTP", () => multi()],
+  ["single-HTTP (no quota)", () => mock()],
+])(
+  "abort() stops an in-flight %s attempt with no Tx-A / Tx-P and no new attempt",
+  async (_name, make) => {
+    const { db, runtime } = committed();
+    fetchMock.mockImplementation(hanging);
+    const c = new StateAcquisitionCoordinator(runtime, null, [make()]);
+    const running = c.runOnce("currentWeather");
+    await until(() => fetchMock.mock.calls.length === 1);
+    c.abort();
+    expect(await running).toEqual({
+      kind: "suspended",
+      scope: "global",
+      reason: "storage_unresolved",
+    });
+    expect(control(db)).toBeNull();
+    expect(states(runtime).currentWeather).toBeUndefined();
+    expect(await c.runOnce("currentWeather")).toMatchObject({
+      kind: "suspended",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  },
+);
+test("abort() during a later page stops the attempt and keeps the earlier publication", async () => {
+  const { db, runtime } = committed();
+  const c = new StateAcquisitionCoordinator(runtime, null, [multi()]);
+  await c.runOnce("currentWeather");
+  const savedControl = control(db);
+  const savedState = states(runtime).currentWeather;
+  move(600_000);
+  let call = 0;
+  fetchMock.mockImplementation((input, init) =>
+    ++call < 3
+      ? Promise.resolve(Response.json({ t: 1 }))
+      : hanging(input, init),
+  );
+  const running = c.runOnce("currentWeather");
+  await until(() => call === 3);
+  c.abort();
+  expect(await running).toMatchObject({ kind: "suspended", scope: "global" });
+  expect(control(db)).toEqual(savedControl);
+  expect(states(runtime).currentWeather).toEqual(savedState);
+});
+test("a multi-HTTP Provider cannot use the Quota path", () => {
+  const { runtime } = committed();
+  expect(
+    () =>
+      new StateAcquisitionCoordinator(runtime, null, [
+        { ...multi(), quota: true } as unknown as MultiHttpProvider,
+      ]),
+  ).toThrow(new TypeError("Quota Providers must be single-HTTP"));
+});
