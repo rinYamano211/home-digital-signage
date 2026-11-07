@@ -17,6 +17,8 @@
     "build:backend": "tsc -p tsconfig.backend.json",
     "dev:frontend": "vite --config vite.frontend.config.ts",
     "build:frontend": "vite build --config vite.frontend.config.ts",
+    "dev:frontend:verify": "vite --config vite.frontend.config.ts --mode verify",
+    "build:frontend:verify": "vite build --config vite.frontend.config.ts --mode verify",
     "start:backend": "sh scripts/with-backend-lock.sh backend",
     "provision:backend": "sh scripts/with-backend-lock.sh provision"
   },

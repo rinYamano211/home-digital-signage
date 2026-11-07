@@ -4,14 +4,20 @@ import { defineConfig } from "vite";
 
 // Frontend専用のVite設定。Vitestが自動で読み込まないよう`vite.config.ts`とは別名にし、
 // npm scriptsから`--config`で指定する。
-const root = fileURLToPath(new URL("./src/frontend", import.meta.url));
-const outDir = fileURLToPath(new URL("./dist/frontend", import.meta.url));
+//
+// 通常（既定のmode）：root `src/frontend`、出力先 `dist/frontend/`。入力は`index.html`だけで、
+//   検証専用エントリーポイント（`src/frontend/verify/`）は含まれない。
+// 検証用（`--mode verify`）：root `src/frontend/verify`、出力先 `dist/frontend-verify/`（D13）。
+const resolve = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
-export default defineConfig({
-  root,
-  plugins: [react()],
-  build: {
-    outDir,
-    emptyOutDir: true,
-  },
+export default defineConfig(({ mode }) => {
+  const verify = mode === "verify";
+  return {
+    root: resolve(verify ? "./src/frontend/verify" : "./src/frontend"),
+    plugins: [react()],
+    build: {
+      outDir: resolve(verify ? "./dist/frontend-verify" : "./dist/frontend"),
+      emptyOutDir: true,
+    },
+  };
 });

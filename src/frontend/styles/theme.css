@@ -1,0 +1,117 @@
+/* 色・寸法の目安はdocs/ui-design.md 第3・4章に従う。色はここで一か所に定義する。 */
+:root {
+  --color-bg: #1c1b22;
+  --color-tile: #25242c;
+  --color-tile-strong: #2f2d37;
+  --color-text: #ece6dc;
+  --color-text-sub: #a7a096;
+  --color-text-faint: #77716a;
+  --color-accent: #f2c48d;
+  --color-unavailable-icon: #4a4752;
+
+  --screen-gap: 16px;
+  --tile-radius: 24px;
+  --fade-duration: 600ms;
+
+  --font-family: "Zen Maru Gothic", sans-serif;
+}
+
+/* 全画面表示でスクロールバー・余白・マウスカーソル・文字選択を出さない。 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-bg);
+  cursor: none;
+  user-select: none;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+.screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  width: 1280px;
+  height: 800px;
+  transform-origin: 0 0;
+  display: grid;
+  grid-template-columns: 45% 1fr;
+  gap: var(--screen-gap);
+  padding: var(--screen-gap);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-family);
+  font-weight: 500;
+}
+
+.tile {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-tile);
+  border-radius: var(--tile-radius);
+}
+
+/* 時計タイル */
+.clock-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 40px;
+}
+
+.clock-date {
+  font-size: 36px;
+  color: var(--color-text-sub);
+}
+
+.clock-time {
+  font-size: 200px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 未同期から復帰したときだけ、日付と時刻をフェードで表示する（UI設計 6.3・第7章）。 */
+.clock-fade-in {
+  animation: clock-fade-in var(--fade-duration) ease;
+}
+
+@keyframes clock-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 時刻未同期の表示（UI設計 6.3） */
+.clock-unavailable-icon {
+  display: block;
+  width: 150px;
+  height: 150px;
+  color: var(--color-unavailable-icon);
+}
+
+.clock-unavailable-title {
+  margin-top: 28px;
+  font-size: 40px;
+  color: var(--color-text-sub);
+}
+
+.clock-unavailable-note {
+  margin-top: 4px;
+  font-size: 26px;
+  color: var(--color-text-sub);
+}

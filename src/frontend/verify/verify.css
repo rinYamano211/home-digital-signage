@@ -1,0 +1,24 @@
+/* 検証画面の切替パネル。本番の成果物には含めない。 */
+.verify-panel {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgb(0 0 0 / 70%);
+  color: #fff;
+  font:
+    14px system-ui,
+    sans-serif;
+  cursor: auto;
+  user-select: auto;
+}
+
+.verify-panel button {
+  cursor: pointer;
+  font: inherit;
+}
