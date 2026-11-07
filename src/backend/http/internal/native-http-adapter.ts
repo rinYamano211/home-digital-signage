@@ -49,6 +49,7 @@ export class NativeHttpAdapter implements HttpStartAdapter {
   private readonly url: string;
   private readonly headers: Headers;
   private readonly limit: number;
+  private readonly post?: { body: string };
   constructor(
     config: HttpAdapterConfig,
     private readonly runtime: HttpRuntime,
@@ -65,9 +66,18 @@ export class NativeHttpAdapter implements HttpStartAdapter {
         limit > ABSOLUTE_MAX_BODY_BYTES
       )
         throw violation();
+      const method = config.method ?? "GET";
+      if (method !== "GET" && method !== "POST") throw violation();
+      if (
+        method === "GET"
+          ? config.body !== undefined
+          : typeof config.body !== "string"
+      )
+        throw violation();
       this.url = url.href;
       this.headers = new Headers(config.headers);
       this.limit = limit;
+      if (method === "POST") this.post = { body: config.body! };
     } catch {
       throw new TypeError("Invalid HTTP adapter configuration");
     }
@@ -93,7 +103,17 @@ export class NativeHttpAdapter implements HttpStartAdapter {
     }
     let headers: Promise<Response>;
     try {
-      headers = this.runtime.fetch(this.url, { headers: this.headers, signal });
+      headers = this.runtime.fetch(
+        this.url,
+        this.post
+          ? {
+              method: "POST",
+              headers: this.headers,
+              body: this.post.body,
+              signal,
+            }
+          : { headers: this.headers, signal },
+      );
       if (!(headers instanceof Promise)) throw violation();
     } catch {
       // fetch may have partially started. No Promise/ownership proof: do not

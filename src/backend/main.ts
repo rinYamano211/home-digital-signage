@@ -20,6 +20,8 @@ import { StateScheduler } from "./scheduler/state-scheduler.js";
 import {
   PRODUCTION_PROVIDERS,
   StateAcquisitionCoordinator,
+  type AcquisitionProvider,
+  type StateProvider,
 } from "./acquisition/coordinator.js";
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
 import type { StartupResult } from "./storage/startup-transaction.js";
@@ -54,6 +56,8 @@ interface StartupOptions {
   initializeStore?: (
     lock: ExclusiveLock,
   ) => StartupStoreAccess | Promise<StartupStoreAccess>;
+  /** Test-only injection, like `initializeStore` (technology-stack 18.7). */
+  providers?: readonly AcquisitionProvider[];
 }
 export async function startBackend(
   env: Readonly<NodeJS.ProcessEnv>,
@@ -84,6 +88,8 @@ export async function startBackend(
   let runtime: RuntimeStoreAccess | null = null;
   let send: RuntimeSend | null = null;
   let scheduler: StateScheduler | null = null;
+  let coordinator: StateAcquisitionCoordinator | null = null;
+  const providers = options.providers ?? PRODUCTION_PROVIDERS;
   let finishInitialization!: () => void;
   const initialized = new Promise<void>((resolve) => {
     finishInitialization = resolve;
@@ -97,8 +103,13 @@ export async function startBackend(
     const acquisition = scheduler;
     scheduler = null;
     try {
+      // Abort in-flight non-quota HTTP first so the wait below stays well
+      // within the Shutdown deadline (technology-stack 18.7).
+      coordinator?.abort();
       // No new Task, then wait for in-flight cycles before closing anything.
       await acquisition?.stop();
+      // Every non-quota HTTP Lifecycle must have ended (unproven: timeout).
+      await coordinator?.drain();
       runtime?.acquisitionControl.context.beginShutdown();
       monitoring?.stopMonitoring(); // Close the Gate and Recovery before the DB.
     } finally {
@@ -175,7 +186,9 @@ export async function startBackend(
                 send = runtime
                   ? createRuntimeSend(
                       ownedStore,
-                      PRODUCTION_PROVIDERS.find((p) => p.quota)?.http,
+                      providers.find(
+                        (p): p is StateProvider => "http" in p && p.quota,
+                      )?.http,
                     )
                   : null;
                 if (send) send.startMonitoring();
@@ -185,14 +198,12 @@ export async function startBackend(
                     "Provider send monitoring unavailable",
                   );
                 if (runtime) {
-                  scheduler = new StateScheduler(
-                    new StateAcquisitionCoordinator(
-                      runtime,
-                      send,
-                      PRODUCTION_PROVIDERS,
-                    ),
-                    logger,
+                  coordinator = new StateAcquisitionCoordinator(
+                    runtime,
+                    send,
+                    providers,
                   );
+                  scheduler = new StateScheduler(coordinator, logger);
                   scheduler.start();
                 }
               }
