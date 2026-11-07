@@ -1501,7 +1501,7 @@ Clock / History Trust監視・判定側は失効をGateへ通知し、Gateが同
 
 SQL保存失敗と外部取得失敗を区別する。複数State生成時のDomain部分成功は維持し、不正Stateは失敗・Fallback、正常Stateは更新対象とする。
 各Transaction内の更新は原子的だが、独立Transactionをまたぐ一括Rollbackや複数Stateの厳密同時点整合性は要求しない。Tx-A成功・Tx-P失敗の再公開は16.6に従う。
-Scheduleの認証・Domain設計はtechnology-stack.md第17・18章に従い、Ownership・API契約は維持する。
+Scheduleの認証・Domain設計はtechnology-stack.md第17・18章に従い、Ownership・API契約は維持する。Issue #10の実装設計（Quotaなしの複数HTTP型Provider、Shutdown時のAbort、JST 0時の再取得・破棄）は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)を正本とし、本章のTransaction分離・Ownershipを変更しない。
 
 C-2のTx-AはHTTP・Validation・Backoff計算・保存予定JSON確定をTransaction外で行い、Evidenceと必要なAuthorizationを検証・消費してBEGIN IMMEDIATEで保存する。Tx-A内で保存前RowをEvidenceと再照合し、一致時だけINSERT / UPDATEする。saved / unchanged / not_saved / unknownを区別し、初回INSERT未実行をunchangedとしない。savedはCommit直接成功、またはTransaction解決・対象Stateへの競合書込み排除・保存前後の区別可能性・一貫した照合により今回の反映を一意に確認できる場合に限る。not_savedは今回の未Commit TransactionのRollback成功等で非反映を確定できる場合とし、それ以外はunknownとする。Commit例外後はTransaction状態確認と必要なRollbackを行い、未解決Connectionで新Transactionを開始しない。照合は保存前Row・確定済み予定JSON・保存後Rowを使うRead-only処理とし、JSONの再生成・無条件再INSERT／再UPDATEはしない。同じJSONへの別書込み・ABA・外部Writer・再起動の限界があり、JSON一致だけで今回のCommit成功を断定しない。unknown時は同一Stateの後続Tx-A・通常Read・Evidence発行とTx-P移行を禁止し、ConnectionのTransaction未解決なら共有DB全体を保護する。既存Tx-P / Tx-Cの契約を変更せず、単一Writer前提でも外部変更・ABAの完全検出を保証しない。
 

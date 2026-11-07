@@ -68,6 +68,32 @@ Windows等ではPOSIX mode / UIDの検証を行わない。リンク・通常フ
 
 LoaderはJSON Objectであることまで確認する。欠損・構文不正・Permission不正などは分類済みの固定Errorを返し、本文・パス・元例外を含めない。Provider固有Schema・認証確認・Domain単位の障害分離は後続実装であり、今回のLoader成功だけで認証可能とは扱わない。
 
+## Schedule Service（Issue #10、設計確定・未実装）
+
+設計の正本は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)。本節はConfig・Secretの配置と開発・テストの手順だけを記す。実装（PR2・PR3）時に、確定したEvent名・コマンドを追記する。
+
+### Config・Secret
+
+| 項目                           | 配置                                                      | 備考                                                                        |
+| ------------------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `SIGNAGE_SCHEDULE_CALENDAR_ID` | `/etc/home-digital-signage/backend.env`                   | 未設定ならSchedule Providerを登録しない。空文字は不正Configとして起動しない |
+| Service AccountのJSON鍵        | `/etc/home-digital-signage/secrets/schedule.json`（0600） | ダウンロードした鍵をそのまま置く。パスは固定で、環境変数では指定しない      |
+
+- カレンダーIDは鍵がなければ利用できない識別子のため一般Configとするが、Git・Issue・PR・ログには書かない。`config/backend.env.example`には値を書かない。
+- Secretの読込失敗・鍵の不正ではSchedule Providerだけを無効にし、他のStateとBackendの起動は止めない。変更はBackend再起動で反映する。
+- 鍵・トークン・カレンダーID・Secretのパスはログに出さない。
+
+### ユーザーが行う準備（AIは鍵を扱わない）
+
+1. Google Cloud：Google Calendar APIの有効化を確認する。Service Accountに、Raspberry Pi用の新しいJSON鍵を作る。検証用の古い鍵が不要なら削除する。
+2. Googleカレンダー：サイネージ専用の非公開カレンダーを、Service Accountのメールアドレスへ「予定の表示（すべての予定の詳細）」（reader）で共有する。カレンダーIDを控える。
+3. Raspberry Pi：鍵を`schedule.json`として上記の権限・所有者（Backend実行ユーザー）で配置し、転送に使った一時コピーを削除する。`backend.env`にカレンダーIDを書く。具体的なコマンドはPR3で示す。
+
+### テスト
+
+- 外部API・実鍵は使わない。Google応答は合成データ、鍵はテスト内で生成したRSA鍵を使う。
+- SQLiteを使わないテスト（認証・URL・ページング・正規化・Validation・ログ）はWindowsでも実行できる。Coordinator・Scheduler・Shutdown経路はLinux CIで確認する（Windowsでは`npm ci --ignore-scripts`のためbetter-sqlite3が使えない）。
+
 ## Logging・テスト
 
 PinoのJSONログを標準出力へ出す。固定Event名で起動開始・完了、Config不正、Listen失敗、正常終了、Shutdown失敗・Timeoutを識別する。HTTPのURL・Header・Bodyや任意の例外本文は記録しない。機密キーのRedactionも設定するが、任意の深さ・任意キー・自由文に入った機密情報まで自動検出するものではない。SecretオブジェクトをLoggerへ渡さない。journald構築は運用Issueで扱う。
