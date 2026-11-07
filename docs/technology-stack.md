@@ -1557,7 +1557,7 @@ event.status:tentative自体は未実測であり、参加者のresponseStatus:t
 API Response生成時もdata.dateとJSTの今日を照合し、不一致ならTTL内でもdata:null、dataSource:nullとする。Metadataの既存値を維持する変換は10.8に従う。
 
 取得試行は開始時に確定したtargetDateを保持する。23:59開始・00:01完了の旧日取得結果を、新日のPublished Stateとして採用しない。
-同一対象日の競合でも古い取得結果が新しい結果を上書きしないようにする。防止の具体的実装は未決定である。
+同一対象日の競合でも古い取得結果が新しい結果を上書きしないようにする。防止の具体的実装は[18.7](#schedule-issue-10-design)で定めた。
 Frontendもdata.dateと今日のJST日付を照合する。Piのシステム時刻が信頼できない場合、Scheduleを公開不可とする。時刻信頼性の具体判定・復旧手順は既存Time原則に従って後続で具体化する。
 
 ### 18.4 Cache・取得失敗・Frontend表示
@@ -1597,6 +1597,143 @@ MVPではPinoログと既存Published State Metadataで管理する。必要に�
 - JSON Schemaバリデータ設定・実装検証。
 
 Step 5のSchedule設計記録までを対象とし、別Domainの詳細設計やコード実装には進まない。
+
+上記のうち、Retry・Timeout・ページ数上限、日付変更・同日競合の防止、バリデータ（TypeBox）は18.7で具体化した。event.status:tentativeの実API動作、複数ページ取得中の変更に対する一貫性、時刻同期未完了時の復旧は引き続き未検証・未決定である。
+
+<a id="schedule-issue-10-design"></a>
+
+### 18.7 Issue #10 実装設計（設計確定・未実装）
+
+[Issue #10](https://github.com/rinYamano211/home-digital-signage/issues/10)の実装前に確定した設計である。18.1〜18.5、第10章のAPI契約、Architecture 16章の責務分担は変更しない。実装・CI・実機での検証は未完了であり、結果は`docs/verification/`へ記録する。
+
+#### 責務と変更範囲
+
+| 対象 | 担当 |
+|---|---|
+| Schedule Service（`src/backend/schedule/`、新規） | Google認証、events.list・ページング、Response Validation、正規化・当日抽出、Domain Schema / Semantic Validation |
+| Acquisition Coordinator（既存） | Control State、周期・Backoff、Tx-A・Tx-P、Abort・破棄時の保存抑止 |
+| 共通HTTP Adapter（既存） | Timeout 10秒・Body上限・ログ非露出。POSTを追加する |
+| Frontend | Polling、Published Stateの検証、日付・期限の照合、表示（[Frontend開発手順 第11章](frontend-development.md#11-予定の表示issue-10)） |
+| #16 | 共通基盤。下記の拡張以外の変更、PR-D・PR-Eは#10で扱わない |
+| #65 | 表示用時刻の利用可否の判定。#10は待たずに実装・Mergeできる |
+| #9 | 拡張後のProvider InterfaceとFrontend Pollingを利用する |
+
+ProviderはDBを直接操作しない。Schedule固有の処理は共通Moduleへ移さない。
+
+#### Provider Interfaceの拡張
+
+既存の`StateProvider`（固定URLへのGET 1回 → `parse()`）は維持し、Quotaを使わないProvider向けに、1回の取得試行をProviderへ任せる型（複数HTTP型）を追加する。
+
+- 複数HTTP型はQuotaなしのProviderに限る。Tomorrow.ioのSend Gate・Tx-Q・Permitの契約は変更しない（Gateは1回の予約につきHTTP 1回）。
+- 複数HTTP型も、すべてのHTTPを共通HTTP Adapterで行う。fetchを直接呼ばない。Adapterは呼び出しごとに生成する（既存の単一HTTP型はStateごとに再利用）。
+- 共通HTTP Adapterにmethod・bodyを追加し、POSTを可能にする。既存のURL検証・Timeout・Body上限・ログ非露出・Lifecycle確認は維持する。
+- 取得結果は共通の形にする：成功（`data`・`expiresAt`）、失敗（失敗したRequestのHTTPステータス・`Retry-After`）、破棄（下記）。HTTP 429とRetry-AfterはArchitecture 16.3のBackoffへ渡す。
+- 取得開始時刻、対象日、AbortSignalをProviderへ渡す。
+- 成功時の周期はProviderが開始時刻から決められるようにする（下記「JST 0時」）。
+
+#### Shutdown・Abort
+
+[PR-C統合受入](verification/pr-c-6-integration.md)で「本番Provider登録前に必須」とされたShutdown時のHTTP Abortと停止期限を、本Issueで実装・検証する。
+
+- CoordinatorがAbortControllerを持つ。Shutdownでは、`main.ts`の`onClose`で`scheduler.stop()`より前にAbortを通知する。SchedulerのInterfaceは変更しない。
+- Abortは共通HTTP Adapterの`start(signal)`に渡す。ProviderはAwaitのたびにAbortを確認し、次のRequest（次のページ等）を開始しない。
+- Abortされた試行は、Tx-A・Tx-Pを行わない。失敗回数・Backoff・`lastAttemptAt`・`lastAttemptResult`を更新しない（停止は取得の失敗ではない）。再取得も予約しない。
+- Shutdown開始後は新規取得を開始しない（既存の`beginShutdown`・Scheduler停止を維持）。
+- SQLite処理は同期であり、Abortで中断されない。Transactionの整合性は既存契約のまま維持される。
+- HTTP Timeout 10秒、Shutdown Timeout 10秒は変更しない。Adapterの終了確認（通信終了・Body解放）を待ってからDB Closeへ進む。終了確認が完了しない場合は既存どおり`shutdown_timeout`（exit 1、安全側の強制停止）となる。
+- Tomorrow.ioの経路（Gateの停止は`scheduler.stop()`の後）は対象外とし、#9の本番登録前に確認する。
+
+#### JST 0時の再取得
+
+- 取得開始時のJST日付を対象日（targetDate）として固定する（18.3）。
+- 成功時は、`nextControlState()`へ渡す周期を「min(通常周期, 次のJST 0時 − 開始時刻)」とする。`nextControlState()`とBackoffの共通契約は変更しない。再起動後は保存済みの`nextAttemptAt`で引き継ぐ。
+- 失敗時は既存のBackoffを優先し、0時の再取得を強制しない。0時直前の失敗では、最大30分程度、新しい日の予定を表示できない場合がある（MVPで許容）。
+- 取得完了時のJST日付が対象日より**進んでいた**場合、結果を**破棄**する。Tx-A・Tx-Pを行わず、Control Stateも変更しない。約1秒後に再判定し、新しい日の取得を開始する。時計が進む方向に日付をまたぐのは1日1回であり、連続取得にならない。
+- 取得完了時のJST日付が対象日より**前**（時計が戻った）場合は、通常の失敗としてBackoffをかける。
+- Shutdownによる破棄（再取得を予約しない）と、日付変更による破棄（再判定を予約する）は区別する。
+- 同一対象日の古い結果による上書きは、同一Stateの取得を同時に1件に限る既存の排他（SchedulerのinFlight、Acquisition Controlの`beginAttempt()`）で防ぐ。
+- 表示用API（10.8）とFrontendは、引き続き`data.date`とJSTの今日を照合する。
+
+#### Google認証
+
+- Service AccountのJWT Bearer方式。`node:crypto`でRS256署名し、Token EndpointへPOSTする。認証用の依存Packageは追加しない（Google公式Libraryは17.2の検証でのみ使用）。
+- 起動時に鍵の形式（`client_email`・`private_key`、`createPrivateKey`）を検証する。
+- アクセストークンはメモリにCacheし、有効期限の60秒前を目安に再取得する。Token Cacheは単一のProviderインスタンスが持ち、同一Stateの排他（上記）に依存する。専用の排他機構は設けない。
+- Abort・失敗したToken取得の結果はCacheしない。
+- Calendar APIが401を返したらToken Cacheを破棄し、その試行は失敗とする。同一試行内で再認証・再試行はしない。次の試行（Backoff後）で再認証する。
+- 403等も動作は通常の失敗（Backoff）と同じ。区別はログの分類だけで行い、エラーBodyは解析・記録しない。
+
+#### events.list
+
+| 項目 | 値 |
+|---|---|
+| 期間 | `timeMin`＝対象日のJST 00:00、`timeMax`＝翌日のJST 00:00（期間が重なる予定が返る） |
+| パラメータ | `singleEvents=true`、`orderBy=startTime`、`showDeleted=false`、`maxResults=250`、`fields`で必要項目に限定 |
+| ページ数上限 | 10ページ。超過は取得試行全体の失敗 |
+| Body | 各ページ・Token応答とも既存の1MiB上限 |
+| 検証 | Google応答をTypeBoxで検証してから正規化する。cancelledは日時の検証より前に除外する（18.2） |
+| 公開 | 全ページの取得・正規化・検証が完了した場合のみ成功。途中失敗・上限超過で部分データを公開しない |
+| 有効期限 | 取得完了時刻＋6時間（11.5） |
+
+- `summary`がない予定は`title: ""`に正規化する（18.2）。表示は[Frontend開発手順 第11章](frontend-development.md#11-予定の表示issue-10)。
+- `events`の配列順は表示用APIの契約にしない。表示順はFrontendで決める（UI設計 5.1）。
+- 表示件数による切り捨てはBackendで行わない。
+
+#### Config・Secret
+
+- 鍵：Service AccountのJSON鍵をそのまま`/etc/home-digital-signage/secrets/schedule.json`（0600）に置く。既存Secret Loader（固定ディレクトリ・Domain固定のファイル名・リンク拒否・mode / UID検査）を変更しない。鍵のパスを環境変数で指定する方式は採用しない。
+- カレンダーID：一般Config `SIGNAGE_SCHEDULE_CALENDAR_ID`（backend.env）。
+- 読み込みは起動時に1回。変更はBackend再起動で反映する（24.2）。
+
+| 状態 | 動作 |
+|---|---|
+| カレンダーID未設定 | Schedule Providerを登録しない。Backendは起動する |
+| カレンダーIDが空文字等の不正値 | 既存のConfig検証規則どおり起動しない（exit 1） |
+| Secretが読めない・鍵が不正 | Schedule Providerを登録しない。他StateとBackendは継続する |
+
+Provider未登録でも、保存済みのSnapshotは表示用APIから返り、10.8の期限・対象日の照合を受ける。Snapshotがなければ`schedule`はAPIから省略される。Frontendは未登録を区別しない（`errorCode`等を追加しない。10.6）。
+
+#### ログ
+
+固定のEvent名と分類コードだけを記録する。鍵・トークン・カレンダーID・Secretのパス・予定のタイトル・エラーBodyは記録しない（18.5）。
+
+| 種別 | 分類コード |
+|---|---|
+| Provider無効化 | `calendar_id_unset`、Secret Loaderの分類（`missing`・`permission`・`unsafe_path`・`invalid_json`・`invalid_object`・`read_failed`）、`invalid_credentials` |
+| 取得失敗 | `auth_failed`（Token取得の失敗、Calendar APIの401）、`forbidden`（403）、`rate_limited`（429）、`server_error`（5xx）、`network_error`、`timeout`、`invalid_response`（応答・正規化・Validationの失敗、ページ数上限超過） |
+
+Event名は実装時に既存の命名（`scheduler_held`等）に合わせて決め、[Backend開発手順](backend-development.md)へ記録する。
+
+#### dataSourceと更新待ち
+
+10.5は「取得失敗・有効Cacheあり」で`dataSource: "cache"`とするが、現在のCoordinatorは失敗時に前のSnapshotの`dataSource`を引き継ぐ（`externalApi`のまま残る）。この食い違いは#10では修正せず、#16に関連する別Issueで扱う。
+Frontendの「更新待ち」は`data !== null && lastAttemptResult === "failure"`で判定し、`dataSource`の値に依存しない。正常な0件（`events: []`）は取得成功として扱う。
+
+#### 残存リスク・保証範囲
+
+- 設定不備でProviderが未登録になっても、当日分の有効なSnapshotは、最大6時間（TTL）または0時まで、「更新待ち」なしで通常表示される。最後の`lastAttemptResult`が`success`のままのため。ログで検知する（UI設計 6.6）。
+- OS時刻が誤っている場合の「今日」・対象日・有効期限・進行中等の判定は保証しない。18.3・18.4の「システム時刻が信頼できる」の判定は#65で扱い、#10では実装しない。RTCだけで誤った時刻のまま起動すると、別の日の予定を今日の予定として表示しうる。
+- Commit結果不明（`unknown`）後に`suspended`になったStateは、PR-E（再開）までBackend再起動が必要。Pending（Tx-A成功・Tx-P失敗）は次の取得で回復する。PR-D・PR-Eは#10の前提にしない。
+
+#### 実装PRと完了条件
+
+| PR | 内容 | 依存 | 完了条件 |
+|---|---|---|---|
+| 1 `docs:` | 本設計の反映 | なし | ユーザーの承認・Merge |
+| 2 `feat(backend):` | Provider Interfaceの拡張、POST、失敗時のHTTPステータス伝搬、Abort、破棄、0時の周期、テスト用Provider注入（`StartupOptions.providers`。既存`initializeStore`と同じテスト専用の口） | 1 | 応答しないLoopback HTTPに対し、停止要求からDB Closeまでが10秒より十分短く終わり、Abortした試行が状態を保存しない。破棄・時計の巻き戻り・429の伝搬・既存Providerの互換性。既存テストを含めCI成功 |
+| 3 `feat(backend):` | Google Calendar Provider、Config・Secret、ログ | 2 | 合成データ（テスト用に生成した鍵）による単体テスト、ログに秘密が出ないこと、CI成功 |
+| 4 `feat(frontend):` | Polling、Published State検証、予定パネル、取得中表示、巡回への組み込み | 1（2・3と並行可） | 単体テスト、検証画面での目視 |
+| 5 `docs:` | 検証記録 | 3・4、実機確認 | Windows・CI・Pi・実APIの結果を区別して記録 |
+
+#### 検証の区分
+
+| 区分 | 範囲 |
+|---|---|
+| Windows | Frontend単体テスト、SQLiteを使わないBackend単体テスト（認証・URL・ページング・正規化・Validation・ログ）、検証画面の目視 |
+| Linux CI | SQLiteを使うテスト（Coordinator・Scheduler・統合）、Shutdown経路、Shutdown Timeout時の異常終了 |
+| Raspberry Pi・実API | BackendのAPIを`curl`で確認、PCのVite開発サーバーからSSHのポート転送でPiの実データを表示、Piで合成データの検証画面（nginxでの配信は#12） |
+
+JST 0時の境界はFake Timer等の自動テストで確認し、Piのシステム時計は変更しない（Clock Trust・RTCへ影響するため）。実機では実際の0時を観察する。時刻未同期・時計の巻き戻り・飛び越しでの表示は#65・#13の範囲として未検証と記録する。
 
 ---
 
@@ -3770,6 +3907,8 @@ PR-Cは既存のScheduler・Acquisition Control・Quota Repository / Guard・Sen
 | Future | 重大な履歴不整合等に対する例外的な管理者Recovery操作と、管理者承認後に開始する独立した25時間隔離の実装（延期は重大不整合時の自動送信再開を許可しない。C-Impl-5B-4の安全条件を維持）、CLEAN Lifecycle、F-03の永続化、NTP品質の詳細監視、D-Bus、Process再起動をまたぐWait、RTC-only送信（禁止のまま） |
 
 MVPは、通常の停電・クラッシュ後に既存条件を満たした場合の自動復旧、H_old等を用いた保守的Quota評価、案Dの窓別Wait（1分・65分・25時間）、履歴不整合・Trust不足時のFail Closedを維持する。不確実な履歴を安全に扱えない場合は送信を停止して待機する。保守的待機でもQuota遵守を保証できない場合は、自動で送信を再開しない。
+
+Domain Providerの本番登録に先立つProvider Interfaceの拡張（Quotaなしの複数HTTP型・POST・失敗時のHTTPステータス伝搬）と、Shutdown時のHTTP Abort・停止期限の検証は、Issue #10で行う（[18.7](#schedule-issue-10-design)、設計確定・未実装）。上表のTomorrow.io向けGate・Tx-Qの契約は変更しない。
 
 <a id="pr-c-c3-f02-delay-margin"></a>
 
