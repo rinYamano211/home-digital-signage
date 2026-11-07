@@ -1648,9 +1648,12 @@ ProviderはDBを直接操作しない。Schedule固有の処理は共通Module�
 - 取得開始時のJST日付を対象日（targetDate）として固定する（18.3）。
 - 成功時は、`nextControlState()`へ渡す周期を「min(通常周期, 次のJST 0時 − 開始時刻)」とする。`nextControlState()`とBackoffの共通契約は変更しない。再起動後は保存済みの`nextAttemptAt`で引き継ぐ。
 - 失敗時は既存のBackoffを優先し、0時の再取得を強制しない。0時直前の失敗では、最大30分程度、新しい日の予定を表示できない場合がある（MVPで許容）。
-- 取得完了時のJST日付が対象日より**進んでいた**場合、結果を**破棄**する。Tx-A・Tx-Pを行わず、Control Stateも変更しない。約1秒後に再判定し、新しい日の取得を開始する。時計が進む方向に日付をまたぐのは1日1回であり、連続取得にならない。
+- 取得完了時のJST日付が対象日より**進んでいた**場合、結果を**破棄**する。Tx-A・Tx-Pを行わず、Control Stateも変更しない。Coordinatorは`scheduled`（既存どおり現在＋1秒以上に切り上げた`recheckAt`）を返し、Schedulerは約1秒後に**Coordinatorの再評価**（`runOnce()`）を予約する。予約するのは再評価であり、取得の許可ではない。
+  - 再評価では通常どおりControl Stateを読み、`nextAttemptAt`・Backoff・Published Stateの読取り・初回保存の条件を判定する。破棄ではControl Stateを変えないため、`nextAttemptAt`が到来していれば新しい日の取得を開始し、未到来なら（日付変更とは無関係に）その時刻まで待つ。
+  - 取得を無条件に強制する経路は作らない。`requestRecheck()`も既存どおり取得条件を迂回しない（Architecture 16.3）。
+  - 時計が進む方向に日付をまたぐのは1日1回であり、連続取得にならない。
 - 取得完了時のJST日付が対象日より**前**（時計が戻った）場合は、通常の失敗としてBackoffをかける。
-- Shutdownによる破棄（再取得を予約しない）と、日付変更による破棄（再判定を予約する）は区別する。
+- Shutdownによる破棄（再評価を予約しない）と、日付変更による破棄（再評価を予約する）は区別する。Shutdown中はSchedulerが停止しているため、Coordinatorの戻り値にかかわらず再評価は予約されない（既存`StateScheduler`は停止後に`arm`しない）。
 - 同一対象日の古い結果による上書きは、同一Stateの取得を同時に1件に限る既存の排他（SchedulerのinFlight、Acquisition Controlの`beginAttempt()`）で防ぐ。
 - 表示用API（10.8）とFrontendは、引き続き`data.date`とJSTの今日を照合する。
 
