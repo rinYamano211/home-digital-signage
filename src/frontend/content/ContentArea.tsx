@@ -4,8 +4,8 @@ import {
   CONTENT_TRANSITION_MS,
   finishTransition,
   initialPanels,
+  renderedPanels,
   startTransition,
-  viewKey,
 } from "./transition";
 
 type Props = {
@@ -23,6 +23,8 @@ export function ContentArea({ view, renderView }: Props) {
     setPanels(startTransition(panels, view));
   }
 
+  // 抜けていく表示が変わるたびにTimerを設定し直す。アニメーション中に表示が変わった場合も、
+  // 前のTimerは解除され、新しく抜けていく表示の分だけ待つ。
   const leaving = panels.leaving;
   useEffect(() => {
     if (leaving === null) {
@@ -37,19 +39,11 @@ export function ContentArea({ view, renderView }: Props) {
 
   return (
     <section className="content-area" aria-label="コンテンツ">
-      {leaving !== null && (
-        <div key={viewKey(leaving)} className="content-panel content-exit">
-          {renderView(leaving)}
+      {renderedPanels(panels).map((panel) => (
+        <div key={panel.key} className={panel.className}>
+          {renderView(panel.view)}
         </div>
-      )}
-      <div
-        key={viewKey(panels.current)}
-        className={
-          panels.animate ? "content-panel content-enter" : "content-panel"
-        }
-      >
-        {renderView(panels.current)}
-      </div>
+      ))}
     </section>
   );
 }

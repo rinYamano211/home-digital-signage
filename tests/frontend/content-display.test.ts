@@ -5,6 +5,7 @@ import { CONTENT_DURATION_MS } from "../../src/frontend/content/rotation-config"
 import {
   finishTransition,
   initialPanels,
+  renderedPanels,
   startTransition,
   viewKey,
 } from "../../src/frontend/content/transition";
@@ -110,5 +111,58 @@ describe("content transition", () => {
         viewKey({ kind: "noContent" }),
       ]).size,
     ).toBe(4);
+  });
+});
+
+// 切替アニメーション（約0.6秒）の途中で、さらに表示が変わった場合。
+describe("content transition during an ongoing animation", () => {
+  const schedule = { kind: "content", id: "schedule" } as const;
+  const today = { kind: "content", id: "todayWeather" } as const;
+  const weekly = { kind: "content", id: "weeklyWeather" } as const;
+
+  function keys(state: Parameters<typeof renderedPanels>[0]): string[] {
+    return renderedPanels(state).map((panel) => panel.key);
+  }
+
+  it("renders at most two panels and drops the older leaving view", () => {
+    let state = initialPanels(schedule);
+    state = startTransition(state, today);
+    state = startTransition(state, weekly);
+    expect(keys(state)).toEqual([
+      "content:todayWeather",
+      "content:weeklyWeather",
+    ]);
+    expect(state.leaving).toEqual(today);
+  });
+
+  it("switches back to the view that was leaving without duplicating it", () => {
+    let state = initialPanels(schedule);
+    state = startTransition(state, today);
+    state = startTransition(state, schedule);
+    const panels = renderedPanels(state);
+    expect(panels.map((panel) => panel.key)).toEqual([
+      "content:todayWeather",
+      "content:schedule",
+    ]);
+    expect(panels.map((panel) => panel.className)).toEqual([
+      "content-panel content-exit",
+      "content-panel content-enter",
+    ]);
+  });
+
+  it("handles cards in quick succession and leaves one panel after finishing", () => {
+    let state = initialPanels(schedule);
+    state = startTransition(state, { kind: "noContent" });
+    state = startTransition(state, { kind: "timeUnavailable" });
+    state = startTransition(state, schedule);
+    expect(keys(state)).toEqual(["timeUnavailable", "content:schedule"]);
+    state = finishTransition(state);
+    expect(keys(state)).toEqual(["content:schedule"]);
+  });
+
+  it("renders only the current panel when nothing is leaving", () => {
+    expect(renderedPanels(initialPanels(schedule))).toEqual([
+      { key: "content:schedule", view: schedule, className: "content-panel" },
+    ]);
   });
 });

@@ -258,3 +258,81 @@ describe("ContentRotation timer", () => {
     expect(changes).toEqual([]);
   });
 });
+
+// Reactの再マウント（StrictModeのEffect再実行等）で作り直すときに、画面の表示と内部の表示を揃える。
+describe("ContentRotation re-creation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("continues from the given current view without announcing it again", () => {
+    const changes: RotationView[] = [];
+    const rotation = new ContentRotation(
+      ENTRIES,
+      ALL,
+      (view) => changes.push(view),
+      { current: content("weeklyWeather") },
+    );
+    expect(rotation.view).toEqual(content("weeklyWeather"));
+    expect(changes).toEqual([]);
+
+    vi.advanceTimersByTime(12_000);
+    expect(changes).toEqual([content("schedule")]);
+    rotation.dispose();
+  });
+
+  it("announces a corrected view when the given current view is no longer displayable", () => {
+    const changes: RotationView[] = [];
+    const rotation = new ContentRotation(
+      ENTRIES,
+      input(["schedule", "weeklyWeather"]),
+      (view) => changes.push(view),
+      { current: content("todayWeather") },
+    );
+    expect(changes).toEqual([content("weeklyWeather")]);
+    expect(rotation.view).toEqual(content("weeklyWeather"));
+    rotation.dispose();
+  });
+
+  it("announces the time card when time became unavailable before re-creation", () => {
+    const changes: RotationView[] = [];
+    const rotation = new ContentRotation(
+      ENTRIES,
+      input(["schedule", "todayWeather", "weeklyWeather"], "unavailable"),
+      (view) => changes.push(view),
+      { current: content("schedule") },
+    );
+    expect(changes).toEqual([{ kind: "timeUnavailable" }]);
+    vi.advanceTimersByTime(60_000);
+    expect(changes).toHaveLength(1);
+    rotation.dispose();
+  });
+
+  it("leaves only one running timer after dispose and re-creation (StrictMode)", () => {
+    const changes: RotationView[] = [];
+    const onChange = (view: RotationView) => changes.push(view);
+
+    const first = new ContentRotation(ENTRIES, ALL, onChange);
+    vi.advanceTimersByTime(3_000);
+    first.dispose();
+    const second = new ContentRotation(ENTRIES, ALL, onChange, {
+      current: first.view,
+    });
+
+    // 表示時間は作り直した時点から数える。前のTimerは発火しない。
+    vi.advanceTimersByTime(9_999);
+    expect(changes).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(changes).toEqual([content("todayWeather")]);
+    vi.advanceTimersByTime(8_000);
+    expect(changes).toEqual([
+      content("todayWeather"),
+      content("weeklyWeather"),
+    ]);
+    second.dispose();
+  });
+});

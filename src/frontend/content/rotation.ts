@@ -165,18 +165,32 @@ export class ContentRotation {
   readonly #onChange: (view: RotationView) => void;
   readonly #timers: RotationTimers;
 
+  /**
+   * `current`を渡すと、その表示から続ける（Reactの再マウントで作り直すときに、画面の表示と揃えるため）。
+   * `current`がその時点で表示できなければ、`reconcileView`の規則で直し、`onChange`で知らせる。
+   */
   constructor(
     entries: readonly RotationEntry[],
     input: RotationInput,
     onChange: (view: RotationView) => void,
-    timers: RotationTimers = defaultTimers,
+    options: {
+      readonly current?: RotationView;
+      readonly timers?: RotationTimers;
+    } = {},
   ) {
     this.#entries = entries;
     this.#input = input;
     this.#onChange = onChange;
-    this.#timers = timers;
-    this.#view = initialView(entries, input);
+    this.#timers = options.timers ?? defaultTimers;
+    const current = options.current;
+    this.#view =
+      current === undefined
+        ? initialView(entries, input)
+        : reconcileView(entries, current, input);
     this.#schedule();
+    if (current !== undefined && !sameView(this.#view, current)) {
+      this.#onChange(this.#view);
+    }
   }
 
   get view(): RotationView {

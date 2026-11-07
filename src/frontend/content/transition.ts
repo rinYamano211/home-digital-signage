@@ -33,6 +33,36 @@ export function finishTransition(state: PanelState): PanelState {
   return state.leaving === null ? state : { ...state, leaving: null };
 }
 
+export type RenderedPanel = {
+  readonly key: string;
+  readonly view: RotationView;
+  readonly className: string;
+};
+
+/**
+ * 描画するパネル。重ねるのは「抜けていく前の表示」と「現在の表示」の最大2枚。
+ * アニメーション中にさらに表示が変わった場合は、それまで抜けていた表示を即座に外し、
+ * 直前まで現在だった表示を新しく抜けていく表示にする（3枚以上は重ねない）。
+ */
+export function renderedPanels(state: PanelState): readonly RenderedPanel[] {
+  const current: RenderedPanel = {
+    key: viewKey(state.current),
+    view: state.current,
+    className: state.animate ? "content-panel content-enter" : "content-panel",
+  };
+  if (state.leaving === null) {
+    return [current];
+  }
+  return [
+    {
+      key: viewKey(state.leaving),
+      view: state.leaving,
+      className: "content-panel content-exit",
+    },
+    current,
+  ];
+}
+
 /** Reactのkeyに使う、表示ごとの識別子。 */
 export function viewKey(view: RotationView): string {
   return view.kind === "content" ? `content:${view.id}` : view.kind;

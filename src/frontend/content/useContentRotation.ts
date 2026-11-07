@@ -11,6 +11,10 @@ import {
 /**
  * 切替のロジック（`ContentRotation`）をReactにつなぐ。Timerの管理と表示の受け渡しだけを行う
  * （docs/frontend-development.md 10.2 S1）。`entries`はモジュールの定数など、変わらない値を渡す。
+ *
+ * 表示の正本は`ContentRotation`とし、Reactの`view`はその通知（`onChange`）だけで更新する。
+ * StrictModeの再実行などで`ContentRotation`を作り直すときは、最後に通知された表示と
+ * 最新の入力を渡して続きから始め、画面の表示と内部の表示がずれないようにする。
  */
 export function useContentRotation(
   entries: readonly RotationEntry[],
@@ -30,11 +34,20 @@ export function useContentRotation(
   );
 
   const [view, setView] = useState(() => initialView(entries, input));
+  const viewRef = useRef(view);
   const inputRef = useRef(input);
   const rotationRef = useRef<ContentRotation | null>(null);
 
   useEffect(() => {
-    const rotation = new ContentRotation(entries, inputRef.current, setView);
+    const rotation = new ContentRotation(
+      entries,
+      inputRef.current,
+      (next) => {
+        viewRef.current = next;
+        setView(next);
+      },
+      { current: viewRef.current },
+    );
     rotationRef.current = rotation;
     return () => {
       rotation.dispose();
