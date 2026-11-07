@@ -8,10 +8,14 @@
   --color-text-faint: #77716a;
   --color-accent: #f2c48d;
   --color-unavailable-icon: #4a4752;
+  /* 取得できない旨の文字。UIモック（docs/ui-mock/signage-mock.html）の値。 */
+  --color-text-unavailable: #8d877e;
 
   --screen-gap: 16px;
   --tile-radius: 24px;
+  /* コンテンツの切替と時計のフェード。src/frontend/content/transition.tsと同じ値にする。 */
   --fade-duration: 600ms;
+  --indicator-duration: 500ms;
 
   --font-family: "Zen Maru Gothic", sans-serif;
 }
@@ -114,4 +118,122 @@ body {
   margin-top: 4px;
   font-size: 26px;
   color: var(--color-text-sub);
+}
+
+/* 左の列：時計タイルと、その下部に重ねるインジケーター（docs/frontend-development.md 10.3） */
+.clock-column {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* コンテンツ位置インジケーター（UI設計 4.1・4.2） */
+.indicator {
+  position: absolute;
+  left: 40px;
+  bottom: 32px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.indicator-dot {
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--color-unavailable-icon);
+  transition:
+    width var(--indicator-duration) ease,
+    background-color var(--indicator-duration) ease;
+}
+
+.indicator-dot.dot-current {
+  width: 40px;
+  background: var(--color-accent);
+}
+
+.indicator-dot.dot-skipped {
+  background: transparent;
+  border: 3px solid var(--color-unavailable-icon);
+}
+
+/* 右のコンテンツ領域。切替の間だけ、前後の表示を重ねる。 */
+.content-area {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.content-panel {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: var(--screen-gap);
+  min-height: 0;
+}
+
+/* 切替の動き：フェード＋少し上へ（UI設計 4.2・第7章）。opacityとtransformのみを使う。 */
+.content-enter {
+  animation: content-enter var(--fade-duration) ease both;
+}
+
+.content-exit {
+  animation: content-exit var(--fade-duration) ease both;
+}
+
+@keyframes content-enter {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes content-exit {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-24px);
+  }
+}
+
+/* #9・#10が入るまでの仮パネル（docs/frontend-development.md 10.7） */
+.placeholder-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.placeholder-label {
+  font-size: 40px;
+  color: var(--color-text-sub);
+}
+
+/* 1枚表示（UI設計 6.2・6.3） */
+.notice-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 16px;
+  color: var(--color-text-unavailable);
+  font-size: 30px;
+}
+
+.notice-icon {
+  width: 56px;
+  height: 56px;
+}
+
+.notice-note {
+  font-size: 24px;
 }
