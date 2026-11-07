@@ -19,3 +19,7 @@
 /AGENTS.md text eol=lf
 /CLAUDE.md text eol=lf
 /.claude/settings.json text eol=lf
+/src/frontend/** text eol=lf
+/tests/frontend/** text eol=lf
+/tsconfig.frontend.json text eol=lf
+/vite.frontend.config.ts text eol=lf

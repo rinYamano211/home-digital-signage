@@ -7,6 +7,10 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/backend/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", "dist", "coverage"]
+  "include": [
+    "src/backend/**/*.ts",
+    "tests/**/*.ts",
+    "vite.frontend.config.ts"
+  ],
+  "exclude": ["node_modules", "dist", "coverage", "tests/frontend"]
 }
