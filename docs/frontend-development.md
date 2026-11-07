@@ -2,7 +2,7 @@
 
 単一PackageのReact + TypeScript + Vite Frontend。Issue #7では、基本画面（レイアウト・時計・日付・曜日）と、その開発基盤・実機確認手順までを扱う。コンテンツの切替、天気・予定の表示、表示用APIとの接続は実装しない。
 
-状態：実装前の方針（2026-11-02）。Issue #7の検討（D1〜D13）で確定した事項を記録する。依存のバージョンや具体的な設定値は実装時に確定し、本書を更新する。
+状態：Issue #7で実装済み（PR #80・#81、2026-11-07）。Issue #7の検討（D1〜D13）で確定した事項と、実装時に確定した依存・設定・コマンドを記録する。Raspberry Piでの確認結果は[検証記録](verification/issue-7-clock-screen.md)を参照。
 
 ## 1. 位置付けと関連文書
 
@@ -19,12 +19,20 @@
 単一のnpm Packageを維持し、Workspacesや別Packageは作らない（D1）。
 
 ```text
-src/frontend/     Frontendのソース。Viteのrootとし、index.htmlを置く
-tests/frontend/   Frontendのテスト
-dist/frontend/    Vite Buildの出力先（Git管理外）
+src/frontend/            Frontendのソース。Viteのrootとし、index.htmlを置く
+  clock/                 時計の整形・更新規則・利用可否・時計タイル
+  layout/                1280×800の画面と比例縮小
+  icons/                 同梱するSVGアイコン
+  styles/                CSS変数・フォントの読み込み
+  verify/                検証専用エントリーポイント（index.html・main.tsx・VerifyApp.tsx・verify.css）
+tests/frontend/          Frontendのテスト
+dist/frontend/           通常Buildの出力先（Git管理外）
+dist/frontend-verify/    検証用Buildの出力先（Git管理外）
+vite.frontend.config.ts  Viteの設定
 ```
 
-- 時刻未同期表示の検証専用エントリーポイント（D13、5.3）も`src/frontend/`に置き、出力先は通常Buildと分ける。具体的なファイル名・出力先は実装時に確定する。
+- 時刻未同期表示の検証専用エントリーポイント（D13、5.3）は`src/frontend/verify/`に置き、検証用Buildのrootとする。出力先は`dist/frontend-verify/`で、通常Buildと分ける。
+- Viteの設定ファイルを`vite.config.ts`としないのは、Vitestが自動で読み込まないようにするため。
 - Backend（`src/backend/`、出力先`dist/backend/`）とはディレクトリと設定を分ける。
 - FrontendからBackendのコード（`src/backend/time/`等）をimportしない。実行環境（BrowserとNode.js）が異なるため。
 - Frontend専用の依存（React等）はすべて`devDependencies`に置く。理由は次のとおり。
@@ -37,19 +45,34 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 
 `npm create vite`等のテンプレートは使わず、必要な依存だけを手動で追加し、既存と同じくバージョンを完全に固定する（D2）。
 
-追加を予定する依存：
+追加した依存（すべて`devDependencies`、PR #80）：
 
-- `react`、`react-dom`、`@types/react`、`@types/react-dom`
-- `vite`、`@vitejs/plugin-react`
-- `eslint-plugin-react-hooks`、`globals`
-- `@fontsource/zen-maru-gothic`
+| パッケージ                         | バージョン |
+| ---------------------------------- | ---------- |
+| `react`・`react-dom`               | 19.3.1     |
+| `@types/react`・`@types/react-dom` | 19.3.0     |
+| `vite`                             | 8.3.5      |
+| `@vitejs/plugin-react`             | 6.2.1      |
+| `eslint-plugin-react-hooks`        | 7.1.1      |
+| `globals`                          | 17.14.0    |
+| `@fontsource/zen-maru-gothic`      | 5.3.1      |
 
-具体的なバージョンと互換性は未検証であり、実装時に確認する。確認対象：
+- Viteは、既存のVitest 5.0.5が依存するものと同じバージョンにそろえ、二重に入らないようにした。
+- 既存のTypeScript 6.0.3・ESLint 10・Node.js 24で、`npm run check`とBuildが通ることを確認した。
+- `eslint-plugin-react-hooks`は`configs.flat.recommended`を使う。
 
-- Vite・`@vitejs/plugin-react`と、既存のVitest 5.0.5・TypeScript 6.0.3
-- `eslint-plugin-react-hooks`と、既存のESLint 10
-- `globals`パッケージの追加
-- Node.js 24での動作
+npm scripts：
+
+| コマンド                        | 役割                                   |
+| ------------------------------- | -------------------------------------- |
+| `npm run dev:frontend`          | 通常画面のDevelopment Server           |
+| `npm run build:frontend`        | 通常Build（`dist/frontend/`）          |
+| `npm run dev:frontend:verify`   | 検証画面のDevelopment Server           |
+| `npm run build:frontend:verify` | 検証用Build（`dist/frontend-verify/`） |
+
+検証用は`vite.frontend.config.ts`の`--mode verify`で、rootと出力先を切り替える。
+
+Windowsでは、better-sqlite3のNative Build（Visual Studio C++が必要）で通常の`npm ci`が失敗することがある。その場合、Frontendの開発・Buildには`npm ci --ignore-scripts`を使う。Frontendはbetter-sqlite3を使わない。
 
 ## 4. 品質検証との統合
 
@@ -84,6 +107,7 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 - 現在時刻はBrowserの現在時刻（OS System Time）から取得する。表示の整形は`Intl.DateTimeFormat`で`timeZone: "Asia/Tokyo"`を明示し、OSのTimezone設定に依存しない（[アーキテクチャ 10.3](architecture.md#103-timezone)）。
 - 1秒ごとに現在時刻を確認し、表示文字列（日付・時刻）が変わった場合だけ表示を更新する（D8）。時刻の補正や日付の変更にも最大1秒で追従する。
 - 時刻のコロンの点滅など、常に動く演出は使わない（[UI設計 第7章](ui-design.md#7-アニメーションの方針)）。
+- Zen Maru Gothicは等幅数字（`tnum`）を持たないため、`tabular-nums`を指定しても数字の幅は揃わない。時刻は時計タイルに収まり欠けないが、時刻が変わると右端が最大約80px動く。#7では変更せず、Issue #13の実機確認で見え方を確認する（[検証記録](verification/issue-7-clock-screen.md#等幅数字が効かない件)）。
 
 ### 5.3 時刻利用可否の状態注入
 
@@ -108,8 +132,8 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 
 ### 5.4 フォント・アイコン
 
-- Zen Maru Gothicは`@fontsource/zen-maru-gothic`で管理し、Vite Buildの成果物に含める（D9）。フォントのライセンス（SIL Open Font License）の表記の扱いは実装時に確認する。
-- アイコンは必要なSVG（#7では未同期表示の時計アイコン）だけをアプリに同梱する。
+- Zen Maru Gothicは`@fontsource/zen-maru-gothic`で管理し、Vite Buildの成果物に含める（D9）。読み込むのはウェイト500・700のみ（`src/frontend/styles/fonts.ts`）。フォントのライセンス（SIL Open Font License）の表記の扱いは未確定（第8章）。
+- アイコンは必要なSVG（#7では未同期表示の時計アイコン）だけをアプリに同梱する。時計アイコンはTabler Icons（MIT）のclock-pauseのPathを使い、ライセンス表記をソース（`src/frontend/icons/ClockPauseIcon.tsx`）に残している。
 - 外部CDN・Webフォントサービスを参照せず、ネットワークに接続できなくても基本画面を表示できるようにする（[UI設計 第13章](ui-design.md#13-uiモック)、[要件 R-06](requirements.md#r-06電源投入再起動異常終了からの自動復旧)）。
 
 ## 6. PCでのプレビュー
@@ -122,7 +146,9 @@ dist/frontend/    Vite Buildの出力先（Git管理外）
 - `unavailable`で日付と時刻が表示されず、未同期表示になること。
 - `available`へ切り替えたときに、日付と時刻がフェードで表示されること（復帰時の表示）。
 
-検証用エントリーポイントの具体的なファイル構成、npm scripts、コマンドは実装時に確定し、本書へ追記する。
+通常画面は`npm run dev:frontend`、検証画面は`npm run dev:frontend:verify`で起動する。検証画面は未同期表示（`unavailable`）で始まり、画面右下のボタンまたはSpaceキーで切り替える。
+
+通常Buildの成果物（`dist/frontend/`）に、検証専用のHTML・JavaScript・切替UIが含まれないことを確認した（PR #81）。
 
 ## 7. Raspberry Piでの実機確認
 
@@ -148,22 +174,40 @@ Issue #7の完了条件（Piのディスプレイへの表示、現在時刻の�
 5. `available` / `unavailable`それぞれの表示と、その切替を確認する（確認内容は第6章と同じ）。
 6. 確認後、一時サーバーとChromiumを停止し、Pi上の検証用成果物を削除する。確認結果は`docs/verification/`へ記録する。
 
-- Buildコマンド、成果物のファイル名・出力先、一時HTTPサーバーに使うコマンドは実装時に確定する。本番の配信（nginx）・自動起動・Deployの手順はIssue #12で扱う。
+#7で使ったコマンド（`<user>`・`<pi-host>`・`<port>`は環境に合わせる）：
+
+```sh
+# Development PC（リポジトリのルート）
+npm run build:frontend
+npm run build:frontend:verify
+scp -r dist/frontend <user>@<pi-host>:~/signage-check/
+scp -r dist/frontend-verify <user>@<pi-host>:~/signage-check/
+
+# Raspberry Pi（デスクトップのターミナル）。検証画面は配信先をfrontend-verifyに変える
+python3 -m http.server <port> --bind 127.0.0.1 --directory ~/signage-check/frontend
+chromium-browser --kiosk --incognito http://127.0.0.1:<port>/
+
+# 確認後
+rm -rf ~/signage-check
+```
+
+- Pi OSによっては、Chromiumのコマンド名が`chromium`の場合がある。Chromiumは`Alt+F4`で閉じ、一時サーバーは`Ctrl+C`で止める。
+- 本番の配信（nginx）・自動起動・Deployの手順はIssue #12で扱う。
 - 約3mからの判読性・長時間稼働などMVPの受入確認はIssue #13で行う。
 
 ## 8. 未解決事項
 
-開発PCと実機で未同期表示へ切り替える方式は、D13（検証専用エントリーポイント）で確定した。以下は未確定である。
+開発PCと実機で未同期表示へ切り替える方式は、D13（検証専用エントリーポイント）で確定した。依存のバージョン、npm scripts、Buildの出力先、検証用のファイル構成、一時HTTPサーバーのコマンドは、#7の実装で確定した（第2・3・6・7章）。以下は未確定である。
 
-- OS・RTC・時刻同期の状態に基づく、正式な時刻利用可否の判定（第9章の別Issue）。
-- 依存パッケージのバージョンと互換性（第3章）。
-- npm scripts、通常Build・検証用Buildのコマンドと出力先、検証用エントリーポイントのファイル構成、一時HTTPサーバーの具体的な設定（第2・6・7章）。
+- OS・RTC・時刻同期の状態に基づく、正式な時刻利用可否の判定（Issue #65）。
+- フォントのライセンス（SIL Open Font License）の表記の扱い（5.4）。
+- 等幅数字が効かないことによる、時刻の右端の動きの見え方（5.2。Issue #13で確認）。
 
 ## 9. 後続Issueへの引き継ぎ
 
 - #8：コンテンツの切替・インジケーター・切替アニメーション。時刻未同期中にコンテンツ領域へ1枚表示して巡回を止める動作（[UI設計 6.3](ui-design.md#63-時刻未同期)）。
 - #9・#10：天気・予定の表示データ。表示用APIのPolling、Published Stateの型とRuntime Validation、取得中・取得不可の表示。
 - #12：nginxによる本番配信、Chromium Kioskの自動起動、Deploy手順。
-- #13：MVP全体の受入確認（判読性、起動時間、時刻・日付テスト、長時間稼働）。
+- #13：MVP全体の受入確認（判読性、起動時間、時刻・日付テスト、長時間稼働）。時刻が変わったときに右端が動く見え方が気にならないか（5.2）も確認する。
 - #16：Backend共通基盤と表示用API（Published State API）。
-- 別Issue（未作成）：OS・RTCに基づく表示用時刻の利用可否判定。判定に使う情報、判定を行う場所、Frontendへの渡し方を決めて実装し、#7の状態入力へ接続する。既存文書の判定方法の参照先（[アーキテクチャ 10.2](architecture.md#102-時刻同期rtcと利用可否)の「Issue #4」、[技術スタック選定 24.3](technology-stack.md#243-time--rtc)の「#6・#13」）との関係もこのIssueで整理する。
+- #65：OS・RTCに基づく表示用時刻の利用可否判定。判定に使う情報、判定を行う場所、Frontendへの渡し方を決めて実装し、#7の状態入力へ接続する。既存文書の判定方法の参照先（[アーキテクチャ 10.2](architecture.md#102-時刻同期rtcと利用可否)の「Issue #4」、[技術スタック選定 24.3](technology-stack.md#243-time--rtc)の「#6・#13」）との関係もこのIssueで整理する。

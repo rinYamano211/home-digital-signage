@@ -28,12 +28,12 @@ PR作成・更新前は`npm ci`と`npm run check`を実行し、diffを確認す
 
 ## 現在の検証範囲
 
-- ESLint：リポジトリのJS / MJS / CJSとTS / MTS / CTS / TSX。現時点では設定JS・Backend実装・検証用TSが対象。React固有ルールや実行環境別globalsはまだ追加しない。
+- ESLint：リポジトリのJS / MJS / CJSとTS / MTS / CTS / TSX。設定JS・Backend実装・Frontend実装・検証用TSが対象。`src/frontend/`と`tests/frontend/`に限り、React Hooksのルール（`eslint-plugin-react-hooks`）とBrowserのglobalsを加える。それ以外のReact向けPluginは追加しない。
 - Prettier：JS / TS / JSON / YAML / Markdown等の対応形式。新規Markdownも対象。既存のREADMEと7つの設計・学習文書のみ`.prettierignore`で個別除外し、Issue #15での一括整形を避ける。lockfileはnpmが生成するため対象外。
-- TypeScript：`src/backend/**/*.ts`と`tests/**/*.ts`。空の対象で成功させず、検証用コードを実際に型チェックする。
+- TypeScript：`tsconfig.json`で`src/backend/**/*.ts`と`tests/**/*.ts`（`tests/frontend/`を除く）、`tsconfig.frontend.json`で`src/frontend/`と`tests/frontend/`（DOM型・`jsx: react-jsx`・Bundler向けのModule解決）。`npm run typecheck`は両方を実行する。空の対象で成功させず、検証用コードを実際に型チェックする。
 - Vitest：既存のSmoke Testと`tests/backend/`のConfig・Secrets・HTTP・Lifecycleテスト。実Credential・外部APIには依存しない。HTTPはLoopbackを利用する。Processテスト内でtscによるBackendのCompileと起動を検証し、成果物は配布・Deployしない。Linux固有のPermission・Signal確認はUbuntu CIで実行する。詳細は[Backend開発手順](backend-development.md)を参照。
 - `node_modules/`、`dist/`、`coverage/`、TypeScriptの生成キャッシュはLint / Format対象外。新しい生成物が増えた際は除外設定も更新する。
-- Frontend（Issue #7で追加予定）：`src/frontend/`と`tests/frontend/`を同じ`npm run check`の対象に加える。Backendの既存の検証対象・設定は弱めない。Production BuildはCIで実行しない。構成と設定方針は[Frontend開発手順](frontend-development.md)を参照。
+- Frontend（Issue #7で追加）：`src/frontend/`と`tests/frontend/`を同じ`npm run check`の対象とする。Vitestは`tests/frontend/`の時計の整形・更新規則・利用可否・縮小倍率をNode環境で単体テストし、Reactの描画はBrowserで目視確認する。Backendの既存の検証対象・設定は弱めない。Production BuildはCIで実行しない。構成と設定方針は[Frontend開発手順](frontend-development.md)を参照。
 
 新規の設定・テスト・本手順書は`.gitattributes`でLF改行に固定し、WindowsでのCheckout後もPrettierとの改行差を避ける。既存設計文書の改行設定は変更しない。
 
