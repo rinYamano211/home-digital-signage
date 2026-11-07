@@ -123,6 +123,12 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
   private readonly adapters = new Map<StateKey, HttpStartAdapter>();
   private readonly wait = new ConservativeControlWait();
   private readonly stopping = new AbortController();
+  /** Non-quota HTTP whose Lifecycle end is not yet proven, per State. Like the
+   * Send Gate occupancy, a State with one starts no new HTTP (18.7).
+   */
+  private readonly unended = new Map<StateKey, number>();
+  private open = 0;
+  private drained: (() => void)[] = [];
   constructor(
     private readonly store: RuntimeStoreAccess,
     private readonly send: RuntimeSend | null,
@@ -141,6 +147,28 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
    */
   abort(): void {
     this.stopping.abort();
+  }
+  /** Resolves once every non-quota HTTP Lifecycle has ended. Shutdown awaits
+   * it before DB Close; an unproven end keeps it pending (shutdown_timeout).
+   */
+  drain(): Promise<void> {
+    if (this.open === 0) return Promise.resolve();
+    return new Promise((resolve) => this.drained.push(resolve));
+  }
+  /** One idempotent `lifecycleEnded` callback per started Request. */
+  private track(key: StateKey): () => void {
+    this.unended.set(key, (this.unended.get(key) ?? 0) + 1);
+    this.open++;
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      const left = (this.unended.get(key) ?? 1) - 1;
+      if (left > 0) this.unended.set(key, left);
+      else this.unended.delete(key);
+      if (--this.open === 0)
+        for (const resolve of this.drained.splice(0)) resolve();
+    };
   }
   async runOnce(stateKey: StateKey): Promise<RunOnceResult> {
     // After abort() the Scheduler is stopping and ignores results; holding is
@@ -165,6 +193,10 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     provider: AcquisitionProvider,
     key: StateKey,
   ): Promise<RunOnceResult> {
+    // An earlier Request of this State may still be running (contract
+    // violation, unproven end): no new HTTP and no Control change.
+    if (this.unended.has(key))
+      return scheduled(Date.now() + SUPPRESSED_RECHECK_MS);
     const control = this.store.acquisitionControl;
     const read = control.read(key);
     if (read.outcome === "pending") return unresolved("state");
@@ -368,14 +400,21 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     startedAt: string,
   ): Promise<AcquireResult> {
     const signal = this.stopping.signal;
+    const key = provider.stateKey;
     const http = async (config: HttpAdapterConfig): Promise<HttpOutcome> => {
       if (signal.aborted) return { kind: "aborted" };
+      if (this.unended.has(key)) return { kind: "network_error" };
+      let adapter: HttpStartAdapter;
       try {
-        return (await createHttpAdapter(config).start(
-          signal,
-          () => {},
-        )) as HttpOutcome;
+        adapter = createHttpAdapter(config); // invalid config: nothing sent
       } catch {
+        return { kind: "network_error" };
+      }
+      try {
+        return (await adapter.start(signal, this.track(key))) as HttpOutcome;
+      } catch {
+        // Failure for Tx-A, like the existing paths; an unproven end stays
+        // tracked and blocks this State's next HTTP.
         return { kind: "network_error" };
       }
     };
@@ -426,7 +465,7 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     try {
       return (await adapter.start(
         this.stopping.signal,
-        () => {},
+        this.track(key),
       )) as HttpOutcome;
     } catch {
       return { kind: "network_error" };

@@ -16,7 +16,11 @@ import { ExclusiveLock } from "../../src/backend/storage/lock.js";
 import { readOsBootId } from "../../src/backend/time/boot-id.js";
 import { initializeSchema } from "../../src/backend/storage/schema.js";
 import { LIFECYCLE_DDL } from "../../src/backend/storage/lifecycle-ddl.js";
-import { configureDatabase } from "../../src/backend/storage/store.js";
+import {
+  BackendStore,
+  configureDatabase,
+  type StartupStoreAccess,
+} from "../../src/backend/storage/store.js";
 import type {
   AcquisitionProvider,
   MultiHttpProvider,
@@ -156,3 +160,68 @@ test.each([
     }
   },
 );
+
+test("an unproven HTTP end keeps DB Close pending: shutdown_timeout exits 1", async () => {
+  const data = v3();
+  const signals = new EventEmitter();
+  const finish = vi.fn();
+  let logs = "";
+  const stream = new Writable({
+    write(chunk, _enc, cb) {
+      logs += chunk;
+      cb();
+    },
+  });
+  vi.spyOn(ExclusiveLock, "inherited").mockReturnValue({
+    directory: data.dir,
+    assertHeld: vi.fn(),
+  } as unknown as ExclusiveLock);
+  // Adapter contract violation: the Body yields a non-byte chunk, so the
+  // Request end (reader release) is never proven.
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue("text");
+            c.close();
+          },
+        }),
+      ),
+  );
+  let store: StartupStoreAccess | undefined;
+  const result = await startBackend({}, stream, {
+    signals,
+    finish,
+    providers: [single("https://provider.example.test/")],
+    initializeStore: (lock) => (store = BackendStore.openV3ForStartup(lock)),
+  });
+  expect(result?.status).toEqual({ state: "HEALTHY" });
+  try {
+    // The failed attempt is recorded (Tx-A) while its end stays unproven.
+    await vi.waitFor(
+      () => {
+        const db = new Database(data.path, { readonly: true });
+        try {
+          expect(
+            db.prepare("SELECT COUNT(*) AS n FROM acquisition_control").get(),
+          ).toEqual({ n: 1 });
+        } finally {
+          db.close();
+        }
+      },
+      { timeout: 5000, interval: 20 },
+    );
+    vi.useFakeTimers();
+    signals.emit("SIGTERM");
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(finish).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(finish).toHaveBeenCalledExactlyOnceWith(1);
+    expect(logs).toContain("shutdown_timeout");
+    expect(logs).not.toContain("database_closed");
+  } finally {
+    vi.useRealTimers();
+    store?.close(); // the pending close hook never reaches its Close
+  }
+});

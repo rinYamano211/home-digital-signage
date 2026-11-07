@@ -1641,6 +1641,8 @@ ProviderはDBを直接操作しない。Schedule固有の処理は共通Module�
 - Shutdown開始後は新規取得を開始しない（既存の`beginShutdown`・Scheduler停止を維持）。
 - SQLite処理は同期であり、Abortで中断されない。Transactionの整合性は既存契約のまま維持される。
 - HTTP Timeout 10秒、Shutdown Timeout 10秒は変更しない。Adapterの終了確認（通信終了・Body解放）を待ってからDB Closeへ進む。終了確認が完了しない場合は既存どおり`shutdown_timeout`（exit 1、安全側の強制停止）となる。
+- Adapterの契約違反等で終了を証明できないHTTP（`lifecycleEnded`未通知）は、その試行を通常の失敗（Tx-A）として扱い、終了するまで同じStateの新しいHTTPを始めない（Control Stateは変えず、60秒後に再評価）。Send Gateの占有と同じ考え方で、Quotaなしの経路にも適用する。
+- Shutdownは`scheduler.stop()`の後、Coordinatorの`drain()`で、QuotaなしのすべてのHTTPの終了を待ってからDB Closeへ進む。
 - Tomorrow.ioの経路（Gateの停止は`scheduler.stop()`の後）は対象外とし、#9の本番登録前に確認する。
 
 #### JST 0時の再取得

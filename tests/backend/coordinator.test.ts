@@ -775,3 +775,94 @@ test("a multi-HTTP Provider cannot use the Quota path", () => {
       ]),
   ).toThrow(new TypeError("Quota Providers must be single-HTTP"));
 });
+
+// Adapter contract violations: the Request end is not proven (technology-stack
+// 18.7). The attempt is an ordinary failure for Tx-A, and the State starts no
+// new HTTP until the Lifecycle end is proven, like the Send Gate occupancy.
+const violations: [string, () => void][] = [
+  [
+    "fetch returns no Promise",
+    () =>
+      fetchMock.mockImplementation(
+        () => Response.json({}) as unknown as Promise<Response>,
+      ),
+  ],
+  [
+    "the Body yields a non-byte chunk",
+    () =>
+      fetchMock.mockImplementation(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue("text");
+                c.close();
+              },
+            }),
+          ),
+      ),
+  ],
+];
+test.each(
+  violations.flatMap(([name, arrange]) => [
+    [name, "single-HTTP", arrange, () => mock()] as const,
+    [name, "multi-HTTP", arrange, () => multi()] as const,
+  ]),
+)(
+  "%s (%s): failure for Tx-A, then no new HTTP while the end is unproven",
+  async (_name, _type, arrange, make) => {
+    const { db, runtime } = committed();
+    arrange();
+    const c = new StateAcquisitionCoordinator(runtime, null, [make()]);
+    const at = wall;
+    await c.runOnce("currentWeather");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(control(db)).toEqual({
+      consecutiveFailures: 1,
+      nextAttemptAt: iso(at + 60_000),
+    });
+    move(60_000);
+    fetchMock.mockImplementation(async () => Response.json({ t: 1 }));
+    expect(await c.runOnce("currentWeather")).toEqual({
+      kind: "scheduled",
+      recheckAt: iso(wall + 60_000),
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(control(db)).toMatchObject({ consecutiveFailures: 1 });
+    let drained = false;
+    void c.drain().then(() => (drained = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+  },
+);
+test("a proven end (ordinary failure or success) never occupies the State and drains", async () => {
+  const { db, runtime } = committed();
+  fetchMock.mockImplementation(async () => new Response("", { status: 500 }));
+  const c = new StateAcquisitionCoordinator(runtime, null, [multi()]);
+  await c.runOnce("currentWeather");
+  await c.drain();
+  move(60_000);
+  fetchMock.mockImplementation(async () => Response.json({ t: 1 }));
+  await c.runOnce("currentWeather");
+  expect(control(db)).toMatchObject({ consecutiveFailures: 0 });
+  await c.drain();
+});
+test("an unproven end does not affect another State", async () => {
+  const { db, runtime } = committed();
+  fetchMock.mockImplementation(
+    () => Response.json({}) as unknown as Promise<Response>,
+  );
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    mock(),
+    mock({
+      stateKey: "weeklyWeather",
+      http: { url: "https://weekly.example.test/", maxBodyBytes: 4096 },
+    }),
+  ]);
+  await c.runOnce("currentWeather");
+  fetchMock.mockImplementation(async () => Response.json({ t: 1 }));
+  await c.runOnce("weeklyWeather");
+  expect(control(db, "weeklyWeather")).toMatchObject({
+    consecutiveFailures: 0,
+  });
+});

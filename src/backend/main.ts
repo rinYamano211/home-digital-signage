@@ -108,6 +108,8 @@ export async function startBackend(
       coordinator?.abort();
       // No new Task, then wait for in-flight cycles before closing anything.
       await acquisition?.stop();
+      // Every non-quota HTTP Lifecycle must have ended (unproven: timeout).
+      await coordinator?.drain();
       runtime?.acquisitionControl.context.beginShutdown();
       monitoring?.stopMonitoring(); // Close the Gate and Recovery before the DB.
     } finally {
