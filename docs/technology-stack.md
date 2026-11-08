@@ -1602,9 +1602,9 @@ Step 5のSchedule設計記録までを対象とし、別Domainの詳細設計や
 
 <a id="schedule-issue-10-design"></a>
 
-### 18.7 Issue #10 実装設計（設計確定・未実装）
+### 18.7 Issue #10 実装設計（実装済み・実機確認済み）
 
-[Issue #10](https://github.com/rinYamano211/home-digital-signage/issues/10)の実装前に確定した設計である。18.1〜18.5、第10章のAPI契約、Architecture 16章の責務分担は変更しない。実装・CI・実機での検証は未完了であり、結果は`docs/verification/`へ記録する。
+[Issue #10](https://github.com/rinYamano211/home-digital-signage/issues/10)の実装前に確定した設計である。18.1〜18.5、第10章のAPI契約、Architecture 16章の責務分担は変更しない。実装はPR #88・#89・#91で行った。CI・Raspberry Pi・実APIでの検証結果と、確認していない事項は[Issue #10の検証記録](verification/issue-10-schedule.md)に記す。
 
 #### 責務と変更範囲
 
@@ -3913,7 +3913,7 @@ PR-Cは既存のScheduler・Acquisition Control・Quota Repository / Guard・Sen
 
 MVPは、通常の停電・クラッシュ後に既存条件を満たした場合の自動復旧、H_old等を用いた保守的Quota評価、案Dの窓別Wait（1分・65分・25時間）、履歴不整合・Trust不足時のFail Closedを維持する。不確実な履歴を安全に扱えない場合は送信を停止して待機する。保守的待機でもQuota遵守を保証できない場合は、自動で送信を再開しない。
 
-Domain Providerの本番登録に先立つProvider Interfaceの拡張（Quotaなしの複数HTTP型・POST・失敗時のHTTPステータス伝搬）と、Shutdown時のHTTP Abort・停止期限の検証は、Issue #10で行う（[18.7](#schedule-issue-10-design)、設計確定・未実装）。上表のTomorrow.io向けGate・Tx-Qの契約は変更しない。
+Domain Providerの本番登録に先立つProvider Interfaceの拡張（Quotaなしの複数HTTP型・POST・失敗時のHTTPステータス伝搬）と、Shutdown時のHTTP Abort・停止期限の検証は、Issue #10で行った（[18.7](#schedule-issue-10-design)、PR #88で実装済み）。上表のTomorrow.io向けGate・Tx-Qの契約は変更しない。
 
 <a id="pr-c-c3-f02-delay-margin"></a>
 

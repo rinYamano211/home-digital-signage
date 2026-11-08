@@ -1,0 +1,128 @@
+# Issue #10：予定の表示の検証
+
+## 範囲と状態
+
+[Issue #10](https://github.com/rinYamano211/home-digital-signage/issues/10)で実装した予定の取得・表示（PR #86・#88・#89・#91）を、Windows・CI・Raspberry Pi・実際のGoogle Calendarで確認した。設計は[technology-stack.md 18.7](../technology-stack.md#schedule-issue-10-design)、[Backend開発手順「Schedule Service」](../backend-development.md#schedule-serviceissue-10実装済み実機確認済み)、[Frontend開発手順 第11章](../frontend-development.md#11-予定の表示issue-10)に従う。
+
+Raspberry Pi・実APIでの確認は、ユーザーが手動で行った。本番の配置（systemd・nginx・Release Directory）は#12の範囲であり、ここでは一時ディレクトリ（`~/signage-check`）にBuild成果物を置いて確認した。
+
+- 確認日：2026-11-08
+- 対象：main `05714f5`（PR #91のMerge Commit）。PCでBuildした成果物をPiへ転送した。Pi上の成果物とCommitの照合は記録していない
+- Raspberry Pi：Raspberry Pi OS、Wayland（labwc）、Chromium（Kioskモード）
+- 画面：HDMI-A-1、1280×800（preferred, current）、約59.81Hz、Scale 1.0、向きnormal（`wlr-randr`で確認）
+- DB：新規作成し、v3までMigrationを適用
+- カレンダー：確認用の専用カレンダーに、確認用の予定6件（通常・進行中・今日だけの終日・複数日の終日・繰り返し・23:00〜翌01:00）を作成した。予定のタイトル・カレンダーID・鍵の内容は記録しない
+
+## 環境ごとの結果
+
+| 環境                           | 確認したこと                                                                                          | 結果                                                                                                 |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Windows（開発PC）              | `npm test`・Lint・型検査（下記「Windows・CIの証跡」）。検証画面での表示の目視（PR #91）               | 成功。`format:check`は既知のCRLFの問題で失敗（下記）                                                 |
+| CI（GitHub Actions、Linux）    | PRごとの品質検査（下記「Windows・CIの証跡」）                                                         | PR #88・#89・#91の各Commitで成功。CIはPRで動くため、Merge後のmain（`05714f5`）自体では実行していない |
+| Raspberry Pi＋実API            | Backendの起動・予定の取得・表示用API・取得失敗・Shutdown（A・C・D）                                   | PASS                                                                                                 |
+| 開発PCの表示＋Piの実データ     | Vite開発サーバーからSSHのポート転送でPiのBackendに接続し、画面で表示を確認（B）                       | PASS                                                                                                 |
+| Raspberry Piの画面＋合成データ | 検証用Build（`dist/frontend-verify/`）をPiのChromiumで表示し、読みやすさ・件数の集約・表記を確認（E） | PASS                                                                                                 |
+
+### Windows・CIの証跡
+
+CI（GitHub Actions「CI」、`pull_request`、Ubuntu 26.04）。各PRのHEAD Commitで実行し、すべて成功した。件数はログのVitestの集計による。`pull_request`の実行はその時点のMerge Refを対象とするため、Merge後のmainとは厳密には一致しない。
+
+| PR  | Commit    | 実行                                                                                         | テスト                 |
+| --- | --------- | -------------------------------------------------------------------------------------------- | ---------------------- |
+| #88 | `e148637` | [42388413654](https://github.com/rinYamano211/home-digital-signage/actions/runs/42388413654) | 記録していない         |
+| #88 | `3b72827` | [42389326896](https://github.com/rinYamano211/home-digital-signage/actions/runs/42389326896) | 51ファイル・1524件成功 |
+| #89 | `03ab3b4` | [42445901321](https://github.com/rinYamano211/home-digital-signage/actions/runs/42445901321) | 記録していない         |
+| #89 | `7f35f16` | [42447027438](https://github.com/rinYamano211/home-digital-signage/actions/runs/42447027438) | 54ファイル・1599件成功 |
+| #91 | `858e206` | [42448098321](https://github.com/rinYamano211/home-digital-signage/actions/runs/42448098321) | 記録していない         |
+| #91 | `079d105` | [42448580157](https://github.com/rinYamano211/home-digital-signage/actions/runs/42448580157) | 57ファイル・1673件成功 |
+
+Windows（開発PC）。2026-11-08に、本記録のブランチ（`05714f5`から作成し、Documentだけを変更）で実行した。実行結果はローカルの出力だけで、外部から参照できる記録はない。
+
+| コマンド               | 結果                                                                                                                               |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run lint`         | 成功                                                                                                                               |
+| `npm run typecheck`    | 成功                                                                                                                               |
+| `npm test`             | 55ファイル成功・2ファイルSkip、1617件成功・56件Skip（合計1673件。SkipはLinux専用のテストで、CIでは実行される）                     |
+| `npm run format:check` | 失敗。`core.autocrlf=true`の作業コピーで、既存のDocument等（28ファイル）がCRLFで展開されるための既知の問題。本記録のファイルは合格 |
+
+Build（`npm run build:frontend`・`build:frontend:verify`・`build:backend`）は、PR #91の作成時（Windows）に成功した。Pi用の成果物はユーザーが開発PCでBuildして検証に使った（コマンドの出力は記録していない）。本記録のブランチでは再実行していない。
+
+## A：予定の取得（Pi＋実API）
+
+Backendを起動し、表示用API（`GET /api/published-states`）の`schedule`を、タイトルを出さずに件数と種類だけで確認した。
+
+| No. | 確認項目                                                                        | 結果 |
+| --- | ------------------------------------------------------------------------------- | ---- |
+| A0  | 起動ログに`schedule_provider_enabled`と`startup_complete`が出る                 | PASS |
+| A1  | `date`が今日（JST）、`lastAttemptResult: success`、`dataSource: externalApi`    | PASS |
+| A2  | 作った予定6件がすべて含まれる                                                   | PASS |
+| A3  | 時刻指定の予定はUTC（`...Z`）。終日は`endDateExclusive`が排他的（終了日の翌日） | PASS |
+| A4  | 繰り返し予定は今日の1回が含まれる                                               | PASS |
+| A5  | 23:00〜翌01:00の予定が含まれる                                                  | PASS |
+| A6  | 約10分後に`expiresAt`が更新される（定期取得）                                   | PASS |
+
+## B：実データの画面表示（開発PC）
+
+| No. | 確認項目                                                                                                                         | 結果 |
+| --- | -------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| B1  | 起動直後の「予定と天気を取得しています」から、今日の予定の表示に変わる                                                           | PASS |
+| B2  | 終日・進行中・次の予定・終了済みが分かれて表示される                                                                             | PASS |
+| B3  | 複数日の終日に`（11/9まで）`、23:00〜翌01:00の予定に`（翌01:00まで）`                                                            | PASS |
+| B4  | 今日の予定 → 今日の天気（仮）→ 週間天気（仮）の順に巡回する                                                                      | PASS |
+| B5  | ポート転送を止めても表示が続き、再開後はBrowserを再読み込みせずに更新が再開する。DevToolsのNetworkで`published-states`がHTTP 200 | PASS |
+
+## C：予定なし・取得失敗（Pi＋実API）
+
+| No. | 手順                                              | 観測                                                                                                                                                                                                     | 結果 |
+| --- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| C1  | 確認用の予定6件を削除し、Backendを再起動          | API：`events: 0`、`lastAttemptResult: success`。画面：「本日の予定はありません」                                                                                                                         | PASS |
+| C2  | 鍵のファイルを一時的に退避してBackendを起動       | ログ：`schedule_provider_disabled`（`reason: missing`）、`startup_complete`。Backendは起動した。鍵を戻して再起動し、`schedule_provider_enabled`・`startup_complete`                                      | PASS |
+| C3  | カレンダーの共有からService Accountを一時的に外す | ログ：`schedule_acquisition_failed`（`reason: forbidden`、`httpStatus: 404`）。画面：「更新待ち」の札。共有（予定の詳細の表示）を戻して再起動し、`lastAttemptResult: success`・`dataSource: externalApi` | PASS |
+
+C3の`httpStatus: 404`は、共有されていないカレンダーに対するGoogle Calendar APIの実際の応答である。ログの仕様では、`forbidden`は403と404を含む（[Backend開発手順のログ一覧](../backend-development.md#schedule-serviceissue-10実装済み実機確認済み)、technology-stack.md 18.7）。仕様どおりであることを実測で確かめた。
+
+## D：Shutdown（Pi）
+
+| No. | 確認項目                                                                                 | 結果 |
+| --- | ---------------------------------------------------------------------------------------- | ---- |
+| D1  | Ctrl+Cで`database_closed`・`shutdown_complete`が出て終了する。`shutdown_timeout`は出ない | PASS |
+
+終了までの時間は計測していない。
+
+## E：Raspberry Piの画面（合成データ）
+
+検証画面のキー（Frontend開発手順 11.7）で、予定の合成データ（Sキー）とPollingの状態（Pキー）を切り替えた。
+
+| No. | 確認項目                                                                                                                    | 結果 |
+| --- | --------------------------------------------------------------------------------------------------------------------------- | ---- |
+| E1  | 通常・多件で、時計・日付が大きく、予定名・時刻が読める。時計と予定の領域が重ならず、はみ出し・崩れがない                    | PASS |
+| E2  | 多件で「終了済み 8件」と「ほか 4件」が表示される                                                                            | PASS |
+| E3  | 長いタイトルが`…`で省略される。同時刻の予定が両方表示される。タイトルなしが`（タイトルなし）`。複数日・日付またぎの終了表記 | PASS |
+| E4  | 取得中：「予定と天気を取得しています」。取得できない：「予定と天気を取得できません」「自動で再試行しています」。崩れがない  | PASS |
+
+- E1の読みやすさは目視で判読できることを確認した。見る距離は記録していない。
+- E2で、はみ出しはなかった。行の高さの目安（`src/frontend/schedule/layout-config.ts`）は変更していない。
+- E4はPキーによる模擬状態である。実際の通信の切断・復旧はB5で確認した。
+
+## Issue #10の完了条件との対応
+
+| 完了条件・検討事項               | 確認方法                                               |
+| -------------------------------- | ------------------------------------------------------ |
+| 当日の予定を取得できる           | A1〜A6、自動テスト（JSTの当日範囲・日付またぎ）        |
+| サイネージに予定を表示できる     | B1〜B4（実データ）、E1〜E3（Piの画面）、自動テスト     |
+| 予定がない場合も正常に表示できる | C1、自動テスト                                         |
+| API取得失敗時の挙動              | C2・C3、B5、E4、自動テスト（失敗の分類・保持・再試行） |
+| 自動切り替え機構への組み込み     | B4、自動テスト                                         |
+
+## 確認していないこと
+
+| 事項                                                      | 扱い                                                                                                      |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| 実時間での0時の日付切り替え                               | 自動テスト（翌日0時で取得周期を区切る、日付が進んだ取得の破棄）のみ。実時間では確認していない             |
+| 有効期限（6時間）切れで予定が巡回から外れること           | 開発PCの検証画面と自動テストのみ。実機・実データでは確認していない                                        |
+| 実データをPiの画面で表示すること                          | 実データは開発PCの画面（B）、Piの画面は合成データ（E）で別々に確認した。本番の配置とあわせて#12で確認する |
+| 進行中の予定だけでパネルに収まらない場合（目安で9件以上） | 現状はパネルの下端で切れる（Frontend開発手順 11.8）。UI設計に定めがなく、実機・実データでは確認していない |
+| 時刻の信頼性による表示の制御                              | Frontendの時刻は`available`固定のまま（#65）                                                              |
+| 取得失敗時の`dataSource`                                  | Coordinatorは失敗時も`externalApi`を保持する。Frontendは`lastAttemptResult`で判断する（#87）              |
+| 天気の表示                                                | 仮パネルのまま（#9）                                                                                      |
+| 長時間の連続稼働                                          | Issue #13で扱う                                                                                           |

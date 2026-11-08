@@ -6,7 +6,7 @@
 
 Issue #8（コンテンツの自動切替）は第10章に記す（PR #84で実装済み、2026-11-07）。Raspberry Piでの確認結果は[検証記録](verification/issue-8-content-rotation.md)を参照。
 
-Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（実装済み、Raspberry Piでの確認は未実施）。
+Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（実装済み、Raspberry Pi・実データで確認済み）。
 
 ## 1. 位置付けと関連文書
 
@@ -313,7 +313,7 @@ UI設計に記載のない動作は、UIモック（[ui-mock/signage-mock.html](
 
 ## 11. 予定の表示（Issue #10）
 
-状態：実装済み（Issue #10のPR4）。Raspberry Pi・実データでの確認は未実施で、Issue #10の検証記録で扱う。Backend側の設計は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)、画面仕様は[UI設計 5.1・第6章](ui-design.md#51-今日の予定)を正本とする。本章はFrontendの実装方針のみを記す。
+状態：実装済み（Issue #10のPR4）。Raspberry Pi・実データでの確認結果と、確認していない事項は[Issue #10の検証記録](verification/issue-10-schedule.md)に記す。Backend側の設計は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)、画面仕様は[UI設計 5.1・第6章](ui-design.md#51-今日の予定)を正本とする。本章はFrontendの実装方針のみを記す。
 
 ### 11.1 範囲
 
@@ -410,5 +410,5 @@ UI設計 6.5の判定を次の優先順で行う。
 - 既存の`tests/frontend/smoke.test.ts`は`App()`を関数として直接呼んでいたが、`App`がHookを使うようになったため、要素を作って確かめる形に変えた。
 - Pollingの5秒Timeoutは、通信の中止（物理）と、そのRequestを失敗として終えること（論理）を分けた。中止後も通信が終わらない場合でも次のPollingへ進み、遅れて届いた結果は採用しない（PR #91のレビュー対応）。
 - 日時の検証はBackendの表示用APIと同じ規則（UTC、実在する日付、時刻の範囲）を`published-state/utc-instant.ts`に持つ。予定の`startAt`・`endAt`は、Backendが出力する`toISOString()`の形だけを有効とする。
-- 件数の集約で省くのは「次の予定」より後の予定だけで、3件目以降の進行中は省かない。進行中だけで収まらない場合は、パネルの下端で切れる（実機で件数を確認する）。
-- 開発PCのBrowserで、検証画面の各パターン（通常・多件の集約と`ほか N件`・日付またぎ・同時刻・更新待ち・取得中の1枚表示）を目視で確認した。行の高さの目安は控えめで、多件の例では下に1〜2行分の余白が残る。実機で調整する。
+- 件数の集約で省くのは「次の予定」より後の予定だけで、3件目以降の進行中は省かない。進行中だけで収まらない場合は、パネルの下端で切れる。この場合は実機・実データで確認していない（[Issue #10の検証記録](verification/issue-10-schedule.md)「確認していないこと」）。
+- 開発PCのBrowserで、検証画面の各パターン（通常・多件の集約と`ほか N件`・日付またぎ・同時刻・更新待ち・取得中の1枚表示）を目視で確認した。行の高さの目安は控えめで、多件の例では下に1〜2行分の余白が残る。Raspberry Piの画面（1280×800、合成データ）で多件の表示にはみ出しがないことを確認し、値は変更していない（検証記録 E1・E2）。

@@ -68,9 +68,9 @@ Windows等ではPOSIX mode / UIDの検証を行わない。リンク・通常フ
 
 LoaderはJSON Objectであることまで確認する。欠損・構文不正・Permission不正などは分類済みの固定Errorを返し、本文・パス・元例外を含めない。Provider固有Schema・認証確認・Domain単位の障害分離は後続実装であり、今回のLoader成功だけで認証可能とは扱わない。
 
-## Schedule Service（Issue #10、実装済み・実機未検証）
+## Schedule Service（Issue #10、実装済み・実機確認済み）
 
-設計の正本は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)。共通基盤の拡張はPR #88、Google Calendar Providerは`src/backend/schedule/`（`jst.ts`・`google-auth.ts`・`google-calendar.ts`・`schedule-data.ts`・`provider.ts`・`setup.ts`）。本節はConfig・Secretの配置、ログ、開発・テストの手順を記す。Raspberry Pi・実APIでの確認は未実施（Issue #10の検証記録で扱う）。
+設計の正本は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)。共通基盤の拡張はPR #88、Google Calendar Providerは`src/backend/schedule/`（`jst.ts`・`google-auth.ts`・`google-calendar.ts`・`schedule-data.ts`・`provider.ts`・`setup.ts`）。本節はConfig・Secretの配置、ログ、開発・テストの手順を記す。Raspberry Pi・実APIでの確認結果（2026-11-08）と、確認していない事項は[Issue #10の検証記録](verification/issue-10-schedule.md)に記す。
 
 ### Config・Secret
 
@@ -118,7 +118,7 @@ Shutdownで中止した取得は記録しない。
 
    - Loaderは、ディレクトリ0700・ファイル0600・所有者が実行ユーザーであること、シンボリックリンクがないことを検査する。条件を満たさないと`schedule_provider_disabled`（`permission`・`unsafe_path`）になる。
    - 配置後、Development PCのダウンロード先の鍵は削除する（必要になれば鍵を作り直す）。鍵の内容をチャット・Issue・PRに貼らない。
-   - 変更はBackend再起動で反映する。Piでの起動・確認の手順はIssue #10の検証で示す（systemdでの常駐は#12）。
+   - 変更はBackend再起動で反映する。Piでの起動・確認の結果は[Issue #10の検証記録](verification/issue-10-schedule.md)に記す（systemdでの常駐は#12）。
 
 ### テスト
 
