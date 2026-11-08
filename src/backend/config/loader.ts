@@ -7,6 +7,7 @@ const names = new Set([
   "SIGNAGE_BACKEND_PORT",
   "SIGNAGE_LOG_LEVEL",
   "SIGNAGE_SHUTDOWN_TIMEOUT_MS",
+  "SIGNAGE_SCHEDULE_CALENDAR_ID",
 ]);
 
 export class ConfigError extends Error {
@@ -36,6 +37,9 @@ export function loadConfig(env: Readonly<NodeJS.ProcessEnv>): BackendConfig {
     port: integer(env.SIGNAGE_BACKEND_PORT ?? "3000"),
     logLevel: env.SIGNAGE_LOG_LEVEL ?? "info",
     shutdownTimeoutMs: integer(env.SIGNAGE_SHUTDOWN_TIMEOUT_MS ?? "10000"),
+    ...(env.SIGNAGE_SCHEDULE_CALENDAR_ID === undefined
+      ? {}
+      : { scheduleCalendarId: env.SIGNAGE_SCHEDULE_CALENDAR_ID }),
   };
   if (!Value.Check(BackendConfigSchema, candidate)) throw new ConfigError();
   return Object.freeze(candidate);

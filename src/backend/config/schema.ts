@@ -17,6 +17,12 @@ export const BackendConfigSchema = Type.Object(
     port: Type.Integer({ minimum: 1, maximum: 65535 }),
     logLevel: LogLevelSchema,
     shutdownTimeoutMs: Type.Literal(10000),
+    /** Google Calendar ID (Issue #10). Unset: no Schedule Provider. Printable
+     * ASCII without spaces; an empty or other value is an invalid Config.
+     */
+    scheduleCalendarId: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 1024, pattern: "^[!-~]+$" }),
+    ),
   },
   { additionalProperties: false },
 );

@@ -12,6 +12,13 @@ describe("backend config", () => {
     });
     expect(Object.isFrozen(loadConfig({}))).toBe(true);
   });
+  test("Schedule Calendar ID is optional and kept as given (Issue #10)", () => {
+    expect(loadConfig({})).not.toHaveProperty("scheduleCalendarId");
+    expect(
+      loadConfig({ SIGNAGE_SCHEDULE_CALENDAR_ID: "abc123@group.example.test" })
+        .scheduleCalendarId,
+    ).toBe("abc123@group.example.test");
+  });
   test.each(["1", "65535", "4321"])("accepts port %s", (port) =>
     expect(loadConfig({ SIGNAGE_BACKEND_PORT: port }).port).toBe(Number(port)),
   );
@@ -46,6 +53,9 @@ describe("backend config", () => {
     { SIGNAGE_SHUTDOWN_TIMEOUT_MS: "9999" },
     { SIGNAGE_SHUTDOWN_TIMEOUT_MS: "10.5" },
     { SIGNAGE_UNKNOWN: "credential-marker" },
+    { SIGNAGE_SCHEDULE_CALENDAR_ID: "" },
+    { SIGNAGE_SCHEDULE_CALENDAR_ID: "has space-marker" },
+    { SIGNAGE_SCHEDULE_CALENDAR_ID: "x".repeat(1025) + "marker" },
   ])("rejects invalid config without exposing input: %j", (env) => {
     expect(() => loadConfig(env)).toThrow("Invalid backend configuration");
     try {
