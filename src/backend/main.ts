@@ -24,6 +24,7 @@ import {
   type StateProvider,
 } from "./acquisition/coordinator.js";
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
+import { scheduleProvider } from "./schedule/setup.js";
 import type { StartupResult } from "./storage/startup-transaction.js";
 import {
   classifyDatabaseError,
@@ -89,7 +90,7 @@ export async function startBackend(
   let send: RuntimeSend | null = null;
   let scheduler: StateScheduler | null = null;
   let coordinator: StateAcquisitionCoordinator | null = null;
-  const providers = options.providers ?? PRODUCTION_PROVIDERS;
+  let providers = options.providers ?? PRODUCTION_PROVIDERS;
   let finishInitialization!: () => void;
   const initialized = new Promise<void>((resolve) => {
     finishInitialization = resolve;
@@ -136,6 +137,12 @@ export async function startBackend(
   let stage = "database_initialization_failed";
   try {
     try {
+      // Schedule Service (Issue #10): Config / Secret read once at startup.
+      // Unset or unusable: not registered; the Backend still starts.
+      if (!options.providers) {
+        const schedule = await scheduleProvider(config, logger);
+        if (schedule) providers = [...providers, schedule];
+      }
       logger.info({ event: "database_initializing" }, "Initializing database");
       await yieldToSignals();
       if (!shutdown.requested) {

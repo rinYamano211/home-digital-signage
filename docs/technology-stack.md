@@ -1705,9 +1705,9 @@ Provider未登録でも、保存済みのSnapshotは表示用APIから返り、1
 | 種別 | 分類コード |
 |---|---|
 | Provider無効化 | `calendar_id_unset`、Secret Loaderの分類（`missing`・`permission`・`unsafe_path`・`invalid_json`・`invalid_object`・`read_failed`）、`invalid_credentials` |
-| 取得失敗 | `auth_failed`（Token取得の失敗、Calendar APIの401）、`forbidden`（403）、`rate_limited`（429）、`server_error`（5xx）、`network_error`、`timeout`、`invalid_response`（応答・正規化・Validationの失敗、ページ数上限超過） |
+| 取得失敗 | `auth_failed`（Token取得の失敗、Calendar APIの401）、`forbidden`（403・404）、`rate_limited`（429）、`server_error`（5xx）、`http_error`（その他のHTTPステータス）、`network_error`、`timeout`、`invalid_response`（応答・正規化・Validationの失敗、ページ数上限超過）、`clock_moved_back`（取得中に時計が戻った） |
 
-Event名は実装時に既存の命名（`scheduler_held`等）に合わせて決め、[Backend開発手順](backend-development.md)へ記録する。
+Event名は[Backend開発手順](backend-development.md)の「Schedule Service／ログ」に記録した（PR3で`http_error`・`clock_moved_back`を追加）。
 
 #### dataSourceと更新待ち
 
@@ -1734,8 +1734,8 @@ Frontendの「更新待ち」は`data !== null && lastAttemptResult === "failure
 
 | 区分 | 範囲 |
 |---|---|
-| Windows | Frontend単体テスト、SQLiteを使わないBackend単体テスト（認証・URL・ページング・正規化・Validation・ログ）、検証画面の目視 |
-| Linux CI | SQLiteを使うテスト（Coordinator・Scheduler・統合）、Shutdown経路、Shutdown Timeout時の異常終了 |
+| Windows | Frontend単体テスト、Backendのテスト（better-sqlite3 13の同梱バイナリにより、SQLiteを使うCoordinator・Scheduler・Shutdown経路も実行できる。PR #88で確認）、検証画面の目視 |
+| Linux CI | 全テスト。Linux専用のテスト（mode・Signal等）を含む |
 | Raspberry Pi・実API | BackendのAPIを`curl`で確認、PCのVite開発サーバーからSSHのポート転送でPiの実データを表示、Piで合成データの検証画面（nginxでの配信は#12） |
 
 JST 0時の境界はFake Timer等の自動テストで確認し、Piのシステム時計は変更しない（Clock Trust・RTCへ影響するため）。実機では実際の0時を観察する。時刻未同期・時計の巻き戻り・飛び越しでの表示は#65・#13の範囲として未検証と記録する。

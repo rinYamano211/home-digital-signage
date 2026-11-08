@@ -17,6 +17,9 @@ import {
   type StateProvider,
 } from "../../src/backend/acquisition/coordinator.js";
 import type { HttpOutcome } from "../../src/backend/http/outcome.js";
+import { generateKeyPairSync } from "node:crypto";
+import { serviceAccount } from "../../src/backend/schedule/google-auth.js";
+import { createScheduleProvider } from "../../src/backend/schedule/provider.js";
 import { StateScheduler } from "../../src/backend/scheduler/state-scheduler.js";
 import { createRuntimeSend } from "../../src/backend/send/provider-send-gate.js";
 import { readPublishedStates } from "../../src/backend/published-state-api.js";
@@ -865,4 +868,69 @@ test("an unproven end does not affect another State", async () => {
   expect(control(db, "weeklyWeather")).toMatchObject({
     consecutiveFailures: 0,
   });
+});
+
+// ---- Issue #10: the Google Calendar Provider through the real Coordinator ----
+test("Schedule Provider end to end: Tx-A / Tx-P and the Published State API", async () => {
+  const { db, runtime } = committed();
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const account = serviceAccount({
+    type: "service_account",
+    client_email: "signage-test@synthetic.example.test",
+    private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
+  })!;
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+  fetchMock.mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.startsWith("https://oauth2.googleapis.com/token"))
+      return Response.json({ access_token: "synthetic", expires_in: 3600 });
+    return Response.json({
+      items: [
+        {
+          id: "e1",
+          summary: "Synthetic",
+          start: { dateTime: "2026-11-05T10:00:00+09:00" },
+          end: { dateTime: "2026-11-05T11:00:00+09:00" },
+        },
+      ],
+    });
+  });
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    createScheduleProvider({
+      calendarId: "synthetic@example.test",
+      account,
+      logger: logger as never,
+    }),
+  ]);
+  const start = wall; // 2026-11-05 09:00 JST
+  await c.runOnce("schedule");
+  expect(control(db, "schedule")).toEqual({
+    consecutiveFailures: 0,
+    nextAttemptAt: iso(start + 600_000),
+  });
+  expect(states(runtime).schedule).toEqual({
+    data: {
+      date: "2026-11-05",
+      events: [
+        {
+          id: "e1",
+          title: "Synthetic",
+          allDay: false,
+          startAt: "2026-11-05T01:00:00.000Z",
+          endAt: "2026-11-05T02:00:00.000Z",
+        },
+      ],
+    },
+    meta: {
+      dataUpdatedAt: iso(start),
+      expiresAt: iso(start + 6 * 3_600_000),
+      lastAttemptAt: iso(start),
+      lastAttemptResult: "success",
+      publishedAt: iso(start),
+      dataSource: "externalApi",
+    },
+  });
+  // Next JST day: the API hides the old date even within the TTL (10.8).
+  move(15 * 3_600_000);
+  expect(states(runtime).schedule).toMatchObject({ data: null });
 });

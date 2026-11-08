@@ -68,9 +68,9 @@ Windows等ではPOSIX mode / UIDの検証を行わない。リンク・通常フ
 
 LoaderはJSON Objectであることまで確認する。欠損・構文不正・Permission不正などは分類済みの固定Errorを返し、本文・パス・元例外を含めない。Provider固有Schema・認証確認・Domain単位の障害分離は後続実装であり、今回のLoader成功だけで認証可能とは扱わない。
 
-## Schedule Service（Issue #10、設計確定・未実装）
+## Schedule Service（Issue #10、実装済み・実機未検証）
 
-設計の正本は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)。本節はConfig・Secretの配置と開発・テストの手順だけを記す。実装（PR2・PR3）時に、確定したEvent名・コマンドを追記する。
+設計の正本は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)。共通基盤の拡張はPR #88、Google Calendar Providerは`src/backend/schedule/`（`jst.ts`・`google-auth.ts`・`google-calendar.ts`・`schedule-data.ts`・`provider.ts`・`setup.ts`）。本節はConfig・Secretの配置、ログ、開発・テストの手順を記す。Raspberry Pi・実APIでの確認は未実施（Issue #10の検証記録で扱う）。
 
 ### Config・Secret
 
@@ -82,17 +82,49 @@ LoaderはJSON Objectであることまで確認する。欠損・構文不正・
 - カレンダーIDは鍵がなければ利用できない識別子のため一般Configとするが、Git・Issue・PR・ログには書かない。`config/backend.env.example`には値を書かない。
 - Secretの読込失敗・鍵の不正ではSchedule Providerだけを無効にし、他のStateとBackendの起動は止めない。変更はBackend再起動で反映する。
 - 鍵・トークン・カレンダーID・Secretのパスはログに出さない。
+- カレンダーIDの形式は、空白を含まない表示可能なASCII（1〜1024文字）。それ以外は不正Configとして起動しない。
+
+### ログ
+
+固定のEvent名と分類コードだけを記録する（技術スタック選定 18.7）。
+
+| Event                         | レベル                       | 項目                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `schedule_provider_enabled`   | info                         | なし                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `schedule_provider_disabled`  | 未設定はinfo、それ以外はwarn | `reason`：`calendar_id_unset`、Secret Loaderの分類（`missing`・`permission`・`unsafe_path`・`invalid_json`・`invalid_object`・`read_failed`）、`invalid_credentials`                                                                                                                                                                                                                                   |
+| `schedule_acquisition_failed` | warn                         | `reason`：`auth_failed`（Token取得の失敗、Calendar APIの401）、`forbidden`（403・404。共有されていない等）、`rate_limited`（429）、`server_error`（5xx）、`http_error`（その他のHTTPステータス）、`network_error`、`timeout`、`invalid_response`（応答・正規化・Validationの失敗、ページ数上限超過）、`clock_moved_back`（取得中に時計が戻り日付が前日になった）。`httpStatus`（HTTP応答があった場合） |
+| `schedule_result_discarded`   | info                         | `reason`：`date_rolled_over`（取得中に日付が変わった結果を破棄）                                                                                                                                                                                                                                                                                                                                       |
+| `schedule_acquired`           | debug                        | `pages`・`events`（件数）                                                                                                                                                                                                                                                                                                                                                                              |
+
+Shutdownで中止した取得は記録しない。
 
 ### ユーザーが行う準備（AIは鍵を扱わない）
 
 1. Google Cloud：Google Calendar APIの有効化を確認する。Service Accountに、Raspberry Pi用の新しいJSON鍵を作る。検証用の古い鍵が不要なら削除する。
 2. Googleカレンダー：サイネージ専用の非公開カレンダーを、Service Accountのメールアドレスへ「予定の表示（すべての予定の詳細）」（reader）で共有する。カレンダーIDを控える。
-3. Raspberry Pi：鍵を`schedule.json`として上記の権限・所有者（Backend実行ユーザー）で配置し、転送に使った一時コピーを削除する。`backend.env`にカレンダーIDを書く。具体的なコマンドはPR3で示す。
+3. Raspberry Pi：鍵を`schedule.json`として、上記の権限・所有者（Backend実行ユーザー）で配置する。`<user>`はBackendを実行するユーザー、`<pi-host>`はPiのホスト名に置き換える。
+
+   ```sh
+   # Development PC：ダウンロードした鍵をPiのホームへ一時的に転送する
+   scp <ダウンロードした鍵>.json <user>@<pi-host>:~/schedule-key.json
+
+   # Raspberry Pi
+   sudo install -d -m 0755 /etc/home-digital-signage   # root所有の親。既にある場合はこの行を省く
+   sudo install -d -m 0700 -o <user> -g <user> /etc/home-digital-signage/secrets
+   sudo install -m 0600 -o <user> -g <user> ~/schedule-key.json /etc/home-digital-signage/secrets/schedule.json
+   shred -u ~/schedule-key.json
+   sudoedit /etc/home-digital-signage/backend.env   # SIGNAGE_SCHEDULE_CALENDAR_ID=<カレンダーID> を追記
+   ```
+
+   - Loaderは、ディレクトリ0700・ファイル0600・所有者が実行ユーザーであること、シンボリックリンクがないことを検査する。条件を満たさないと`schedule_provider_disabled`（`permission`・`unsafe_path`）になる。
+   - 配置後、Development PCのダウンロード先の鍵は削除する（必要になれば鍵を作り直す）。鍵の内容をチャット・Issue・PRに貼らない。
+   - 変更はBackend再起動で反映する。Piでの起動・確認の手順はIssue #10の検証で示す（systemdでの常駐は#12）。
 
 ### テスト
 
 - 外部API・実鍵は使わない。Google応答は合成データ、鍵はテスト内で生成したRSA鍵を使う。
-- SQLiteを使わないテスト（認証・URL・ページング・正規化・Validation・ログ）はWindowsでも実行できる。Coordinator・Scheduler・Shutdown経路はLinux CIで確認する（Windowsでは`npm ci --ignore-scripts`のためbetter-sqlite3が使えない）。
+- テスト：`schedule-domain`（JST・URL・正規化・Domain Validation）、`schedule-provider`（認証・Token Cache・ページング・失敗の分類・破棄・ログ非露出・起動時の登録判断）、`schedule-startup`（起動時の配線。`loadSecret`はMockし、実際のSecretディレクトリは読まない）、`coordinator`（実Coordinator・SQLiteとの結合）。
+- better-sqlite3 13はWindows用のバイナリを同梱しているため、`npm ci --ignore-scripts`のWindowsでもSQLiteを使うテストを実行できる（PR #88で確認）。Linux専用のテスト（mode・Signal等）はLinux CIで確認する。
 
 ## Logging・テスト
 
