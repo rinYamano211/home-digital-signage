@@ -6,7 +6,7 @@
 
 Issue #8（コンテンツの自動切替）は第10章に記す（PR #84で実装済み、2026-11-07）。Raspberry Piでの確認結果は[検証記録](verification/issue-8-content-rotation.md)を参照。
 
-Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（設計確定・未実装）。
+Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（実装済み、Raspberry Piでの確認は未実施）。
 
 ## 1. 位置付けと関連文書
 
@@ -26,8 +26,8 @@ Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（�
 src/frontend/            Frontendのソース。Viteのrootとし、index.htmlを置く
   clock/                 時計の整形・更新規則・利用可否・時計タイル
   content/               コンテンツの定義・切替のロジック・表示時間の設定・インジケーター（Issue #8、第10章）
-  published-state/       表示用APIのPolling・Published Stateの検証（Issue #10、第11章。未実装）
-  schedule/              予定のComponent State・並び順・件数の集約・予定パネル（Issue #10、第11章。未実装）
+  published-state/       表示用APIのPolling・Published Stateの検証（Issue #10、第11章）
+  schedule/              予定のComponent State・並び順・件数の集約・予定パネル（Issue #10、第11章）
   layout/                1280×800の画面と比例縮小
   icons/                 同梱するSVGアイコン
   styles/                CSS変数・フォントの読み込み
@@ -313,7 +313,7 @@ UI設計に記載のない動作は、UIモック（[ui-mock/signage-mock.html](
 
 ## 11. 予定の表示（Issue #10）
 
-状態：設計確定・未実装（PR4で実装する）。Backend側の設計は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)、画面仕様は[UI設計 5.1・第6章](ui-design.md#51-今日の予定)を正本とする。本章はFrontendの実装方針のみを記す。
+状態：実装済み（Issue #10のPR4）。Raspberry Pi・実データでの確認は未実施で、Issue #10の検証記録で扱う。Backend側の設計は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)、画面仕様は[UI設計 5.1・第6章](ui-design.md#51-今日の予定)を正本とする。本章はFrontendの実装方針のみを記す。
 
 ### 11.1 範囲
 
@@ -399,3 +399,16 @@ UI設計 6.5の判定を次の優先順で行う。
 - 検証画面：予定の合成データ（多件・進行中・次の予定・日付またぎ・前日から継続・終日・同時刻・長いタイトル・タイトルなし・予定なし・取得中・取得できません・更新待ち）と、Pollingの状態（最初の応答待ち・一度も取得できない）を切り替えられるようにする。キー割り当ては実装時に決めて本章へ記録する。
 - 単体テスト（Vitest、Fake Timer）：Polling（間隔・Timeout・同時1件・失敗時の保持・省略Stateの削除）、外枠・予定の検証、11.4の各状態、日付の照合・期限切れ、並び順の安定性、表記、件数の集約、11.6の優先順。
 - Raspberry Pi：合成データの検証画面を、第7章と同じ一時HTTPサーバーとChromium Kioskで確認する。実データの画面表示はPCのBrowser（上記のポート転送）で確認する。結果は`docs/verification/`へ記録する。
+
+### 11.8 実装時に確定した事項
+
+- ファイル構成：通信は`published-state/`（`schema.ts`：外枠・State共通部分の検証とDomain検証の呼び出し、`polling.ts`：Polling、`usePublishedStates.ts`：Reactへの接続と1分ごとの時刻）。予定は`schedule/`（`schedule-data.ts`：Domain Dataの検証、`schedule-state.ts`：表示状態・並び順・表記、`fit.ts`：件数の集約、`layout-config.ts`：行の高さの目安、`SchedulePanel.tsx`：描画）。巡回の入力は`signage-model.ts`（11.6の優先順）で導く。
+- Registryの`render`は、Component State（`ContentContext`）を引数に受け取る形にした。天気の仮パネルは引数を使わない。
+- Pollingの結果（`PollingSnapshot`）は、状態（`waiting`・`received`・`neverReceived`）、最後に正常取得した`states`、作成時刻を持つ。表示はResponseの更新時と1分ごとに、その時点の時刻で再評価する。
+- 「取得しています」の砂時計アイコンは、このプロジェクトで描いたSVG（`icons/HourglassIcon.tsx`）。
+- 検証画面のキー：Sキーで予定の合成データ、PキーでPollingの状態を切り替える（Space・1・2・3は10.7のまま。1・2・3は「巡回から外す」として働く）。合成データは`verify/schedule-scenarios.ts`。
+- 既存の`tests/frontend/smoke.test.ts`は`App()`を関数として直接呼んでいたが、`App`がHookを使うようになったため、要素を作って確かめる形に変えた。
+- Pollingの5秒Timeoutは、通信の中止（物理）と、そのRequestを失敗として終えること（論理）を分けた。中止後も通信が終わらない場合でも次のPollingへ進み、遅れて届いた結果は採用しない（PR #91のレビュー対応）。
+- 日時の検証はBackendの表示用APIと同じ規則（UTC、実在する日付、時刻の範囲）を`published-state/utc-instant.ts`に持つ。予定の`startAt`・`endAt`は、Backendが出力する`toISOString()`の形だけを有効とする。
+- 件数の集約で省くのは「次の予定」より後の予定だけで、3件目以降の進行中は省かない。進行中だけで収まらない場合は、パネルの下端で切れる（実機で件数を確認する）。
+- 開発PCのBrowserで、検証画面の各パターン（通常・多件の集約と`ほか N件`・日付またぎ・同時刻・更新待ち・取得中の1枚表示）を目視で確認した。行の高さの目安は控えめで、多件の例では下に1〜2行分の余白が残る。実機で調整する。

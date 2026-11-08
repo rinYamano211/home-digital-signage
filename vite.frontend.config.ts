@@ -19,5 +19,11 @@ export default defineConfig(({ mode }) => {
       outDir: resolve(verify ? "./dist/frontend-verify" : "./dist/frontend"),
       emptyOutDir: true,
     },
+    // 開発サーバーだけの設定（Build成果物には含まれない）。表示用APIを同一Originで
+    // 使うため、`/api`をBackend（127.0.0.1:3000）へ転送する。Raspberry PiのBackendには
+    // SSHのポート転送でつなぐ（docs/frontend-development.md 11.7）。
+    server: {
+      proxy: { "/api": "http://127.0.0.1:3000" },
+    },
   };
 });
