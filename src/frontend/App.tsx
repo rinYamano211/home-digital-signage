@@ -1,13 +1,24 @@
-import { CONTENTS } from "./content/registry";
+import {
+  useMinuteNow,
+  usePublishedStates,
+} from "./published-state/usePublishedStates";
+import { signageModel } from "./signage-model";
 import { SignageScreen } from "./SignageScreen";
 
-// #9・#10が入るまでは、すべての仮パネルを表示できるものとして扱う（docs/frontend-development.md 10.7）。
-const ALL_DISPLAYABLE: ReadonlySet<string> = new Set(
-  CONTENTS.map((content) => content.id),
-);
-
-// 通常画面。正式な時刻利用可否の判定（Issue #65）がまだないため、`available`を固定で渡す
-// （docs/frontend-development.md 5.3）。検証専用のコードはここからimportしない。
+// 通常画面。表示用APIをPollingし、予定を表示する（docs/frontend-development.md 第11章）。
+// 正式な時刻利用可否の判定（Issue #65）がまだないため、時刻は`available`を固定で渡す（5.3）。
+// 検証専用のコードはここからimportしない。
 export function App() {
-  return <SignageScreen time="available" displayable={ALL_DISPLAYABLE} />;
+  const snapshot = usePublishedStates();
+  const tick = useMinuteNow();
+  // 1分ごと、およびResponseの更新時に、その時点の時刻で再評価する（11.4）。
+  const model = signageModel(snapshot, Math.max(tick, snapshot.at));
+  return (
+    <SignageScreen
+      time="available"
+      displayable={model.displayable}
+      notice={model.notice}
+      context={{ schedule: model.schedule }}
+    />
+  );
 }

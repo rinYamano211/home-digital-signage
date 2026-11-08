@@ -10,6 +10,9 @@
   --color-unavailable-icon: #4a4752;
   /* 取得できない旨の文字。UIモック（docs/ui-mock/signage-mock.html）の値。 */
   --color-text-unavailable: #8d877e;
+  /* 「更新待ち」の札（UIモックの値、UI設計 6.1） */
+  --color-stale: #e3b874;
+  --color-stale-bg: #332d25;
 
   --screen-gap: 16px;
   --tile-radius: 24px;
@@ -236,4 +239,128 @@ body {
 
 .notice-note {
   font-size: 24px;
+}
+
+/* 今日の予定（UI設計 5.1）。行の高さはschedule/layout-config.tsの値と合わせる。 */
+.schedule-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
+  overflow: hidden;
+}
+
+.schedule-panel > * {
+  flex-shrink: 0;
+}
+
+.schedule-panel.has-badge {
+  padding-top: 60px;
+}
+
+.schedule-message {
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  color: var(--color-text-sub);
+}
+
+.schedule-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.schedule-chip {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 4px 20px;
+  border-radius: 16px;
+  background: var(--color-tile-strong);
+  font-size: 24px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.schedule-row {
+  display: flex;
+  min-width: 0;
+  font-size: 28px;
+  line-height: 1.85;
+}
+
+.schedule-time {
+  flex: 0 0 96px;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.schedule-row.is-ended {
+  color: var(--color-text-faint);
+  font-size: 24px;
+}
+
+.schedule-big {
+  margin: 10px 0;
+  padding: 2px 0 2px 20px;
+  border-left: 8px solid var(--color-accent);
+}
+
+.schedule-big.is-next {
+  border-left-color: var(--color-text-sub);
+}
+
+.schedule-big-label {
+  font-size: 22px;
+  color: var(--color-accent);
+}
+
+.schedule-big.is-next .schedule-big-label {
+  color: var(--color-text-sub);
+}
+
+.schedule-big .schedule-row {
+  font-size: 38px;
+  line-height: 1.4;
+}
+
+.schedule-big .schedule-time {
+  flex-basis: 124px;
+}
+
+.schedule-summary {
+  overflow: hidden;
+  border-bottom: 2px dashed var(--color-tile-strong);
+  color: var(--color-text-faint);
+  font-size: 24px;
+  line-height: 1.85;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.schedule-more {
+  margin-top: 6px;
+  color: var(--color-text-sub);
+  font-size: 24px;
+}
+
+/* 取得失敗＋有効なデータの札（UI設計 6.1）。色はUIモックの値。 */
+.stale-badge {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 2;
+  padding: 3px 14px;
+  border-radius: 14px;
+  background: var(--color-stale-bg);
+  color: var(--color-stale);
+  font-size: 22px;
+  white-space: nowrap;
 }
