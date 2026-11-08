@@ -64,7 +64,7 @@ Linuxでは上記modeと実行UIDの一致を検査する。Linuxの`/proc/self/
 
 Windows等ではPOSIX mode / UIDの検証を行わない。リンク・通常ファイル・読込前後の同一性を確認するが、ACLやLinuxと同等の競合防御は保証しない。開発用の合成データに限って使用し、本番の権限確認はLinuxで行う。
 
-`loadSecret("weather")`または`loadSecret("schedule")`を、それぞれ必要なDomainの初期化から呼び出す。片方を読むために他方は不要で、PR-Aの起動処理はどちらも呼び出さない。テスト用に専用ディレクトリを渡せるが、ファイル名はDomainの固定対応である。
+`loadSecret("weather")`または`loadSecret("schedule")`を、それぞれ必要なDomainの初期化から呼び出す（`weather.json`はTomorrow.ioのAPIキー用で、[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で使う。Open-MeteoはSecretを使わない）。片方を読むために他方は不要で、PR-Aの起動処理はどちらも呼び出さない。テスト用に専用ディレクトリを渡せるが、ファイル名はDomainの固定対応である。
 
 LoaderはJSON Objectであることまで確認する。欠損・構文不正・Permission不正などは分類済みの固定Errorを返し、本文・パス・元例外を含めない。Provider固有Schema・認証確認・Domain単位の障害分離は後続実装であり、今回のLoader成功だけで認証可能とは扱わない。
 
@@ -125,6 +125,46 @@ Shutdownで中止した取得は記録しない。
 - 外部API・実鍵は使わない。Google応答は合成データ、鍵はテスト内で生成したRSA鍵を使う。
 - テスト：`schedule-domain`（JST・URL・正規化・Domain Validation）、`schedule-provider`（認証・Token Cache・ページング・失敗の分類・破棄・ログ非露出・起動時の登録判断）、`schedule-startup`（起動時の配線。`loadSecret`はMockし、実際のSecretディレクトリは読まない）、`coordinator`（実Coordinator・SQLiteとの結合）。
 - better-sqlite3 13はWindows用のバイナリを同梱しているため、`npm ci --ignore-scripts`のWindowsでもSQLiteを使うテストを実行できる（PR #88で確認）。Linux専用のテスト（mode・Signal等）はLinux CIで確認する。
+
+## Weather Service（Issue #9、設計確定・未実装）
+
+設計の正本は[技術スタック選定 16.6](technology-stack.md#weather-issue-9-design)。対象はOpen-MeteoのCurrentWeather・HourlyWeather・WeeklyWeather。RainForecast（Tomorrow.io、`weather.json`のSecret）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で扱う。本節はConfig、ログ、ユーザーが行う準備、テストの方針を記す。実装は`src/backend/weather/`に置く予定（PR2）。
+
+### Config
+
+| 項目                        | 配置                                    | 備考                                                                              |
+| --------------------------- | --------------------------------------- | --------------------------------------------------------------------------------- |
+| `SIGNAGE_WEATHER_LATITUDE`  | `/etc/home-digital-signage/backend.env` | 緯度（−90〜90）。経度と両方未設定ならWeather Providerを登録しない                 |
+| `SIGNAGE_WEATHER_LONGITUDE` | `/etc/home-digital-signage/backend.env` | 経度（−180〜180）。片方だけの設定・形式の不正・範囲外は不正Configとして起動しない |
+
+- 形式は10進の小数に限る（符号は`-`のみ、整数部1〜3桁、小数部は任意で1〜6桁）。指数表記・`Infinity`・`NaN`・前後の空白・`+`は拒否する。
+- 小数点以下2桁への丸めは、位置情報のプライバシーを守るための利用者の運用ルールとする。Config Validationは2桁への丸めを強制せず、小数部1〜6桁を許容する。Backendは自動で丸めない。
+- 自宅の位置のため、Git・Issue・PR・チャット・ログに書かない。`config/backend.env.example`には値を書かない。Open-MeteoはAPIキー不要で、Secretは使わない。
+- 変更はBackend再起動で反映する。
+
+### ログ
+
+固定のEvent名と分類コードだけを記録する（技術スタック選定 16.6）。地点・Request URL・Response Bodyは記録しない。
+
+| Event                        | レベル | 項目                                                                                                                                                                                                                                                                                       |
+| ---------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `weather_provider_enabled`   | info   | なし                                                                                                                                                                                                                                                                                       |
+| `weather_provider_disabled`  | info   | `reason`：`location_unset`                                                                                                                                                                                                                                                                 |
+| `weather_acquisition_failed` | warn   | `stateKey`、`reason`：`rate_limited`（429）、`server_error`（5xx）、`http_error`（その他のHTTPステータス。400を含む）、`network_error`、`timeout`、`invalid_response`（応答の構造・値・UTCオフセットの不正）、`stale_data`（鮮度外・必須範囲の不足）。`httpStatus`（HTTP応答があった場合） |
+| `weather_acquired`           | debug  | `stateKey`、件数                                                                                                                                                                                                                                                                           |
+
+Shutdownで中止した取得は記録しない。
+
+### ユーザーが行う準備
+
+1. Open-Meteoの利用条件（[規約](https://open-meteo.com/en/terms)・[ライセンス](https://open-meteo.com/en/licence)）を確認する。
+2. 対象地点の緯度・経度を決め、小数点以下2桁に丸める（運用ルール。Backendは丸めを検査しない）。
+3. Raspberry Piで`sudoedit /etc/home-digital-signage/backend.env`を実行し、`SIGNAGE_WEATHER_LATITUDE=<緯度>`・`SIGNAGE_WEATHER_LONGITUDE=<経度>`を追記する。Backend再起動で反映する。
+
+### テスト
+
+- 外部APIは使わない。Open-Meteoの応答は合成データ、地点はテスト用の値を使う。
+- 確認すること：URLの組み立て、Response Validation（配列・値・時刻・UTCオフセット）、2段階Validation（取得中の正時・0時、Fake Timer）、Currentの鮮度の境界（過去30分・未来5分）、失敗の分類と429のRetry-After、ログ・Published Stateに地点が出ないこと、Config（未設定・片方だけ・形式・範囲）、Coordinator・SQLiteとの結合。
 
 ## Logging・テスト
 

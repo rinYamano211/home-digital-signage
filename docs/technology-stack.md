@@ -1309,7 +1309,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Open-Meteoの追加・長期検証と商用利用時の利用条件再確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
-- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioのMVP運用設計方針と外部仕様の保証境界は第16章・23.11。
+- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Provider単位の詳細Backoff。Open-MeteoのRequestは共有しない（16.6で確定）。Tomorrow.ioのMVP運用設計方針と外部仕様の保証境界は第16章・23.11。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 個別Migration・単一EXの具体ScriptとFD番号・Timeout値・起動経路の迂回防止、Provisioning CLI、DB・Lockの具体Path・Permission・Symlink対策、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理は未決定（23.5）。Tx-P単体のCommit結果不明時照合は12.10で設計済みだが実装未完了であり、Crashをまたぐ完全識別は保証しない。
 - Cache不正時の物理削除。
@@ -1341,7 +1341,7 @@ Future機能を先行実装しない。Issue #4のClose前には文書・Issue�
 
 Open-Meteoを基本的な天気予報の取得候補、Tomorrow.ioを分単位降雨予報の取得候補とする。
 Open-Meteo currentの限定的な手動検証は19.7に記録する。第20・22章にも限定的な検証記録がある。長期安定性等の追加検証は未完了であり、将来の商用利用時は条件を再確認する。
-既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-Meteoの複数State取得Request共有方式は後続設計とする。
+既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-MeteoのRequestは共有せず、Stateごとに独立させる（16.6で確定、Issue #9）。
 
 R-03の分単位短時間降雨予測、雨の降り始め・降り終わりの見込みというMVP要件は維持する。1時間単位の予報を単に分換算したものは要件を満たす短時間降雨予測と扱わない。
 Frontendの30秒Pollingは変更しない。
@@ -1402,8 +1402,121 @@ Backend外で同一API Keyを利用するRequest数は、このBackendのSQLite�
 API停止中もCacheのTTL・有効CacheのFallback・Metadata・期限切れMaskを維持する。Quota不足やBackoffを理由に古いデータの期限を延長しない。
 Startupは外部取得完了を待たず保存Stateを復元してAPI提供を開始し、利用可能データは期限内に限って提供する。
 
-Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限は後続確認とし、429待機計算は23.3に従う。CurrentWeather Domain Dataの設計方針は第19章を参照する。
+詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限は後続確認とし、429待機計算は23.3に従う。CurrentWeather Domain Dataの設計方針は第19章を参照する。
 State単位の取得制御とProvider単位のRate Limitの区別はArchitecture 16.3に従う。
+Open-MeteoのRequestは共有せず、Stateごとに独立させる（16.6で確定、Issue #9）。
+
+<a id="weather-issue-9-design"></a>
+
+### 16.6 Issue #9 実装設計：Open-Meteo（設計確定・未実装）
+
+[Issue #9](https://github.com/rinYamano211/home-digital-signage/issues/9)の実装前に確定した設計である。対象はCurrentWeather・HourlyWeather・WeeklyWeatherの3つ。RainForecast（Tomorrow.io）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)に切り出した（MVPの表示要求のまま。#93が終わるまでの表示はUI設計 6.5）。第19〜22章のDomain Schema・Validation・周期・TTL、第10章のAPI契約、Architecture 16章の責務分担は変更しない。
+
+#### 責務と変更範囲
+
+| 対象 | 担当 |
+|---|---|
+| Weather Service（`src/backend/weather/`、新規） | Open-MeteoのURL組み立て、Response Validation、Domain変換、2段階Validation、Domain Schema / Semantic Validation |
+| Acquisition Coordinator・共通HTTP Adapter（既存） | 変更しない。周期・Backoff・Tx-A・Tx-P・Abort・Timeout・Body上限は既存のまま |
+| Frontend | 天気3StateのDomain検証、表示、巡回への参加（[Frontend開発手順 第12章](frontend-development.md#12-天気の表示issue-9)） |
+| #93 | RainForecast（Tomorrow.io、Send Gate経路のAbort、F-01の管理経路） |
+| #87 | 取得失敗時の`dataSource`。#9では修正しない |
+
+#### Provider Interface
+
+- 3つとも既存の複数HTTP型（`MultiHttpProvider.acquire`、18.7）を使う。HTTPは各試行で1回だけで、複数HTTP型を1回のHTTPで使ってよい。取得開始時刻（`startedAt`）を2段階Validationの基準にするため、単一HTTP型（`StateProvider.parse`）は使わない。`StateProvider`とCoordinatorのInterfaceは変更しない。
+- HTTPは`ctx.http()`（共通HTTP Adapter）で行う。Providerは、HTTPの後と採用の前に`ctx.signal.aborted`を確認する。Abortした試行は保存されない（18.7の既存動作）。
+- `nextPeriodMs`（JST 0時の再取得）は使わない。時間別・週間はFrontendが現在時刻で選び直す（20.5・22.5）ため、0時に空白ができない。取得中の正時・日付の変化は、採用直前の再検証で扱う（20.2・22.4）。Scheduleの「破棄」は使わず、再検証で不足なら失敗とする。
+
+#### Request
+
+Stateごとに独立したRequestとし、共有しない（従来15.3・16.1・16.5で後続確認とされていた事項を確定）。State単位の周期・Backoff・保存（Architecture 16.3）と合わせるため。Request共有のためのCoordinator変更や共通Cacheの追加はしない。
+
+| 項目 | CurrentWeather | HourlyWeather | WeeklyWeather |
+|---|---|---|---|
+| URL | `https://api.open-meteo.com/v1/forecast` | 同左 | 同左 |
+| 共通パラメータ | `latitude`・`longitude`（Config）、`timezone=Asia/Tokyo` | 同左 | 同左 |
+| 固有パラメータ | `current=temperature_2m,weather_code,is_day` | `hourly=temperature_2m,weather_code,precipitation_probability`、`forecast_days=3` | `daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max`、`forecast_days=9`（22.1） |
+| 取得周期・TTL | 15分・2時間（19.4） | 30分・2時間（20.1） | 6時間・12時間（22.1） |
+
+- 定期取得は約148回/日（96＋48＋4。Backoff・再起動による追加は含まない）。Open-Meteoの無料APIの制限（2026-11-08に[公式](https://open-meteo.com/en/terms)で確認：600回/分・5,000回/時・10,000回/日・300,000回/月）に対して十分小さい。
+- `forecast_days=3`は今日のJST 00:00から72時間を返す。23時台の開始でも、次の正時から36枠を確保できる。`forecast_hours`（Open-Meteo側の現在の時から数える）は、正時の前後でサーバーの時計とずれると必要な枠が欠けるため使わない。
+- 有効期限は取得完了時刻＋TTL（Scheduleと同じ）。
+- Body上限は既存の1MiB。Open-Meteoの応答に含まれる格子点の`latitude`・`longitude`等は読まず、Domain Data・ログに入れない。
+
+#### 時刻・Validation
+
+第19〜22章のValidation（配列の存在・型・要素数、null・非数値・非有限値の拒否、時刻の連続性・重複・逆順、降水確率0〜100、最高 >= 最低、必須範囲・余裕範囲）を維持する。以下はOpen-Meteo固有の解釈と、未記載だった細部の記録である。
+
+- 時刻：`timezone=Asia/Tokyo`の応答はオフセットなしのローカル日時（例：`2026-11-08T15:00`）。JST（+09:00）として解釈し、UTCへ変換する。応答の`utc_offset_seconds`が`32400`でなければ、応答全体を不正とする。
+- 公開するUTC時刻（`validAt`）は`Date#toISOString()`の形式（例：`2026-11-08T06:00:00.000Z`）に統一する。Frontendの検証もこの形式だけを有効とする（Scheduleと同じ規則）。週間の`date`はJST暦日の`YYYY-MM-DD`のまま（22.2）。
+- CurrentWeather：`validAt = current.time`。Open-Meteoは`time`を「データが有効な時刻」、`interval`を後ろ向きの集計期間（秒）としている。採用時に`validAt`が現在の過去30分〜未来5分にあることを確認する（19.3）。`current.interval`は正の整数であることだけを確認し、900秒に固定しない。
+- HourlyWeather：取得開始時刻の次の正時（正時ちょうどはその時刻）から最大36枠を保存対象とする。採用直前に、その時点の次の正時から24枠が連続して正常であることを再確認する（20.2・20.3）。取得中に正時をまたいでも、採用時に過去になった枠は削らない。Frontendは現在時刻で12枠を選び直す（20.5）。
+- HourlyWeatherの`precipitationProbability`は、Open-Meteoでは**その時刻の直前1時間**の降水確率である（公式：Preceding hour probability）。`temperatureC`・`weatherCode`はその時刻の値。たとえば`15時`の枠の降水確率は14〜15時を表す。対応付け（20.1）と表示は変えず、意味だけを記録する。
+- WeeklyWeather：取得開始時のJST暦日から連続7日を必須、8〜9日目を余裕とし、採用直前の暦日から連続7日を再確認する（22.3・22.4）。開始日Dで採用時の日付がD＋1なら、8日目が正常である必要がある。Frontendは現在のJST暦日から選び直す（22.5）。
+- 未知の整数天気コードは保持する。Frontendで`天気不明`と表示する（UI設計 5.4）。
+- TTL内に将来の時間別枠が12未満、週間が7日未満になるのは、時計の異常時に限られる（TTL 2時間＜必須24枠、TTL 12時間＜必須7日）。Frontendの1〜11枠・1〜6日の表示（20.5・22.5）は合成データで確認する。
+
+#### 対象地点（Config）
+
+| 環境変数 | 内容 |
+|---|---|
+| `SIGNAGE_WEATHER_LATITUDE` | 緯度。−90〜90 |
+| `SIGNAGE_WEATHER_LONGITUDE` | 経度。−180〜180 |
+
+| 状態 | 動作 |
+|---|---|
+| 両方未設定 | Weather Providerを登録しない。Backendは起動する |
+| 片方だけ設定 | 不正Configとして起動しない（exit 1） |
+| 数値の形式でない・範囲外・空文字 | 不正Configとして起動しない（exit 1） |
+| 両方正常 | 3つのWeather Providerを登録する |
+
+- 形式は10進の小数（符号は`-`のみ、整数部1〜3桁、小数部は任意で1〜6桁）に限る。指数表記・`Infinity`・`NaN`・前後の空白・`+`は拒否する。
+- 小数点以下2桁（約1km）への丸めは、位置情報のプライバシーを守るための**利用者の運用ルール**とする。BackendのConfig Validationは2桁への丸めを強制せず、上記の形式（小数部1〜6桁）を許容する。Backendは自動で丸めない。
+- 地点は自宅の位置のため、Git・Issue・PR・ログ・Published Stateに書かない。地点を含むRequest URLは共通HTTP Adapterの既存方針どおりログに出さない。`config/backend.env.example`には値を書かない。
+- Secretは使わない（Open-MeteoはAPIキー不要）。読み込みは起動時に1回で、変更はBackend再起動で反映する（24.2）。
+
+#### ログ
+
+固定のEvent名と分類コードだけを記録する。地点・Request URL・Response Body（400の`reason`を含む）は記録しない。
+
+| 種別 | Event・分類コード |
+|---|---|
+| Provider | `weather_provider_enabled`、`weather_provider_disabled`（`location_unset`） |
+| 取得失敗 | `weather_acquisition_failed`（`stateKey`と、`rate_limited`（429）・`server_error`（5xx）・`http_error`（その他のHTTPステータス。不正なパラメータの400を含む）・`network_error`・`timeout`・`invalid_response`（応答の構造・値・オフセットの不正）・`stale_data`（Currentの鮮度外、時間別・週間の必須範囲の不足）） |
+| 取得成功 | `weather_acquired`（debug、`stateKey`と件数） |
+
+- 429とRetry-Afterは既存の共通処理（`AcquireResult`の`httpStatus`・`retryAfter`、Architecture 16.3）でBackoffに渡す。Open-Meteoの429の仕様は公式に記載がない。
+- Shutdownで中止した取得は記録しない（Scheduleと同じ）。
+
+#### dataSourceと更新待ち
+
+18.7と同じ規則を天気にも適用する。Frontendの「更新待ち」は`data !== null && lastAttemptResult === "failure"`で判定し、`dataSource`の値に依存しない（#87は#9で修正しない）。TTL切れは既存のAPI契約（10.8）どおり`data: null`になり、「取得できません」と表示する。
+
+#### 出典表示（利用条件）
+
+- Open-Meteoの無料APIは非商用に限る。個人のホームオートメーションは非商用の例として[公式の規約](https://open-meteo.com/en/terms)に挙げられている（2026-11-08確認）。APIキーは不要。
+- データはCC BY 4.0で提供され、出典の表示が必要とされている（[公式のライセンス](https://open-meteo.com/en/licence)）。画面には`Weather data by Open-Meteo.com`を表示する（UI設計 5.2・5.3）。サイネージではリンクを押せないため、URLとライセンスへのリンクは[README](../README.md)に記載する。
+- 未確認：Open-Meteoが利用する元データ提供者（気象庁等）について、追加のクレジットが必要かどうか。ライセンスページは各提供者のライセンスへのリンクを示すだけで、要否を明記していない。将来の商用利用時の条件（24.7）も未確認のまま残す。
+
+#### 実装PRと完了条件
+
+| PR | 内容 | 依存 | 完了条件 |
+|---|---|---|---|
+| 1 `docs:` | 本設計の反映 | なし | ユーザーの承認・Merge |
+| 2 `feat(backend):` | Weather Service（3 Provider）、Config（地点）、ログ、起動時の登録 | 1 | 合成データによる単体テスト（2段階Validation・正時・0時・鮮度の境界・失敗の分類・429）、ログ・Published Stateに地点が出ないこと、Coordinator・SQLiteとの結合、CI成功 |
+| 3 `feat(frontend):` | 天気3StateのDomain検証、今日の天気・週間天気のパネル、アイコン、出典表示、巡回への組み込み、取得中の判定の暫定除外（UI設計 6.5）、検証画面の合成データ、仮パネル前提の既存テストの更新 | 1（2と並行可） | 単体テスト、検証画面での目視 |
+| 4 `docs:` | 検証記録 | 2・3、実機確認 | Windows・CI・Pi・実APIの結果を区別して記録 |
+
+#### 検証の区分
+
+| 区分 | 範囲 |
+|---|---|
+| Windows | Backend：URL組み立て、Domain Validation、時刻の境界（正時・0時、Fake Timer）、異常系、Config。Frontend：表示状態の遷移、部分失敗・全失敗、巡回、検証画面の目視 |
+| Linux CI | 全テスト |
+| Raspberry Pi・実API（ユーザー） | BackendのAPIを`curl`で確認、PCのVite開発サーバーからSSHのポート転送でPiの実データを表示、Piで合成データの検証画面（Chromium Kiosk。nginxでの配信は#12） |
+
+TTL切れは合成データで確認する。実機で通信を切る確認は、「更新待ち」になり他のコンテンツ・時計が止まらないことまでを基本とする（TTLが2時間・12時間と長いため）。Piのシステム時計は変更しない（18.7と同じ理由）。
 
 ---
 
@@ -1866,6 +1979,8 @@ type HourlyWeatherItem = {
 | temperatureC | 摂氏気温。有限数値 |
 | weatherCode | WMOベース整数コード。未知の整数も許容 |
 | precipitationProbability | 0〜100の有限数値。降水確率 |
+
+Open-Meteoの`precipitation_probability`は、その時刻の直前1時間の降水確率である（16.6）。
 
 Open-Meteoは技術選定として**正式採用**する（運用値・実装検証は未完了）。
 取得対象はhourly.time、hourly.temperature_2m、hourly.weather_code、hourly.precipitation_probabilityとする。
