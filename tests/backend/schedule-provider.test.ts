@@ -465,3 +465,23 @@ test("setup: a usable Secret registers the Schedule Provider", async () => {
   expect(load).toHaveBeenCalledExactlyOnceWith("schedule");
   expect(logs).toEqual([{ event: "schedule_provider_enabled" }]);
 });
+
+test("Abort right after the last page response: no success / discard log, no result", async () => {
+  const f = fixture();
+  f.queue.push(tokenOk(), () => {
+    f.abort.abort(); // Shutdown while the final response is delivered
+    return json({ items: [event("a")] });
+  });
+  expect(await f.run()).toEqual({ kind: "failure" });
+  expect(f.logs).toEqual([]);
+  // Also across midnight: no discard log either.
+  wall = Date.parse("2026-11-08T14:59:59Z");
+  const g = fixture();
+  g.queue.push(tokenOk(), () => {
+    wall += 3000;
+    g.abort.abort();
+    return json({ items: [event("a")] });
+  });
+  expect(await g.run()).toEqual({ kind: "failure" });
+  expect(g.logs).toEqual([]);
+});

@@ -59,7 +59,30 @@ export function parseEventsPage(body: Uint8Array): EventsPage | null {
 }
 
 const RFC3339 =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+/** Epoch ms of an RFC 3339 date-time with an offset, or null. Date.parse
+ * alone rolls over non-existent values (2026-02-30, 24:00), so every field is
+ * range-checked first and the calendar date must exist. Leap seconds (:60)
+ * are rejected.
+ */
+export function rfc3339Instant(value: string): number | null {
+  const m = RFC3339.exec(value);
+  if (!m) return null;
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
+  if (hour! > 23 || minute! > 59 || second! > 59) return null;
+  if (m[8] !== undefined && (Number(m[9]) > 23 || Number(m[10]) > 59))
+    return null;
+  const utc = new Date(Date.UTC(year!, month! - 1, day!));
+  if (
+    utc.getUTCFullYear() !== year ||
+    utc.getUTCMonth() !== month! - 1 ||
+    utc.getUTCDate() !== day
+  )
+    return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
 const DAY_MS = 86_400_000;
 
 /** Normalizes all pages of one attempt (18.2). Returns null when any
@@ -87,12 +110,9 @@ export function normalizeEvents(
       if (start.dateTime === undefined || end.dateTime === undefined)
         return null;
       if (start.date !== undefined || end.date !== undefined) return null;
-      if (!RFC3339.test(start.dateTime) || !RFC3339.test(end.dateTime))
-        return null;
-      const from = Date.parse(start.dateTime);
-      const to = Date.parse(end.dateTime);
-      if (!Number.isFinite(from) || !Number.isFinite(to) || !(from < to))
-        return null;
+      const from = rfc3339Instant(start.dateTime);
+      const to = rfc3339Instant(end.dateTime);
+      if (from === null || to === null || !(from < to)) return null;
       if (!(from < dayEnd && to > dayStart)) continue; // not on the target day
       events.push({
         id: item.id,

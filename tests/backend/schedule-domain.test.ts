@@ -12,6 +12,7 @@ import {
   eventsUrl,
   normalizeEvents,
   parseEventsPage,
+  rfc3339Instant,
 } from "../../src/backend/schedule/google-calendar.js";
 import { validScheduleData } from "../../src/backend/schedule/schedule-data.js";
 
@@ -228,3 +229,48 @@ test("Schedule Domain Data: schema and semantic validation (18.1)", () => {
   ).toBe(false);
   expect(validScheduleData({ date: day, events: null }, day)).toBe(false);
 });
+
+test.each([
+  ["2026-11-08T09:00:00+09:00", "2026-11-08T00:00:00.000Z"],
+  ["2026-11-08T00:00:00Z", "2026-11-08T00:00:00.000Z"],
+  ["2024-02-29T12:00:00Z", "2024-02-29T12:00:00.000Z"],
+  ["2026-11-08T23:59:59.5-05:30", "2026-11-09T05:29:59.500Z"],
+  ["2026-12-31T23:00:00-01:00", "2027-01-01T00:00:00.000Z"],
+])("RFC 3339 date-time %s is accepted as %s", (value, utc) => {
+  expect(new Date(rfc3339Instant(value)!).toISOString()).toBe(utc);
+});
+
+// Date.parse alone accepts and rolls over several of these (PR #89 review).
+test.each([
+  "2026-02-30T09:00:00+09:00",
+  "2025-02-29T09:00:00Z",
+  "2026-04-31T00:00:00Z",
+  "2026-13-01T00:00:00Z",
+  "2026-00-10T00:00:00Z",
+  "2026-11-00T00:00:00Z",
+  "2026-11-08T24:00:00Z",
+  "2026-11-08T23:60:00Z",
+  "2026-11-08T23:59:60Z",
+  "2026-11-08T09:00:00+24:00",
+  "2026-11-08T09:00:00+09:60",
+  "2026-11-08T09:00:00",
+  "2026-11-08 09:00:00Z",
+  "2026-11-08T9:00:00Z",
+])("a non-existent or malformed date-time is rejected: %s", (value) => {
+  expect(rfc3339Instant(value)).toBeNull();
+});
+
+test.each([
+  ["start", "2026-02-30T09:00:00+09:00", "2026-11-08T10:00:00+09:00"],
+  ["end", "2026-11-08T09:00:00+09:00", "2026-11-08T24:00:00+09:00"],
+])(
+  "an event with a non-existent %s date-time fails the whole attempt",
+  (_n, from, to) => {
+    expect(
+      normalizeEvents(
+        [allDay("ok", day, "2026-11-09"), timed("bad", from, to)],
+        day,
+      ),
+    ).toBeNull();
+  },
+);

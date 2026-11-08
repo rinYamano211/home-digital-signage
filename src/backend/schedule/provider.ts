@@ -196,6 +196,9 @@ export function createScheduleProvider(
         items.push(...(result.value.items ?? []));
         next = result.value.nextPageToken;
       } while (next !== undefined);
+      // Shutdown after the last response: no success / discard log, and the
+      // Coordinator saves nothing (18.7). Same result as the earlier checks.
+      if (ctx.signal.aborted) return { kind: "failure" };
       const events = normalizeEvents(items, targetDate);
       const data = { date: targetDate, events };
       if (events === null || !validScheduleData(data, targetDate))
