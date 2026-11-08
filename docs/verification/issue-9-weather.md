@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-[Issue #9](https://github.com/rinYamano211/home-digital-signage/issues/9)で実装したOpen-Meteoの天気（CurrentWeather・HourlyWeather・WeeklyWeather）の取得・表示（PR #95・#96）を、Windows・CI・Raspberry Pi・実際のOpen-Meteoで確認した。設計は[technology-stack.md 16.6](../technology-stack.md#weather-issue-9-design)、[Backend開発手順「Weather Service」](../backend-development.md#weather-serviceissue-9設計確定未実装)、[Frontend開発手順 第12章](../frontend-development.md#12-天気の表示issue-9)に従う。RainForecast（Tomorrow.io）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)の範囲であり、本検証の対象外とする。
+[Issue #9](https://github.com/rinYamano211/home-digital-signage/issues/9)で実装したOpen-Meteoの天気（CurrentWeather・HourlyWeather・WeeklyWeather）の取得・表示（PR #95・#96）を、Windows・CI・Raspberry Pi・実際のOpen-Meteoで確認した。設計は[technology-stack.md 16.6](../technology-stack.md#weather-issue-9-design)、[Backend開発手順「Weather Service」](../backend-development.md#weather-serviceissue-9実装済み実機確認済み一部繰越)、[Frontend開発手順 第12章](../frontend-development.md#12-天気の表示issue-9)に従う。RainForecast（Tomorrow.io）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)の範囲であり、本検証の対象外とする。
 
 Raspberry Pi・実APIでの確認は、ユーザーが手動で行った。本番の配置（systemd・nginx・Release Directory）は#12の範囲であり、ここでは一時ディレクトリ（`~/signage-check`）にBuild成果物を置いて確認した。
 

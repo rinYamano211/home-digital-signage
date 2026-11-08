@@ -8,7 +8,7 @@ Issue #8（コンテンツの自動切替）は第10章に記す（PR #84で実�
 
 Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（実装済み、Raspberry Pi・実データで確認済み）。
 
-Issue #9（天気の表示）は第12章に記す（設計確定・未実装）。
+Issue #9（天気の表示）は第12章に記す（実装済み、Raspberry Pi・実データで確認済み。一部繰越）。
 
 ## 1. 位置付けと関連文書
 
@@ -30,7 +30,7 @@ src/frontend/            Frontendのソース。Viteのrootとし、index.html�
   content/               コンテンツの定義・切替のロジック・表示時間の設定・インジケーター（Issue #8、第10章）
   published-state/       表示用APIのPolling・Published Stateの検証（Issue #10、第11章）
   schedule/              予定のComponent State・並び順・件数の集約・予定パネル（Issue #10、第11章）
-  weather/               天気のDomain検証・Component State・天気パネル（Issue #9、第12章。PR3で追加）
+  weather/               天気のDomain検証・Component State・天気パネル（Issue #9、第12章。PR #96で追加）
   layout/                1280×800の画面と比例縮小
   icons/                 同梱するSVGアイコン
   styles/                CSS変数・フォントの読み込み
@@ -292,7 +292,7 @@ UI設計に記載のない動作は、UIモック（[ui-mock/signage-mock.html](
 
 - #9・#10が入るまで、通常画面ではコンテンツ名だけの仮パネル（`今日の予定`・`今日の天気`・`週間天気`）を巡回させる。予定や天気の偽のデータは表示しない。#9・#10では、仮パネルを実際のコンテンツに差し替える。
 - 通常画面では、3つの仮パネルをすべて表示できるものとして扱い、時刻は`available`を固定で渡す（5.3）。
-- 予定の仮パネルは#10で差し替えた（第11章）。天気の2つの仮パネルは#9のPR3で差し替え、撤去する（第12章）。
+- 予定の仮パネルは#10で差し替えた（第11章）。天気の2つの仮パネルは#9（PR #96）で差し替え、撤去した（第12章）。
 - 検証画面（5.3）を拡張し、各コンテンツの表示可否と時刻の利用可否をキーボードで切り替えられるようにする。これにより、一部のコンテンツが表示できない場合・0件の場合・時刻未同期の場合の巡回をBrowserとRaspberry Piで確認する。キー割り当ては、Spaceキーで時刻の利用可否、1・2・3キーで今日の予定・今日の天気・週間天気の表示可否を切り替える（画面右下のボタンでも切り替えられる）。
 - 通常のエントリーポイントから検証専用のコードをimportしない方針（5.3）は維持する。
 
@@ -309,7 +309,7 @@ UI設計に記載のない動作は、UIモック（[ui-mock/signage-mock.html](
 
 ### 10.9 実装時に確定した事項
 
-- ファイル構成（`src/frontend/content/`）：切替のロジック（`rotation.ts`）、Reactへの接続（`useContentRotation.ts`）、Registry（`registry.tsx`）、表示時間（`rotation-config.ts`）、インジケーター（`Indicator.tsx`・`indicator-dots.ts`）、切替アニメーション（`ContentArea.tsx`・`transition.ts`）、1枚表示（`NoticeCards.tsx`）、仮パネル（`PlaceholderPanel.tsx`）。通常画面と検証画面は`src/frontend/SignageScreen.tsx`で同じ画面を組み立てる。
+- ファイル構成（`src/frontend/content/`）：切替のロジック（`rotation.ts`）、Reactへの接続（`useContentRotation.ts`）、Registry（`registry.tsx`）、表示時間（`rotation-config.ts`）、インジケーター（`Indicator.tsx`・`indicator-dots.ts`）、切替アニメーション（`ContentArea.tsx`・`transition.ts`）、1枚表示（`NoticeCards.tsx`）。通常画面と検証画面は`src/frontend/SignageScreen.tsx`で同じ画面を組み立てる。
 - `indicator.ts`と`Indicator.tsx`は大文字・小文字だけの違いでWindowsで衝突するため、点の状態の計算は`indicator-dots.ts`とした。
 - 表示の正本は`ContentRotation`とし、Reactの表示はその通知だけで更新する。StrictModeのEffect再実行などで作り直すときは、最後に表示した内容から続ける（PR #84のレビュー対応）。
 - 切替アニメーション中にさらに表示が変わった場合は、重ねるのを「抜けていく表示」と「現在の表示」の最大2枚とし、それまで抜けていた表示はすぐに外す。
@@ -394,7 +394,7 @@ UI設計 6.5の判定を次の優先順で行う。
 4. 表示できるコンテンツが0件：表示できない理由がすべて「取得中」なら`予定と天気を取得しています`、それ以外は`予定と天気を取得できません`
 5. それ以外：表示できるコンテンツを巡回する
 
-- 天気（#9）は、#9のPR3が入るまで仮パネルのまま「表示できる」として扱う（10.7）。そのため4の取得中の1枚表示は、それまでの通常画面では出ず、検証画面で確認する。PR3で天気の判定（12.5）に置き換え、仮パネルの扱いをなくす。
+- 天気（#9）は、PR #96で天気の判定（12.5）に置き換え、仮パネルの扱いをなくした。
 - 4の判定では、本番で未実装と明示したState（#93が終わるまでの`rainForecast`）を数えない（UI設計 6.5、12.5）。
 - 1枚表示の差し替えは、既存の`renderNoContent`（10.5）を使う。
 
@@ -408,7 +408,7 @@ UI設計 6.5の判定を次の優先順で行う。
 ### 11.8 実装時に確定した事項
 
 - ファイル構成：通信は`published-state/`（`schema.ts`：外枠・State共通部分の検証とDomain検証の呼び出し、`polling.ts`：Polling、`usePublishedStates.ts`：Reactへの接続と1分ごとの時刻）。予定は`schedule/`（`schedule-data.ts`：Domain Dataの検証、`schedule-state.ts`：表示状態・並び順・表記、`fit.ts`：件数の集約、`layout-config.ts`：行の高さの目安、`SchedulePanel.tsx`：描画）。巡回の入力は`signage-model.ts`（11.6の優先順）で導く。
-- Registryの`render`は、Component State（`ContentContext`）を引数に受け取る形にした。天気の仮パネルは引数を使わない。
+- Registryの`render`は、Component State（`ContentContext`）を引数に受け取る形にした。天気のパネルもPR #96から同じ引数を使う。
 - Pollingの結果（`PollingSnapshot`）は、状態（`waiting`・`received`・`neverReceived`）、最後に正常取得した`states`、作成時刻を持つ。表示はResponseの更新時と1分ごとに、その時点の時刻で再評価する。
 - 「取得しています」の砂時計アイコンは、このプロジェクトで描いたSVG（`icons/HourglassIcon.tsx`）。
 - 検証画面のキー：Sキーで予定の合成データ、PキーでPollingの状態を切り替える（Space・1・2・3は10.7のまま。1・2・3は「巡回から外す」として働く）。合成データは`verify/schedule-scenarios.ts`。
@@ -420,7 +420,7 @@ UI設計 6.5の判定を次の優先順で行う。
 
 ## 12. 天気の表示（Issue #9）
 
-状態：設計確定・未実装（PR3で実装する）。Backend側の設計は[技術スタック選定 16.6](technology-stack.md#weather-issue-9-design)、各Stateの表示方針は技術スタック選定の[19.5](technology-stack.md#195-取得失敗とfrontend表示)・[20.5](technology-stack.md#205-frontend表示)・[22.5](technology-stack.md#225-frontend表示)、画面仕様は[UI設計 5.2〜5.4・第6章](ui-design.md#52-今日の天気)を正本とする。本章はFrontendの実装方針のみを記す。RainForecast（降雨帯の実データ）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で扱う。
+状態：実装済み（Issue #9のPR #96）。Raspberry Pi・実データでの確認結果と、確認していない事項・繰越事項は[Issue #9の検証記録](verification/issue-9-weather.md)に記す。Backend側の設計は[技術スタック選定 16.6](technology-stack.md#weather-issue-9-design)、各Stateの表示方針は技術スタック選定の[19.5](technology-stack.md#195-取得失敗とfrontend表示)・[20.5](technology-stack.md#205-frontend表示)・[22.5](technology-stack.md#225-frontend表示)、画面仕様は[UI設計 5.2〜5.4・第6章](ui-design.md#52-今日の天気)を正本とする。本章はFrontendの実装方針のみを記す。RainForecast（降雨帯の実データ）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で扱う。
 
 ### 12.1 範囲
 
@@ -465,7 +465,7 @@ UI設計 6.5の判定を次の優先順で行う。
 - 今日の天気：現在の天気・時間別・降雨のどれか1つでも表示できれば巡回に残す（UI設計 6.2）。#93が終わるまでは、降雨は常に表示できないので、現在の天気か時間別で決まる。
 - 週間天気：WeeklyWeatherが表示できれば残す。
 - 11.6の4（表示できるコンテンツが0件）の判定では、表示できない理由がすべて「取得中」なら取得中の1枚表示とする。このとき、**本番で未実装と明示したState（#93が終わるまでの`rainForecast`）は数えない**（UI設計 6.5）。対象は明示した一覧（定数）で持ち、実装済みのStateの取得失敗・省略は除外しない。#93でRainForecastを本番に登録するときに、この一覧から外す。
-- 天気の仮パネル（10.7）と、`signage-model.ts`の「天気は表示できるものとして扱う」処理は、PR3で撤去する。
+- 天気の仮パネル（10.7）と、`signage-model.ts`の「天気は表示できるものとして扱う」処理は、PR #96で撤去した。
 
 ### 12.6 出典表示
 
@@ -473,8 +473,8 @@ UI設計 6.5の判定を次の優先順で行う。
 
 ### 12.7 開発・検証
 
-- 検証画面：天気の合成データ（正常・更新待ち・取得中・取得できません・期限切れ・時間別の日付またぎ・枠の不足・週間の日数不足・未知の天気コード・夜）を切り替えられるようにする。キー割り当てはPR3で決めて本章へ記録する。
+- 検証画面：天気の合成データ（正常・更新待ち・取得中・取得できません・期限切れ・時間別の日付またぎ・枠の不足・週間の日数不足・未知の天気コード・夜）を切り替えられるようにする。キー割り当ては下記。
   - キー割り当て（PR3で決定）：Wキーで天気の合成データを順に切り替える（Space・1・2・3・S・Pは11.7のまま）。合成データは`verify/weather-scenarios.ts`。上記に加えて「現在の天気だけ取得できません」（部分取得失敗）を持つ。日付またぎ・夜は、表示の評価に使う時刻だけを今日の18:30・21:00にする（時計の表示は変えない）。
 - 単体テスト（Vitest、Fake Timer）：12.3の各状態、時間別の12枠の選択（正時ちょうど・日付またぎ）、週間の7日の選択（0時の切替）、最高・最低の表示条件、天気コードの区分、12.5の巡回と1枚表示（未実装Stateの除外を含む）。
-- 既存のテスト（`content-display`・`signage-model`の仮パネル前提の部分等）は、PR3で更新する。本設計のPR（PR1）ではコード・テストを変更しない。
+- 既存のテスト（`content-display`・`signage-model`の仮パネル前提の部分等）は、PR #96で更新した。
 - Raspberry Pi・実データでの確認方法は11.7と同じ。結果は`docs/verification/`へ記録する。
