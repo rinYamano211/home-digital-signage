@@ -1408,9 +1408,9 @@ Open-MeteoのRequestは共有せず、Stateごとに独立させる（16.6で確
 
 <a id="weather-issue-9-design"></a>
 
-### 16.6 Issue #9 実装設計：Open-Meteo（設計確定・未実装）
+### 16.6 Issue #9 実装設計：Open-Meteo（実装済み・実機確認済み、一部繰越）
 
-[Issue #9](https://github.com/rinYamano211/home-digital-signage/issues/9)の実装前に確定した設計である。対象はCurrentWeather・HourlyWeather・WeeklyWeatherの3つ。RainForecast（Tomorrow.io）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)に切り出した（MVPの表示要求のまま。#93が終わるまでの表示はUI設計 6.5）。第19〜22章のDomain Schema・Validation・周期・TTL、第10章のAPI契約、Architecture 16章の責務分担は変更しない。
+[Issue #9](https://github.com/rinYamano211/home-digital-signage/issues/9)の実装前に確定した設計である。対象はCurrentWeather・HourlyWeather・WeeklyWeatherの3つ。RainForecast（Tomorrow.io）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)に切り出した（MVPの表示要求のまま。#93が終わるまでの表示はUI設計 6.5）。第19〜22章のDomain Schema・Validation・周期・TTL、第10章のAPI契約、Architecture 16章の責務分担は変更しない。実装はPR #95・#96で行った。CI・Raspberry Pi・実APIでの検証結果と、確認していない事項・繰越事項は[Issue #9の検証記録](verification/issue-9-weather.md)に記す。
 
 #### 責務と変更範囲
 

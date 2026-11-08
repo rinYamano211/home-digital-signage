@@ -126,9 +126,9 @@ Shutdownで中止した取得は記録しない。
 - テスト：`schedule-domain`（JST・URL・正規化・Domain Validation）、`schedule-provider`（認証・Token Cache・ページング・失敗の分類・破棄・ログ非露出・起動時の登録判断）、`schedule-startup`（起動時の配線。`loadSecret`はMockし、実際のSecretディレクトリは読まない）、`coordinator`（実Coordinator・SQLiteとの結合）。
 - better-sqlite3 13はWindows用のバイナリを同梱しているため、`npm ci --ignore-scripts`のWindowsでもSQLiteを使うテストを実行できる（PR #88で確認）。Linux専用のテスト（mode・Signal等）はLinux CIで確認する。
 
-## Weather Service（Issue #9、設計確定・未実装）
+## Weather Service（Issue #9、実装済み・実機確認済み、一部繰越）
 
-設計の正本は[技術スタック選定 16.6](technology-stack.md#weather-issue-9-design)。対象はOpen-MeteoのCurrentWeather・HourlyWeather・WeeklyWeather。RainForecast（Tomorrow.io、`weather.json`のSecret）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で扱う。本節はConfig、ログ、ユーザーが行う準備、テストの方針を記す。実装は`src/backend/weather/`に置く予定（PR2）。
+設計の正本は[技術スタック選定 16.6](technology-stack.md#weather-issue-9-design)。対象はOpen-MeteoのCurrentWeather・HourlyWeather・WeeklyWeather。RainForecast（Tomorrow.io、`weather.json`のSecret）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で扱う。本節はConfig、ログ、ユーザーが行う準備、テストの方針を記す。実装はPR #95で`src/backend/weather/`に置いた。Raspberry Pi・実APIでの確認結果（2026-11-08）と、確認していない事項・繰越事項は[Issue #9の検証記録](verification/issue-9-weather.md)に記す。
 
 ### Config
 
