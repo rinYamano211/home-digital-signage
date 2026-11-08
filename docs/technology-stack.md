@@ -1402,9 +1402,9 @@ Backend外で同一API Keyを利用するRequest数は、このBackendのSQLite�
 API停止中もCacheのTTL・有効CacheのFallback・Metadata・期限切れMaskを維持する。Quota不足やBackoffを理由に古いデータの期限を延長しない。
 Startupは外部取得完了を待たず保存Stateを復元してAPI提供を開始し、利用可能データは期限内に限って提供する。
 
-Open-MeteoのHTTP Request共有、詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限は後続確認とし、429待機計算は23.3に従う。CurrentWeather Domain Dataの設計方針は第19章を参照する。
+詳細Domain Schema、SQLite DDL、Quota Guard具体SQL、Provider正式制限は後続確認とし、429待機計算は23.3に従う。CurrentWeather Domain Dataの設計方針は第19章を参照する。
 State単位の取得制御とProvider単位のRate Limitの区別はArchitecture 16.3に従う。
-Open-MeteoのRequest共有は行わないと決めた（16.6、Issue #9）。
+Open-MeteoのRequestは共有せず、Stateごとに独立させる（16.6で確定、Issue #9）。
 
 <a id="weather-issue-9-design"></a>
 
@@ -1472,7 +1472,7 @@ Stateごとに独立したRequestとし、共有しない（16.5の後続確認�
 | 両方正常 | 3つのWeather Providerを登録する |
 
 - 形式は10進の小数（符号は`-`のみ、整数部1〜3桁、小数部は任意で1〜6桁）に限る。指数表記・`Infinity`・`NaN`・前後の空白・`+`は拒否する。
-- 値は利用者が小数点以下2桁（約1km）に丸めて設定する（プライバシーのため）。Backendは自動で丸めない。
+- 小数点以下2桁（約1km）への丸めは、位置情報のプライバシーを守るための**利用者の運用ルール**とする。BackendのConfig Validationは2桁への丸めを強制せず、上記の形式（小数部1〜6桁）を許容する。Backendは自動で丸めない。
 - 地点は自宅の位置のため、Git・Issue・PR・ログ・Published Stateに書かない。地点を含むRequest URLは共通HTTP Adapterの既存方針どおりログに出さない。`config/backend.env.example`には値を書かない。
 - Secretは使わない（Open-MeteoはAPIキー不要）。読み込みは起動時に1回で、変更はBackend再起動で反映する（24.2）。
 

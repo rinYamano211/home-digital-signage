@@ -137,8 +137,8 @@ Shutdownで中止した取得は記録しない。
 | `SIGNAGE_WEATHER_LATITUDE`  | `/etc/home-digital-signage/backend.env` | 緯度（−90〜90）。経度と両方未設定ならWeather Providerを登録しない                 |
 | `SIGNAGE_WEATHER_LONGITUDE` | `/etc/home-digital-signage/backend.env` | 経度（−180〜180）。片方だけの設定・形式の不正・範囲外は不正Configとして起動しない |
 
-- 形式は10進の小数に限る（符号は`-`のみ、整数部1〜3桁、小数部は任意で1〜6桁）。指数表記・`Infinity`・前後の空白・`+`は拒否する。
-- 値は小数点以下2桁に丸めてから設定する。Backendは自動で丸めない。
+- 形式は10進の小数に限る（符号は`-`のみ、整数部1〜3桁、小数部は任意で1〜6桁）。指数表記・`Infinity`・`NaN`・前後の空白・`+`は拒否する。
+- 小数点以下2桁への丸めは、位置情報のプライバシーを守るための利用者の運用ルールとする。Config Validationは2桁への丸めを強制せず、小数部1〜6桁を許容する。Backendは自動で丸めない。
 - 自宅の位置のため、Git・Issue・PR・チャット・ログに書かない。`config/backend.env.example`には値を書かない。Open-MeteoはAPIキー不要で、Secretは使わない。
 - 変更はBackend再起動で反映する。
 
@@ -158,7 +158,7 @@ Shutdownで中止した取得は記録しない。
 ### ユーザーが行う準備
 
 1. Open-Meteoの利用条件（[規約](https://open-meteo.com/en/terms)・[ライセンス](https://open-meteo.com/en/licence)）を確認する。
-2. 対象地点の緯度・経度を決め、小数点以下2桁に丸める。
+2. 対象地点の緯度・経度を決め、小数点以下2桁に丸める（運用ルール。Backendは丸めを検査しない）。
 3. Raspberry Piで`sudoedit /etc/home-digital-signage/backend.env`を実行し、`SIGNAGE_WEATHER_LATITUDE=<緯度>`・`SIGNAGE_WEATHER_LONGITUDE=<経度>`を追記する。Backend再起動で反映する。
 
 ### テスト

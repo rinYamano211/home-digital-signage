@@ -420,7 +420,7 @@ UI設計 6.5の判定を次の優先順で行う。
 
 ## 12. 天気の表示（Issue #9）
 
-状態：設計確定・未実装（PR3で実装する）。Backend側の設計は[技術スタック選定 16.6](technology-stack.md#weather-issue-9-design)、各Stateの表示方針は[技術スタック選定 19.5・20.5・22.5](technology-stack.md#195-取得失敗とfrontend表示)、画面仕様は[UI設計 5.2〜5.4・第6章](ui-design.md#52-今日の天気)を正本とする。本章はFrontendの実装方針のみを記す。RainForecast（降雨帯の実データ）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で扱う。
+状態：設計確定・未実装（PR3で実装する）。Backend側の設計は[技術スタック選定 16.6](technology-stack.md#weather-issue-9-design)、各Stateの表示方針は技術スタック選定の[19.5](technology-stack.md#195-取得失敗とfrontend表示)・[20.5](technology-stack.md#205-frontend表示)・[22.5](technology-stack.md#225-frontend表示)、画面仕様は[UI設計 5.2〜5.4・第6章](ui-design.md#52-今日の天気)を正本とする。本章はFrontendの実装方針のみを記す。RainForecast（降雨帯の実データ）は[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で扱う。
 
 ### 12.1 範囲
 
