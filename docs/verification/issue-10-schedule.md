@@ -15,13 +15,37 @@ Raspberry Pi・実APIでの確認は、ユーザーが手動で行った。本�
 
 ## 環境ごとの結果
 
-| 環境                           | 確認したこと                                                                                          | 結果                                                                                                                                              |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Windows（開発PC）              | `npm test`・Lint・型検査・Build。検証画面での表示の目視（PR #91）                                     | 成功（PR #91時点で1617件成功・56件Skip。Skipは Linux専用のテスト）。`format:check`はWindowsの作業コピーがCRLFの既存ファイルによる既知の問題で失敗 |
-| CI（GitHub Actions、Linux）    | PRごとの品質検査                                                                                      | PR #88・#89・#91の各Commitで成功。CIはPRで動くため、Merge後のmain（`05714f5`）自体では実行していない                                              |
-| Raspberry Pi＋実API            | Backendの起動・予定の取得・表示用API・取得失敗・Shutdown（A・C・D）                                   | PASS                                                                                                                                              |
-| 開発PCの表示＋Piの実データ     | Vite開発サーバーからSSHのポート転送でPiのBackendに接続し、画面で表示を確認（B）                       | PASS                                                                                                                                              |
-| Raspberry Piの画面＋合成データ | 検証用Build（`dist/frontend-verify/`）をPiのChromiumで表示し、読みやすさ・件数の集約・表記を確認（E） | PASS                                                                                                                                              |
+| 環境                           | 確認したこと                                                                                          | 結果                                                                                                 |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Windows（開発PC）              | `npm test`・Lint・型検査（下記「Windows・CIの証跡」）。検証画面での表示の目視（PR #91）               | 成功。`format:check`は既知のCRLFの問題で失敗（下記）                                                 |
+| CI（GitHub Actions、Linux）    | PRごとの品質検査（下記「Windows・CIの証跡」）                                                         | PR #88・#89・#91の各Commitで成功。CIはPRで動くため、Merge後のmain（`05714f5`）自体では実行していない |
+| Raspberry Pi＋実API            | Backendの起動・予定の取得・表示用API・取得失敗・Shutdown（A・C・D）                                   | PASS                                                                                                 |
+| 開発PCの表示＋Piの実データ     | Vite開発サーバーからSSHのポート転送でPiのBackendに接続し、画面で表示を確認（B）                       | PASS                                                                                                 |
+| Raspberry Piの画面＋合成データ | 検証用Build（`dist/frontend-verify/`）をPiのChromiumで表示し、読みやすさ・件数の集約・表記を確認（E） | PASS                                                                                                 |
+
+### Windows・CIの証跡
+
+CI（GitHub Actions「CI」、`pull_request`、Ubuntu 26.04）。各PRのHEAD Commitで実行し、すべて成功した。件数はログのVitestの集計による。`pull_request`の実行はその時点のMerge Refを対象とするため、Merge後のmainとは厳密には一致しない。
+
+| PR  | Commit    | 実行                                                                                         | テスト                 |
+| --- | --------- | -------------------------------------------------------------------------------------------- | ---------------------- |
+| #88 | `e148637` | [42388413654](https://github.com/rinYamano211/home-digital-signage/actions/runs/42388413654) | 記録していない         |
+| #88 | `3b72827` | [42389326896](https://github.com/rinYamano211/home-digital-signage/actions/runs/42389326896) | 51ファイル・1524件成功 |
+| #89 | `03ab3b4` | [42445901321](https://github.com/rinYamano211/home-digital-signage/actions/runs/42445901321) | 記録していない         |
+| #89 | `7f35f16` | [42447027438](https://github.com/rinYamano211/home-digital-signage/actions/runs/42447027438) | 54ファイル・1599件成功 |
+| #91 | `858e206` | [42448098321](https://github.com/rinYamano211/home-digital-signage/actions/runs/42448098321) | 記録していない         |
+| #91 | `079d105` | [42448580157](https://github.com/rinYamano211/home-digital-signage/actions/runs/42448580157) | 57ファイル・1673件成功 |
+
+Windows（開発PC）。2026-11-08に、本記録のブランチ（`05714f5`から作成し、Documentだけを変更）で実行した。実行結果はローカルの出力だけで、外部から参照できる記録はない。
+
+| コマンド               | 結果                                                                                                                               |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run lint`         | 成功                                                                                                                               |
+| `npm run typecheck`    | 成功                                                                                                                               |
+| `npm test`             | 55ファイル成功・2ファイルSkip、1617件成功・56件Skip（合計1673件。SkipはLinux専用のテストで、CIでは実行される）                     |
+| `npm run format:check` | 失敗。`core.autocrlf=true`の作業コピーで、既存のDocument等（28ファイル）がCRLFで展開されるための既知の問題。本記録のファイルは合格 |
+
+Build（`npm run build:frontend`・`build:frontend:verify`・`build:backend`）は、PR #91の作成時（Windows）に成功した。Pi用の成果物はユーザーが開発PCでBuildして検証に使った（コマンドの出力は記録していない）。本記録のブランチでは再実行していない。
 
 ## A：予定の取得（Pi＋実API）
 

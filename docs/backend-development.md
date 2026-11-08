@@ -70,7 +70,7 @@ LoaderはJSON Objectであることまで確認する。欠損・構文不正・
 
 ## Schedule Service（Issue #10、実装済み・実機確認済み）
 
-設計の正本は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)。共通基盤の拡張はPR #88、Google Calendar Providerは`src/backend/schedule/`（`jst.ts`・`google-auth.ts`・`google-calendar.ts`・`schedule-data.ts`・`provider.ts`・`setup.ts`）。本節はConfig・Secretの配置、ログ、開発・テストの手順を記す。Raspberry Pi・実APIでの確認は未実施（Issue #10の検証記録で扱う）。
+設計の正本は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)。共通基盤の拡張はPR #88、Google Calendar Providerは`src/backend/schedule/`（`jst.ts`・`google-auth.ts`・`google-calendar.ts`・`schedule-data.ts`・`provider.ts`・`setup.ts`）。本節はConfig・Secretの配置、ログ、開発・テストの手順を記す。Raspberry Pi・実APIでの確認結果（2026-11-08）と、確認していない事項は[Issue #10の検証記録](verification/issue-10-schedule.md)に記す。
 
 ### Config・Secret
 
