@@ -20,6 +20,7 @@ import type { HttpOutcome } from "../../src/backend/http/outcome.js";
 import { generateKeyPairSync } from "node:crypto";
 import { serviceAccount } from "../../src/backend/schedule/google-auth.js";
 import { createScheduleProvider } from "../../src/backend/schedule/provider.js";
+import { createWeatherProviders } from "../../src/backend/weather/provider.js";
 import { StateScheduler } from "../../src/backend/scheduler/state-scheduler.js";
 import { createRuntimeSend } from "../../src/backend/send/provider-send-gate.js";
 import { readPublishedStates } from "../../src/backend/published-state-api.js";
@@ -933,4 +934,151 @@ test("Schedule Provider end to end: Tx-A / Tx-P and the Published State API", as
   // Next JST day: the API hides the old date even within the TTL (10.8).
   move(15 * 3_600_000);
   expect(states(runtime).schedule).toMatchObject({ data: null });
+});
+
+// ---- Issue #9: the Open-Meteo Providers through the real Coordinator ----
+test("Weather Providers end to end: Tx-A / Tx-P, Cache on failure, no location stored", async () => {
+  const { db, runtime } = committed();
+  const H = 3_600_000;
+  const local = (ms: number) => new Date(ms + 9 * H).toISOString().slice(0, 16);
+  const day0 = Date.parse("2026-11-04T15:00:00Z"); // 11/05 00:00 JST
+  const time = Array.from({ length: 72 }, (_, i) => local(day0 + i * H));
+  const dates = Array.from({ length: 9 }, (_, i) =>
+    local(day0 + i * 24 * H).slice(0, 10),
+  );
+  const envelope = {
+    latitude: 12.375,
+    longitude: -123.5,
+    utc_offset_seconds: 32400,
+  };
+  let failing = false;
+  fetchMock.mockImplementation(async (input) => {
+    const url = new URL(String(input));
+    if (failing) return new Response("", { status: 503 });
+    if (url.searchParams.has("current"))
+      return Response.json({
+        ...envelope,
+        current: {
+          time: local(wall - 15 * 60_000),
+          interval: 900,
+          temperature_2m: 14.2,
+          weather_code: 3,
+          is_day: 1,
+        },
+      });
+    if (url.searchParams.has("hourly"))
+      return Response.json({
+        ...envelope,
+        hourly: {
+          time,
+          temperature_2m: time.map(() => 12),
+          weather_code: time.map(() => 2),
+          precipitation_probability: time.map(() => 30),
+        },
+      });
+    return Response.json({
+      ...envelope,
+      daily: {
+        time: dates,
+        weather_code: dates.map(() => 61),
+        temperature_2m_max: dates.map(() => 18),
+        temperature_2m_min: dates.map(() => 8),
+        precipitation_probability_max: dates.map(() => 40),
+      },
+    });
+  });
+  const logger = { debug: vi.fn(), warn: vi.fn() };
+  const c = new StateAcquisitionCoordinator(
+    runtime,
+    null,
+    createWeatherProviders(
+      { latitude: 12.345678, longitude: -123.456789 },
+      logger as never,
+    ),
+  );
+  const start = wall; // 2026-11-05 09:00 JST
+  for (const key of [
+    "currentWeather",
+    "hourlyWeather",
+    "weeklyWeather",
+  ] as const)
+    await c.runOnce(key);
+  expect(fetchMock).toHaveBeenCalledTimes(3); // one Request per State
+  expect(control(db, "currentWeather")).toEqual({
+    consecutiveFailures: 0,
+    nextAttemptAt: iso(start + 15 * 60_000),
+  });
+  expect(control(db, "hourlyWeather")).toEqual({
+    consecutiveFailures: 0,
+    nextAttemptAt: iso(start + 30 * 60_000),
+  });
+  expect(control(db, "weeklyWeather")).toEqual({
+    consecutiveFailures: 0,
+    nextAttemptAt: iso(start + 6 * H),
+  });
+  const published = states(runtime) as Record<
+    string,
+    { data: Record<string, unknown[]>; meta: Record<string, unknown> }
+  >;
+  expect(published.currentWeather).toEqual({
+    data: {
+      temperatureC: 14.2,
+      weatherCode: 3,
+      isDay: true,
+      validAt: iso(start - 15 * 60_000),
+    },
+    meta: {
+      dataUpdatedAt: iso(start),
+      expiresAt: iso(start + 2 * H),
+      lastAttemptAt: iso(start),
+      lastAttemptResult: "success",
+      publishedAt: iso(start),
+      dataSource: "externalApi",
+    },
+  });
+  expect(published.hourlyWeather!.data.hours).toHaveLength(36);
+  expect(published.hourlyWeather!.data.hours![0]).toMatchObject({
+    validAt: iso(start), // 09:00 JST exactly
+  });
+  expect(published.hourlyWeather!.meta.expiresAt).toBe(iso(start + 2 * H));
+  expect(published.weeklyWeather!.data.days).toHaveLength(9);
+  expect(published.weeklyWeather!.meta.expiresAt).toBe(iso(start + 12 * H));
+
+  // A failure within the TTL keeps the Cache and records the failed attempt.
+  failing = true;
+  move(15 * 60_000);
+  await c.runOnce("currentWeather");
+  expect(states(runtime).currentWeather).toMatchObject({
+    data: { temperatureC: 14.2 },
+    meta: {
+      dataUpdatedAt: iso(start),
+      expiresAt: iso(start + 2 * H),
+      lastAttemptResult: "failure",
+    },
+  });
+  expect(logger.warn).toHaveBeenCalledWith(
+    {
+      event: "weather_acquisition_failed",
+      stateKey: "currentWeather",
+      reason: "server_error",
+      httpStatus: 503,
+    },
+    "Weather acquisition failed",
+  );
+  // Past the TTL the API masks the data (10.8).
+  move(2 * H);
+  expect(states(runtime).currentWeather).toMatchObject({ data: null });
+
+  // Neither the location nor the grid point is stored, published or logged.
+  const stored = JSON.stringify([
+    db.prepare("SELECT * FROM published_state_snapshots").all(),
+    db.prepare("SELECT * FROM backend_cache").all(),
+    db.prepare("SELECT * FROM acquisition_control").all(),
+  ]);
+  for (const s of ["12.345678", "123.456789", "12.375", "123.5"]) {
+    expect(stored).not.toContain(s);
+    expect(JSON.stringify(states(runtime))).not.toContain(s);
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(s);
+    expect(JSON.stringify(logger.debug.mock.calls)).not.toContain(s);
+  }
 });
