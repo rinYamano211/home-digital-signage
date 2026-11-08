@@ -220,6 +220,8 @@ function createProvider(
       if (ctx.signal.aborted) return { kind: "failure" };
       const adopted = adopt(body, startedAtMs);
       if (!adopted.ok) return fail(ctx.signal, adopted.reason);
+      // Never return or log a success for an aborted attempt (16.6).
+      if (ctx.signal.aborted) return { kind: "failure" };
       const completedAtMs = Date.now();
       logger.debug(
         { event: "weather_acquired", stateKey, count: adopted.count },
