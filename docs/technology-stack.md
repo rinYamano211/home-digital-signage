@@ -1309,7 +1309,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Open-Meteoの追加・長期検証と商用利用時の利用条件再確認、Tomorrow.ioの降雨時予測品質・独立した分単位予測精度・降り始め／降り終わり推定精度。
 - Tomorrow.ioの無料枠超過時の課金条件、正式なリセット境界、継続的な無料利用条件。
 - Google Calendarの秘密鍵配置・アクセス制御・失効／ローテーション、API／認証エラー復旧、取得中変更の一貫性・未検証status・日付競合の実装詳細・大量予定の取得制御、無料利用条件、長期無人運用、個別予定の非公開設定時の挙動（17.4）。
-- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Open-MeteoのRequest共有、Provider単位の詳細Backoff。Tomorrow.ioのMVP運用設計方針と外部仕様の保証境界は第16章・23.11。
+- Provider正式Rate Limit仕様・Quota GuardのSQLite DDL／具体SQL、1 HTTP Responseと複数Stateの対応、Provider単位の詳細Backoff。Open-MeteoのRequestは共有しない（16.6で確定）。Tomorrow.ioのMVP運用設計方針と外部仕様の保証境界は第16章・23.11。
 - WeeklyWeatherは第22章の設計方針・未検証事項に従う。RainForecastは第21章の設計方針・残課題に従う。HourlyWeatherは第20章、CurrentWeatherは第19章、Scheduleは第18章の設計方針と残課題に従う。取得成功だけで古いデータを延命しない。
 - 個別Migration・単一EXの具体ScriptとFD番号・Timeout値・起動経路の迂回防止、Provisioning CLI、DB・Lockの具体Path・Permission・Symlink対策、503時のJSON Error Schema、Quota履歴のTable構成・具体SQL。初期DDL・Index方針・Generationは12.6〜12.8で設計済みだが実装未検証。 PendingのP-04 / P-05用永続取得識別子・同値処理は未決定（23.5）。Tx-P単体のCommit結果不明時照合は12.10で設計済みだが実装未完了であり、Crashをまたぐ完全識別は保証しない。
 - Cache不正時の物理削除。
@@ -1341,7 +1341,7 @@ Future機能を先行実装しない。Issue #4のClose前には文書・Issue�
 
 Open-Meteoを基本的な天気予報の取得候補、Tomorrow.ioを分単位降雨予報の取得候補とする。
 Open-Meteo currentの限定的な手動検証は19.7に記録する。第20・22章にも限定的な検証記録がある。長期安定性等の追加検証は未完了であり、将来の商用利用時は条件を再確認する。
-既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-Meteoの複数State取得Request共有方式は後続設計とする。
+既存Published Stateの論理分割を維持し、外部HTTP Requestとの1対1対応は要求しない。Open-MeteoのRequestは共有せず、Stateごとに独立させる（16.6で確定、Issue #9）。
 
 R-03の分単位短時間降雨予測、雨の降り始め・降り終わりの見込みというMVP要件は維持する。1時間単位の予報を単に分換算したものは要件を満たす短時間降雨予測と扱わない。
 Frontendの30秒Pollingは変更しない。
@@ -1430,7 +1430,7 @@ Open-MeteoのRequestは共有せず、Stateごとに独立させる（16.6で確
 
 #### Request
 
-Stateごとに独立したRequestとし、共有しない（16.5の後続確認事項を確定）。State単位の周期・Backoff・保存（Architecture 16.3）と合わせるため。Request共有のためのCoordinator変更や共通Cacheの追加はしない。
+Stateごとに独立したRequestとし、共有しない（従来15.3・16.1・16.5で後続確認とされていた事項を確定）。State単位の周期・Backoff・保存（Architecture 16.3）と合わせるため。Request共有のためのCoordinator変更や共通Cacheの追加はしない。
 
 | 項目 | CurrentWeather | HourlyWeather | WeeklyWeather |
 |---|---|---|---|
