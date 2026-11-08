@@ -6,7 +6,7 @@
 
 Issue #8（コンテンツの自動切替）は第10章に記す（PR #84で実装済み、2026-11-07）。Raspberry Piでの確認結果は[検証記録](verification/issue-8-content-rotation.md)を参照。
 
-Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（実装済み、Raspberry Piでの確認は未実施）。
+Issue #10（予定の表示、表示用APIのPolling）は第11章に記す（実装済み、Raspberry Pi・実データで確認済み）。
 
 ## 1. 位置付けと関連文書
 
@@ -313,7 +313,7 @@ UI設計に記載のない動作は、UIモック（[ui-mock/signage-mock.html](
 
 ## 11. 予定の表示（Issue #10）
 
-状態：実装済み（Issue #10のPR4）。Raspberry Pi・実データでの確認は未実施で、Issue #10の検証記録で扱う。Backend側の設計は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)、画面仕様は[UI設計 5.1・第6章](ui-design.md#51-今日の予定)を正本とする。本章はFrontendの実装方針のみを記す。
+状態：実装済み（Issue #10のPR4）。Raspberry Pi・実データでの確認結果と、確認していない事項は[Issue #10の検証記録](verification/issue-10-schedule.md)に記す。Backend側の設計は[技術スタック選定 18.7](technology-stack.md#schedule-issue-10-design)、画面仕様は[UI設計 5.1・第6章](ui-design.md#51-今日の予定)を正本とする。本章はFrontendの実装方針のみを記す。
 
 ### 11.1 範囲
 

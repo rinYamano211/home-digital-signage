@@ -2,7 +2,7 @@
 
 ## 範囲と状態
 
-[Issue #10](https://github.com/rinYamano211/home-digital-signage/issues/10)で実装した予定の取得・表示（PR #86・#88・#89・#91）を、Windows・CI・Raspberry Pi・実際のGoogle Calendarで確認した。設計は[technology-stack.md 18.7](../technology-stack.md#schedule-issue-10-design)、[Backend開発手順「Schedule Service」](../backend-development.md#schedule-serviceissue-10実装済み実機未検証)、[Frontend開発手順 第11章](../frontend-development.md#11-予定の表示issue-10)に従う。
+[Issue #10](https://github.com/rinYamano211/home-digital-signage/issues/10)で実装した予定の取得・表示（PR #86・#88・#89・#91）を、Windows・CI・Raspberry Pi・実際のGoogle Calendarで確認した。設計は[technology-stack.md 18.7](../technology-stack.md#schedule-issue-10-design)、[Backend開発手順「Schedule Service」](../backend-development.md#schedule-serviceissue-10実装済み実機確認済み)、[Frontend開発手順 第11章](../frontend-development.md#11-予定の表示issue-10)に従う。
 
 Raspberry Pi・実APIでの確認は、ユーザーが手動で行った。本番の配置（systemd・nginx・Release Directory）は#12の範囲であり、ここでは一時ディレクトリ（`~/signage-check`）にBuild成果物を置いて確認した。
 
@@ -55,7 +55,7 @@ Backendを起動し、表示用API（`GET /api/published-states`）の`schedule`
 | C2  | 鍵のファイルを一時的に退避してBackendを起動       | ログ：`schedule_provider_disabled`（`reason: missing`）、`startup_complete`。Backendは起動した。鍵を戻して再起動し、`schedule_provider_enabled`・`startup_complete`                                      | PASS |
 | C3  | カレンダーの共有からService Accountを一時的に外す | ログ：`schedule_acquisition_failed`（`reason: forbidden`、`httpStatus: 404`）。画面：「更新待ち」の札。共有（予定の詳細の表示）を戻して再起動し、`lastAttemptResult: success`・`dataSource: externalApi` | PASS |
 
-C3の`httpStatus: 404`は、共有されていないカレンダーに対するGoogle Calendar APIの実際の応答である。ログの仕様では、`forbidden`は403と404を含む（[Backend開発手順のログ一覧](../backend-development.md#schedule-serviceissue-10実装済み実機未検証)、technology-stack.md 18.7）。仕様どおりであることを実測で確かめた。
+C3の`httpStatus: 404`は、共有されていないカレンダーに対するGoogle Calendar APIの実際の応答である。ログの仕様では、`forbidden`は403と404を含む（[Backend開発手順のログ一覧](../backend-development.md#schedule-serviceissue-10実装済み実機確認済み)、technology-stack.md 18.7）。仕様どおりであることを実測で確かめた。
 
 ## D：Shutdown（Pi）
 
