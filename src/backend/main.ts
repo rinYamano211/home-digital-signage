@@ -25,6 +25,7 @@ import {
 } from "./acquisition/coordinator.js";
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
 import { scheduleProvider } from "./schedule/setup.js";
+import { weatherProviders } from "./weather/setup.js";
 import type { StartupResult } from "./storage/startup-transaction.js";
 import {
   classifyDatabaseError,
@@ -139,7 +140,10 @@ export async function startBackend(
     try {
       // Schedule Service (Issue #10): Config / Secret read once at startup.
       // Unset or unusable: not registered; the Backend still starts.
+      // Weather Service (Issue #9): the location is read once at startup.
+      // Unset: not registered; the Backend still starts.
       if (!options.providers) {
+        providers = [...providers, ...weatherProviders(config, logger)];
         const schedule = await scheduleProvider(config, logger);
         if (schedule) providers = [...providers, schedule];
       }

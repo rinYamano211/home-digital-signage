@@ -23,6 +23,18 @@ export const BackendConfigSchema = Type.Object(
     scheduleCalendarId: Type.Optional(
       Type.String({ minLength: 1, maxLength: 1024, pattern: "^[!-~]+$" }),
     ),
+    /** Open-Meteo target location (Issue #9, technology-stack 16.6). Unset: no
+     * Weather Provider. Never logged or published (it is the home location).
+     */
+    weatherLocation: Type.Optional(
+      Type.Object(
+        {
+          latitude: Type.Number({ minimum: -90, maximum: 90 }),
+          longitude: Type.Number({ minimum: -180, maximum: 180 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
