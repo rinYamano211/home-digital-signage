@@ -324,19 +324,18 @@ describe("signageModel priorities (11.6)", () => {
     expect(m.notice).toBe("unavailable");
   });
 
-  it("schedule joins the rotation only when it can be shown; weather placeholders stay", () => {
-    expect(
-      [
-        ...signageModel(snapshot("received", state([])), NOW).displayable,
-      ].sort(),
-    ).toEqual(["schedule", "todayWeather", "weeklyWeather"]);
+  it("schedule joins the rotation only when it can be shown", () => {
+    // 天気のStateがないので、天気は巡回に入らない（12.5。仮パネルは撤去済み）。
+    expect([
+      ...signageModel(snapshot("received", state([])), NOW).displayable,
+    ]).toEqual(["schedule"]);
     for (const s of [
       undefined,
       state(null),
       state(null, { lastAttemptAt: null, lastAttemptResult: null }),
     ])
-      expect(
-        [...signageModel(snapshot("received", s), NOW).displayable].sort(),
-      ).toEqual(["todayWeather", "weeklyWeather"]);
+      expect([
+        ...signageModel(snapshot("received", s), NOW).displayable,
+      ]).toEqual([]);
   });
 });

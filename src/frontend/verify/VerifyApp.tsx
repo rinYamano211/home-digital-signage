@@ -9,6 +9,7 @@ import {
   SCHEDULE_SCENARIOS,
   scenarioSnapshot,
 } from "./schedule-scenarios";
+import { WEATHER_SCENARIOS, weatherScenario } from "./weather-scenarios";
 
 function toggle(value: TimeAvailability): TimeAvailability {
   return value === "available" ? "unavailable" : "available";
@@ -34,6 +35,7 @@ const next = (index: number, length: number) => (index + 1) % length;
  * - 1・2・3キー：今日の予定・今日の天気・週間天気を巡回から外す／戻す
  * - Sキー：予定の合成データ（docs/frontend-development.md 11.7）
  * - Pキー：Pollingの状態（正常取得・最初の応答待ち・一度も取得できない）
+ * - Wキー：天気の合成データ（docs/frontend-development.md 12.7）
  * Raspberry PiのKiosk表示では、USBキーボードで切り替えられる。
  */
 export function VerifyApp() {
@@ -44,6 +46,7 @@ export function VerifyApp() {
   );
   const [scenario, setScenario] = useState(0);
   const [polling, setPolling] = useState(0);
+  const [weather, setWeather] = useState(0);
   const now = useMinuteNow();
 
   useEffect(() => {
@@ -56,6 +59,11 @@ export function VerifyApp() {
       if (event.code === "KeyS") {
         event.preventDefault();
         setScenario((i) => next(i, SCHEDULE_SCENARIOS.length));
+        return;
+      }
+      if (event.code === "KeyW") {
+        event.preventDefault();
+        setWeather((i) => next(i, WEATHER_SCENARIOS.length));
         return;
       }
       if (event.code === "KeyP") {
@@ -75,7 +83,14 @@ export function VerifyApp() {
   }, []);
 
   const status = POLLING_STATUSES[polling] ?? "received";
-  const model = signageModel(scenarioSnapshot(scenario, status, now), now);
+  // 天気のシナリオによっては、表示の評価に使う時刻を今日の決まった時刻にする（weather-scenarios.ts）。
+  const sky = weatherScenario(weather, now);
+  const base = scenarioSnapshot(scenario, status, sky.at);
+  const snapshot =
+    status === "received"
+      ? { ...base, states: { ...base.states, ...sky.states } }
+      : base;
+  const model = signageModel(snapshot, sky.at);
   const displayable = new Set(
     [...model.displayable].filter((id) => enabled.has(id)),
   );
@@ -86,7 +101,7 @@ export function VerifyApp() {
         time={availability}
         displayable={displayable}
         notice={model.notice}
-        context={{ schedule: model.schedule }}
+        context={model}
       />
       <div className="verify-panel" data-verify-panel>
         <span>検証画面：{availability}</span>
@@ -121,6 +136,12 @@ export function VerifyApp() {
           onClick={() => setPolling((i) => next(i, POLLING_STATUSES.length))}
         >
           P：Polling「{status}」
+        </button>
+        <button
+          type="button"
+          onClick={() => setWeather((i) => next(i, WEATHER_SCENARIOS.length))}
+        >
+          W：天気「{WEATHER_SCENARIOS[weather]?.label}」
         </button>
       </div>
     </>

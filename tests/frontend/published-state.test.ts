@@ -23,7 +23,16 @@ const schedule = (data: unknown = { date: "2026-11-08", events: [] }) => ({
   data,
   meta: meta(),
 });
-const weather = { data: { anything: 1 }, meta: meta() };
+// 天気のDomain検証（frontend-development 12.1）に通る合成データ。
+const weather = {
+  data: {
+    temperatureC: 17.6,
+    weatherCode: 3,
+    isDay: true,
+    validAt: "2026-11-08T00:00:00.000Z",
+  },
+  meta: meta(),
+};
 
 describe("parsePublishedStates", () => {
   it("keeps valid States and ignores unknown keys", () => {

@@ -23,8 +23,8 @@ function Big({ row, label }: { row: TimedRow; label: "進行中" | "次の予定
   );
 }
 
-/** 取得失敗＋有効なデータのときの札（UI設計 6.1）。 */
-function StaleBadge({ since }: { since: string }) {
+/** 取得失敗＋有効なデータのときの札（UI設計 6.1）。天気のパネルでも使う。 */
+export function StaleBadge({ since }: { since: string }) {
   return <div className="stale-badge">↻ 更新待ち・{since}時点</div>;
 }
 
