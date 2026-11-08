@@ -4,6 +4,7 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { validScheduleShape } from "../schedule/schedule-data";
+import { utcInstant } from "./utc-instant";
 
 export const STATE_KEYS = [
   "currentWeather",
@@ -53,7 +54,7 @@ export type PublishedState = Static<typeof StateSchema>;
 export type PublishedStates = Partial<Record<StateKey, PublishedState>>;
 
 const instantOk = (value: string | null) =>
-  value === null || Number.isFinite(Date.parse(value));
+  value === null || utcInstant(value) !== null;
 
 /** State共通部分のSchemaと、Metadataの整合（10.6）。 */
 function validState(value: unknown): value is PublishedState {

@@ -2,6 +2,10 @@
 // 「今日」との照合・有効期限は表示時に現在時刻で評価する（schedule-state.ts）。
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import {
+  scheduleInstant,
+  validDateString,
+} from "../published-state/utc-instant";
 
 const DateString = Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
 const TimedEvent = Type.Object(
@@ -36,20 +40,28 @@ export type ScheduleEvent = ScheduleData["events"][number];
 export type TimedScheduleEvent = Extract<ScheduleEvent, { allDay: false }>;
 export type AllDayScheduleEvent = Extract<ScheduleEvent, { allDay: true }>;
 
-/** SchemaとSemantic Validation（ID一意、開始 < 終了）。 */
+/**
+ * SchemaとSemantic Validation（technology-stack 18.1）：実在する日付、UTCの日時
+ * （Backendの出力形式）、ID一意、開始 < 終了。「今日」との照合は表示時に行う。
+ */
 export function validScheduleShape(value: unknown): value is ScheduleData {
   if (!Value.Check(ScheduleDataSchema, value)) return false;
+  if (!validDateString(value.date)) return false;
   const ids = new Set<string>();
   for (const event of value.events) {
     if (ids.has(event.id)) return false;
     ids.add(event.id);
     if (event.allDay) {
-      if (!(event.startDate < event.endDateExclusive)) return false;
-    } else {
-      const start = Date.parse(event.startAt);
-      const end = Date.parse(event.endAt);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || !(start < end))
+      if (
+        !validDateString(event.startDate) ||
+        !validDateString(event.endDateExclusive) ||
+        !(event.startDate < event.endDateExclusive)
+      )
         return false;
+    } else {
+      const start = scheduleInstant(event.startAt);
+      const end = scheduleInstant(event.endAt);
+      if (start === null || end === null || !(start < end)) return false;
     }
   }
   return true;

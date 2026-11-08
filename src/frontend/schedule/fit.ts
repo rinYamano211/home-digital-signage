@@ -58,8 +58,14 @@ export function fitSchedule(
   if (full(false, list.later.length, 0) <= limit)
     return { ...list, endedSummary: null, hidden: 0 };
   const summary = list.ended.length > 0;
+  // 3件目以降の進行中は`later`の先頭にあり、省略の対象にしない（UI設計 5.1）。
+  // 省くのは次の予定より後の予定だけ。それでも収まらない場合はパネルの下端で切れる。
+  const keep = list.later.filter((row) => row.phase === "ongoing").length;
   let shown = list.later.length;
-  while (shown > 0 && full(summary, shown, list.later.length - shown) > limit)
+  while (
+    shown > keep &&
+    full(summary, shown, list.later.length - shown) > limit
+  )
     shown--;
   const first = list.ended[0];
   return {

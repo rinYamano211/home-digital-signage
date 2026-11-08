@@ -77,11 +77,19 @@ export function startPolling(
     if (stopped) return;
     const controller = new AbortController();
     inFlight = controller;
-    const timeout = runtime.setTimeout(
-      () => controller.abort(),
-      POLLING_TIMEOUT_MS,
-    );
-    const states = await requestOnce(runtime, controller.signal);
+    let timeout: unknown;
+    // 5秒で通信を中止（物理）し、同時にこのRequestを失敗として終える（論理）。中止後も
+    // fetchが終わらない場合でも次のPollingへ進み、遅れて届いた結果は採用しない。
+    const timedOut = new Promise<null>((resolve) => {
+      timeout = runtime.setTimeout(() => {
+        controller.abort();
+        resolve(null);
+      }, POLLING_TIMEOUT_MS);
+    });
+    const states = await Promise.race([
+      requestOnce(runtime, controller.signal),
+      timedOut,
+    ]);
     runtime.clearTimeout(timeout);
     inFlight = null;
     if (stopped) return;
