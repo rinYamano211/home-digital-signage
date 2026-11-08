@@ -4,13 +4,21 @@
 import type { ReactNode } from "react";
 import type { ScheduleView } from "../schedule/schedule-state";
 import { SchedulePanel } from "../schedule/SchedulePanel";
-import { PlaceholderPanel } from "./PlaceholderPanel";
+import { TodayWeatherPanel } from "../weather/TodayWeatherPanel";
+import { WeeklyWeatherPanel } from "../weather/WeeklyWeatherPanel";
+import type {
+  PartView,
+  TodayWeatherView,
+  WeeklyDay,
+} from "../weather/weather-state";
 import { CONTENT_DURATION_MS, type ContentId } from "./rotation-config";
 import type { RotationEntry } from "./rotation";
 
-/** 各コンテンツの描画に渡す、Component State（docs/frontend-development.md 11.2）。 */
+/** 各コンテンツの描画に渡す、Component State（docs/frontend-development.md 11.2・12.2）。 */
 export type ContentContext = {
   readonly schedule: ScheduleView;
+  readonly todayWeather: TodayWeatherView;
+  readonly weeklyWeather: PartView<readonly WeeklyDay[]>;
 };
 
 export type ContentDefinition = RotationEntry & {
@@ -21,8 +29,7 @@ export type ContentDefinition = RotationEntry & {
   readonly render: (context: ContentContext) => ReactNode;
 };
 
-// 今日の予定は#10で実データを表示する（第11章）。天気は#9が入るまで、コンテンツ名だけの
-// 仮パネルを表示し、偽のデータは表示しない（10.7 S7）。
+// 今日の予定は#10、天気は#9で実データを表示する（第11・12章）。
 export const CONTENTS: readonly ContentDefinition[] = [
   {
     id: "schedule",
@@ -34,12 +41,12 @@ export const CONTENTS: readonly ContentDefinition[] = [
     id: "todayWeather",
     label: "今日の天気",
     durationMs: CONTENT_DURATION_MS.todayWeather,
-    render: () => <PlaceholderPanel label="今日の天気" />,
+    render: ({ todayWeather }) => <TodayWeatherPanel view={todayWeather} />,
   },
   {
     id: "weeklyWeather",
     label: "週間天気",
     durationMs: CONTENT_DURATION_MS.weeklyWeather,
-    render: () => <PlaceholderPanel label="週間天気" />,
+    render: ({ weeklyWeather }) => <WeeklyWeatherPanel view={weeklyWeather} />,
   },
 ];

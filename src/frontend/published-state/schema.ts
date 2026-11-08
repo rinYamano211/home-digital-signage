@@ -4,6 +4,11 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { validScheduleShape } from "../schedule/schedule-data";
+import {
+  validCurrentWeatherShape,
+  validHourlyWeatherShape,
+  validWeeklyWeatherShape,
+} from "../weather/weather-data";
 import { utcInstant } from "./utc-instant";
 
 export const STATE_KEYS = [
@@ -74,8 +79,11 @@ function validState(value: unknown): value is PublishedState {
   return m.dataSource !== null && m.expiresAt !== null;
 }
 
-/** Domain部分の検証。天気（#9）はまだ持たない。 */
+/** Domain部分の検証。RainForecastは#93で追加する（frontend-development 12.1）。 */
 const DOMAIN: Partial<Record<StateKey, (data: unknown) => boolean>> = {
+  currentWeather: validCurrentWeatherShape,
+  hourlyWeather: validHourlyWeatherShape,
+  weeklyWeather: validWeeklyWeatherShape,
   schedule: validScheduleShape,
 };
 

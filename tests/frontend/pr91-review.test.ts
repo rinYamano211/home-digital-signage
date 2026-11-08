@@ -146,7 +146,7 @@ describe("date-time validation matches the Backend API contract", () => {
     dataSource: "externalApi",
   };
   it("Metadata with a non-UTC or non-existent instant excludes only that State", () => {
-    const ok = { data: { x: 1 }, meta };
+    const ok = { data: { days: [] }, meta };
     for (const bad of [
       { ...meta, publishedAt: "2026-11-08T09:00:00+09:00" },
       { ...meta, expiresAt: "2026-02-30T00:00:00Z" },
@@ -212,7 +212,12 @@ describe("Polling continues after the 5 s timeout even if fetch never settles", 
         schemaVersion: 1,
         states: {
           currentWeather: {
-            data: { late: true },
+            data: {
+              temperatureC: 17.6,
+              weatherCode: 3,
+              isDay: true,
+              validAt: "2026-11-08T00:00:00.000Z",
+            },
             meta: {
               dataUpdatedAt: "2026-11-08T00:00:00Z",
               expiresAt: "2026-11-08T06:00:00Z",
