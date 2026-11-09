@@ -26,6 +26,7 @@ import {
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
 import { scheduleProvider } from "./schedule/setup.js";
 import { weatherProviders } from "./weather/setup.js";
+import { rainForecastProvider } from "./weather/tomorrow-setup.js";
 import type { StartupResult } from "./storage/startup-transaction.js";
 import {
   classifyDatabaseError,
@@ -154,6 +155,9 @@ export async function startBackend(
         providers = [...providers, ...weatherProviders(config, logger)];
         const schedule = await scheduleProvider(config, logger);
         if (schedule) providers = [...providers, schedule];
+        // RainForecast (Issue #93): location + Secret; otherwise not registered.
+        const rain = await rainForecastProvider(config, logger);
+        if (rain) providers = [...providers, rain];
       }
       logger.info({ event: "database_initializing" }, "Initializing database");
       await yieldToSignals();

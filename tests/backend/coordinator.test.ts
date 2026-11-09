@@ -22,6 +22,7 @@ import { serviceAccount } from "../../src/backend/schedule/google-auth.js";
 import { createScheduleProvider } from "../../src/backend/schedule/provider.js";
 import { createWeatherProviders } from "../../src/backend/weather/provider.js";
 import { StateScheduler } from "../../src/backend/scheduler/state-scheduler.js";
+import { createRainForecastProvider } from "../../src/backend/weather/tomorrow-io.js";
 import { createRuntimeSend } from "../../src/backend/send/provider-send-gate.js";
 import { readPublishedStates } from "../../src/backend/published-state-api.js";
 import { TOMORROW_IO } from "../../src/backend/quota/quota-guard.js";
@@ -412,6 +413,91 @@ test("Quota Provider: a Gate Abort without Shutdown keeps the existing failure h
   send.stopControl("global").stop();
   await run;
   expect(control(db, "rainForecast")).toMatchObject({ consecutiveFailures: 1 });
+  send.stopMonitoring();
+});
+/** Gate-ready Coordinator with the real Tomorrow.io Provider (Issue #93). */
+async function gatedRainForecast() {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  });
+  const { h, db, runtime } = committed(true);
+  const log = { debug: vi.fn(), warn: vi.fn() };
+  const rain = createRainForecastProvider({
+    location: { latitude: 35.123456, longitude: 139.654321 },
+    apiKey: "test_key-ABCDEFGH12345678",
+    logger: log,
+  });
+  const send = createRuntimeSend(h, rain.http)!;
+  send.startMonitoring();
+  for (let i = 0; i < 5 * 60 + 5; i++) {
+    move(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+  }
+  expect(send.reservationStatus(TOMORROW_IO).allowed).toBe(true);
+  const c = new StateAcquisitionCoordinator(runtime, send, [rain]);
+  return { db, runtime, send, c, log };
+}
+/** 66 one-minute slots from the current whole minute (like the real API). */
+const rainTimeline = (rainy: number[] = []) => ({
+  data: {
+    timelines: [
+      {
+        timestep: "1m",
+        intervals: Array.from({ length: 66 }, (_, i) => ({
+          startTime: iso(Math.floor(wall / 60_000) * 60_000 + i * 60_000),
+          values: { rainIntensity: rainy.includes(i) ? 0.5 : 0 },
+        })),
+      },
+    ],
+  },
+});
+test("Tomorrow.io Provider through the real Gate: one POST, Domain Data saved and published", async () => {
+  const { db, runtime, send, c, log } = await gatedRainForecast();
+  fetchMock.mockImplementation(async () =>
+    Response.json(rainTimeline([20, 21])),
+  );
+  await c.runOnce("rainForecast");
+  expect(fetchMock).toHaveBeenCalledOnce();
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(String(url)).toBe(
+    "https://api.tomorrow.io/v4/timelines?apikey=test_key-ABCDEFGH12345678",
+  );
+  expect(init?.method).toBe("POST");
+  expect(JSON.parse(String(init?.body))).toMatchObject({
+    fields: ["rainIntensity"],
+    timesteps: ["1m"],
+    startTime: "now",
+    endTime: "nowPlus65m",
+  });
+  expect(states(runtime).rainForecast).toMatchObject({
+    data: { status: "dry", intensity: "light" },
+    meta: { lastAttemptResult: "success", dataSource: "externalApi" },
+  });
+  expect(control(db, "rainForecast")).toMatchObject({ consecutiveFailures: 0 });
+  expect(
+    db.prepare("SELECT COUNT(*) AS n FROM provider_quota_consumptions").get(),
+  ).toEqual({ n: 1 }); // Tx-Q before the single HTTP
+  expect(JSON.stringify(log.warn.mock.calls)).not.toContain("ABCDEFGH");
+  send.stopMonitoring();
+});
+test("Tomorrow.io Provider: HTTP 429 is a failure that backs off with Retry-After and publishes nothing", async () => {
+  const { db, runtime, send, c, log } = await gatedRainForecast();
+  fetchMock.mockImplementation(
+    async () =>
+      new Response("{}", { status: 429, headers: { "Retry-After": "900" } }),
+  );
+  const before = wall;
+  await c.runOnce("rainForecast");
+  expect(fetchMock).toHaveBeenCalledOnce();
+  expect(control(db, "rainForecast")).toMatchObject({ consecutiveFailures: 1 });
+  expect(
+    Date.parse(control(db, "rainForecast").nextAttemptAt) - before,
+  ).toBeGreaterThanOrEqual(900_000);
+  expect(states(runtime).rainForecast).toMatchObject({ data: null });
+  expect(log.warn).toHaveBeenCalledWith(
+    expect.objectContaining({ reason: "rate_limited" }),
+    expect.any(String),
+  );
   send.stopMonitoring();
 });
 test("Scheduler + Coordinator never run the same State concurrently", async () => {
