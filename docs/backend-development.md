@@ -64,7 +64,7 @@ Linuxでは上記modeと実行UIDの一致を検査する。Linuxの`/proc/self/
 
 Windows等ではPOSIX mode / UIDの検証を行わない。リンク・通常ファイル・読込前後の同一性を確認するが、ACLやLinuxと同等の競合防御は保証しない。開発用の合成データに限って使用し、本番の権限確認はLinuxで行う。
 
-`loadSecret("weather")`または`loadSecret("schedule")`を、それぞれ必要なDomainの初期化から呼び出す（`weather.json`はTomorrow.ioのAPIキー用で、[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で使う。Open-MeteoはSecretを使わない）。片方を読むために他方は不要で、PR-Aの起動処理はどちらも呼び出さない。テスト用に専用ディレクトリを渡せるが、ファイル名はDomainの固定対応である。
+`loadSecret("weather")`または`loadSecret("schedule")`を、それぞれ必要なDomainの初期化から呼び出す（`weather.json`はTomorrow.ioのAPIキー用で、[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)で使う。Open-MeteoはSecretを使わない）。`weather.json`の形式は`{"tomorrowIoApiKey":"..."}`の1項目とする案（[技術スタック選定 21.9](technology-stack.md#rainforecast-issue-93-design)。#93の実装時に確定）。片方を読むために他方は不要で、PR-Aの起動処理はどちらも呼び出さない。テスト用に専用ディレクトリを渡せるが、ファイル名はDomainの固定対応である。
 
 LoaderはJSON Objectであることまで確認する。欠損・構文不正・Permission不正などは分類済みの固定Errorを返し、本文・パス・元例外を含めない。Provider固有Schema・認証確認・Domain単位の障害分離は後続実装であり、今回のLoader成功だけで認証可能とは扱わない。
 
