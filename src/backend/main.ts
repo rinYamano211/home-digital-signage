@@ -108,6 +108,14 @@ export async function startBackend(
       // Abort in-flight non-quota HTTP first so the wait below stays well
       // within the Shutdown deadline (technology-stack 18.7).
       coordinator?.abort();
+      // Close the Send Gate and abort an in-flight Tomorrow.io HTTP before the
+      // Scheduler is awaited, so the wait below stays within the deadline
+      // (technology-stack 21.9). The Shutdown stop reason is never released.
+      try {
+        monitoring?.stopControl("global").stop();
+      } catch {
+        /* the close below still disposes the Gate */
+      }
       // No new Task, then wait for in-flight cycles before closing anything.
       await acquisition?.stop();
       // Every non-quota HTTP Lifecycle must have ended (unproven: timeout).
