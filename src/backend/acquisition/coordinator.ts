@@ -34,12 +34,26 @@ interface ProviderTiming {
    */
   nextPeriodMs?(startedAtMs: number): number;
 }
-/** Single-HTTP Provider: one fixed GET, then `parse()`. */
+/** Extra input for `StateProvider.parse` (technology-stack 21.9). Optional for
+ * implementers: a Provider that ignores it is unaffected.
+ */
+export interface ParseContext {
+  /** When the HTTP Request really started (UTC RFC 3339): for the Gate path,
+   * right after the Gate started it; never the earlier cycle start.
+   */
+  readonly requestStartedAt: string;
+  /** Current time (epoch ms), read again just before adoption. */
+  now(): number;
+}
+/** Single-HTTP Provider: one fixed Request (GET, or POST with a body), then
+ * `parse()`.
+ */
 export interface StateProvider extends ProviderTiming {
   readonly quota: boolean;
   readonly http: HttpAdapterConfig;
   parse(
     outcome: HttpOutcome,
+    context?: ParseContext,
   ):
     | { kind: "success"; data: Record<string, unknown>; expiresAt: string }
     | { kind: "failure" };
@@ -251,9 +265,10 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
     if (isMulti(provider)) {
       parsed = await this.acquireMulti(provider, startedAt);
     } else {
-      const http = await this.acquire(provider, key);
-      if (http === "suppressed")
+      const acquired = await this.acquire(provider, key);
+      if (acquired === "suppressed")
         return scheduled(Date.now() + SUPPRESSED_RECHECK_MS);
+      const { http, requestStartedAtMs } = acquired;
       // Tomorrow.io Gate path: a control Abort confirmed first by Shutdown is
       // not a Provider failure (HTTP-03, technology-stack 21.9). No Tx-A / Tx-P;
       // the consumed Quota is kept. Success, Timeout and other failures that
@@ -265,7 +280,10 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
       )
         return unresolved("global");
       try {
-        parsed = provider.parse(http);
+        parsed = provider.parse(http, {
+          requestStartedAt: iso(requestStartedAtMs),
+          now: () => Date.now(),
+        });
       } catch {
         parsed = { kind: "failure" };
       }
@@ -445,7 +463,7 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
   private async acquire(
     provider: StateProvider,
     key: StateKey,
-  ): Promise<HttpOutcome | "suppressed"> {
+  ): Promise<{ http: HttpOutcome; requestStartedAtMs: number } | "suppressed"> {
     if (provider.quota) {
       const send = this.send;
       if (!send) return "suppressed";
@@ -460,9 +478,12 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
         if (!reserved.registered) return "suppressed";
         const started = send.start(gate.attempt, reserved.reservation);
         if (started.kind !== "started") return "suppressed";
-        return await (started.response as Promise<HttpOutcome>).catch(
+        // The Gate has just started the Request (synchronously).
+        const requestStartedAtMs = Date.now();
+        const http = await (started.response as Promise<HttpOutcome>).catch(
           (): HttpOutcome => ({ kind: "network_error" }),
         );
+        return { http, requestStartedAtMs };
       } finally {
         send.endAttempt(gate.attempt);
       }
@@ -472,13 +493,15 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
       adapter = createHttpAdapter(provider.http);
       this.adapters.set(key, adapter);
     }
+    const requestStartedAtMs = Date.now();
     try {
-      return (await adapter.start(
+      const http = (await adapter.start(
         this.stopping.signal,
         this.track(key),
       )) as HttpOutcome;
+      return { http, requestStartedAtMs };
     } catch {
-      return { kind: "network_error" };
+      return { http: { kind: "network_error" }, requestStartedAtMs };
     }
   }
 }
