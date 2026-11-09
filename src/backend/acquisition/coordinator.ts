@@ -254,6 +254,16 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
       const http = await this.acquire(provider, key);
       if (http === "suppressed")
         return scheduled(Date.now() + SUPPRESSED_RECHECK_MS);
+      // Tomorrow.io Gate path: a control Abort confirmed first by Shutdown is
+      // not a Provider failure (HTTP-03, technology-stack 21.9). No Tx-A / Tx-P;
+      // the consumed Quota is kept. Success, Timeout and other failures that
+      // were confirmed first keep their existing handling (HTTP-02 / 07).
+      if (
+        provider.quota &&
+        http.kind === "aborted" &&
+        this.stopping.signal.aborted
+      )
+        return unresolved("global");
       try {
         parsed = provider.parse(http);
       } catch {
@@ -269,7 +279,7 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
         };
     }
     // An aborted attempt is not a Provider failure: no Tx-A / Tx-P (18.7).
-    // The Tomorrow.io Gate path is unchanged (its Abort is confirmed in #9).
+    // The Tomorrow.io Gate path is handled above, where the HTTP outcome is known.
     const abortable = isMulti(provider) || !provider.quota;
     if (abortable && this.stopping.signal.aborted) return unresolved("global");
     // Re-evaluation only: the next cycle re-reads the Control State (18.7).

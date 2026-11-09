@@ -361,6 +361,59 @@ test("Quota Provider: Tx-Q is committed before the single HTTP request through t
   expect(control(db, "rainForecast")).toMatchObject({ consecutiveFailures: 0 });
   send.stopMonitoring();
 });
+/** Gate-ready Quota Provider whose HTTP never answers until aborted. */
+async function hangingQuotaRun() {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  });
+  const { h, db, runtime } = committed(true);
+  const rain = mock({
+    stateKey: "rainForecast",
+    quota: true,
+    http: { url: "https://rain.example.test/v4", maxBodyBytes: 4096 },
+  });
+  const send = createRuntimeSend(h, rain.http)!;
+  send.startMonitoring();
+  for (let i = 0; i < 5 * 60 + 5; i++) {
+    move(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+  }
+  expect(send.reservationStatus(TOMORROW_IO).allowed).toBe(true);
+  fetchMock.mockImplementation(
+    (_url: unknown, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = init!.signal!;
+        signal.addEventListener("abort", () => reject(signal.reason));
+      }),
+  );
+  const c = new StateAcquisitionCoordinator(runtime, send, [rain]);
+  const run = c.runOnce("rainForecast");
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+  return { db, runtime, send, c, run };
+}
+test("Quota Provider: Shutdown Abort of the Gate HTTP saves nothing and keeps the consumed Quota (HTTP-03)", async () => {
+  const { db, runtime, send, c, run } = await hangingQuotaRun();
+  c.abort();
+  send.stopControl("global").stop(); // closes the Gate and aborts the HTTP
+  expect(await run).toEqual({
+    kind: "suspended",
+    scope: "global",
+    reason: "storage_unresolved",
+  });
+  expect(control(db, "rainForecast")).toBeNull(); // no Tx-A, no Backoff
+  expect(states(runtime).rainForecast).toBeUndefined(); // no Tx-P
+  expect(
+    db.prepare("SELECT COUNT(*) AS n FROM provider_quota_consumptions").get(),
+  ).toEqual({ n: 1 }); // the consumed Quota is not cancelled
+  send.stopMonitoring();
+});
+test("Quota Provider: a Gate Abort without Shutdown keeps the existing failure handling", async () => {
+  const { db, send, run } = await hangingQuotaRun();
+  send.stopControl("global").stop();
+  await run;
+  expect(control(db, "rainForecast")).toMatchObject({ consecutiveFailures: 1 });
+  send.stopMonitoring();
+});
 test("Scheduler + Coordinator never run the same State concurrently", async () => {
   const { runtime } = committed();
   let release!: () => void;
