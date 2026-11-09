@@ -2208,6 +2208,40 @@ Request開始順を判定する単調増加連番を推奨する（具体実装�
 
 条件が成立しない場合は、本番Providerを登録せず、代替Providerを別途検討する（24.1）。既存のBackend安全上限（400 / 20 / 1。16.4）は変えない。通常の5分周期は288回/24時間。
 
+##### PR 0 確認結果（2026-11-09）
+
+Issue #93のPR 0（ユーザーによる利用条件・APIキーの確認）の結果を記録する。**PR 4（Providerの実装・本番有効化）を無条件で承認するものではない。** アカウント識別情報・APIキー・地点・スクリーンショットは記録しない。
+
+| 項目 | 結果 | 確認元 |
+|---|---|---|
+| 契約プラン | FREE PLAN（アカウント画面に明記。有料プランへの案内あり） | ユーザーがアカウント画面で確認 |
+| API利用上限 | 500回/日、25回/時、3回/秒（16.3の確認値と同じ） | 同上 |
+| Backend安全上限との関係 | 400 / 20 / 1（16.4）は変更しない。通常の5分周期は288回/24時間 | 既存設計 |
+| 過去の実API疎通 | 2026-10-21の結果（21.2）を、過去の検証証跡として引き続き扱う。今回の確認で新たに検証したものではない | 21.2 |
+| Rate Limit超過時 | HTTP 429。待ってバックオフして再試行する前提で、恒久的なブロックではない。応答に残数・リセットを示すHeaderが付くと記載されているが、Header名は記載がない | 公式FAQ（Rate Limiting）。AIが2026-11-09に閲覧 |
+| 利用上限の公開情報 | Freeプランの公開上限が500 / 25 / 3で、アカウント表示と一致 | ユーザーが公式ページ（Free API Plan Rate Limits）で確認。AIは再確認できなかった（HTTP 403） |
+| Freeプランの想定用途 | 開発・テスト・評価・小規模利用向けのFreeプランとして案内されている | ユーザーが公式の料金説明（Pricing Overview）で確認。AIは再確認できなかった（HTTP 403）。製品ページ（Weather API）では「個人またはチーム向け」の記載のみで、個人・商用の可否と呼出し数の上限は記載がない |
+
+参照した公式ページ：Weather API FAQ（`https://www.tomorrow.io/faq/weather-api/`）、Rate Limiting FAQ（`https://www.tomorrow.io/faq/weather-api/what-is-rate-limiting-in-the-context-of-a-weather-api/`）、Free API Plan Rate Limits（`https://support.tomorrow.io/hc/en-us/articles/20273728362644-Free-API-Plan-Rate-Limits`）、Weather API（`https://www.tomorrow.io/weather-api/`）、Pricing Overview（`https://support.tomorrow.io/hc/en-us/articles/23554984091156-Tomorrow-io-Pricing-Overview`）、アプリケーションでの利用FAQ（`https://www.tomorrow.io/faq/weather-api/how-can-i-use-a-weather-api-in-my-application/`）。
+
+**利用目的と判断**：個人開発、家庭内のデジタルサイネージ、Raspberry Pi、降雨予報の表示、非商用で、有料サービスとしての提供・再販売は想定しない。現在確認できた公式情報とFreeプランの条件を前提に、**個人・非商用のMVPでTomorrow.ioを使う条件付き採用（24.1）を継続する**。これは公式規約に関する法的な保証ではない。商用化・公開サービス化・用途の変更を行う場合は、利用条件を再確認する。
+
+**未確認（確認済みにしない。残存リスクとして維持する）**
+
+- Freeプランの上限超過時に自動課金が発生しないこと
+- Freeプランの継続的な提供の保証
+- 家庭用サイネージ用途に対する個別の明示的な許諾（個別条項は確認していない）
+- 将来の料金・利用制限が変わらないこと（保証なし）
+- Rate Limitの残数Headerを、このアカウントで取得できること（Header名も未確認。23.11の「Enterprise向け」という記載との関係は未整理）
+- 実降雨時の予報の品質・長期安定性（#13で検証）
+- 21.2の未検証事項（全66件の強度、厳密な将来60スロットの確保、実降雨時の正値、5分周期での長期運用、時刻境界・Responseの詳細）
+
+ユーザーはTomorrow.ioへの問い合わせを行わない方針であり、上記は未確認のまま残す。
+
+**同一APIキーの利用状況：未確認。** 同じAPIキーを他のSenderが使っていないことは、今回確認していない。F-01の初回Provisioning（管理者確認の4項目）の実行前に、ユーザーが確認する。16.2・23.11には、プロジェクト初期のPowerShell検証で数回使用したという記録がある。
+
+**PR 4の前に確認すること**：Request・Responseの詳細仕様（認証方式、本文、フィールド名・単位）、時刻境界（21.5・21.9の`requestStartedAt`）、単一Sender前提、21.9に残した未確定事項。
+
 **未確認（確定しない）**：認証方式（Query Parameter `apikey`かHeaderか）、Request本文の形式、レスポンスのフィールド名・単位・スロット境界。Query方式の場合、URLにAPIキーが含まれる。共通HTTP Adapterは`config.url`をログに出さないが、ProviderのHTTP設定（`HttpAdapterConfig`）自体もログ・Published State・エラーメッセージに含めない。確認後に本節を更新し、Provider実装前に承認を得る。
 
 #### Provider Interface
