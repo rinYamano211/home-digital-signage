@@ -2276,12 +2276,12 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 | 2 `feat(backend):` | Gate経路のShutdown Abort、Coordinatorの制御Abort適用、Coordinatorのコメント更新 | 1 | 応答しないLoopback HTTPで停止が10秒より十分短い、Abort試行が状態を保存しない、失敗回数が変わらない、既存テスト成功 |
 | 3 `feat(backend):` | Provisioning CLI | 1 | 4項目の拒否・成功・履歴ありの拒否、秘密が出ない、`PROVISIONED/0`起動後の動作確認、CI成功 |
 | 4 `feat(backend):` | Tomorrow.io Provider、`parse`の拡張、Secret・Config・ログ、起動時の登録 | 2・3、PR 0（API仕様の確認）と再承認 | 合成データの単体テスト（60スロット、途切れ統合、閾値、強度分類、不正値、429）、Quota 400 / 20 / 1を超えない、ログに地点・キーが出ない、CI成功。POST（method・body・headers）：Loopbackの実Adapterで、GateがPOSTと固定の本文を送れること、本文・Header・URLがログ・Published State・エラーに出ないこと、Gate・Quotaのコードが無変更であること、Body上限1MiB。`requestStartedAt`の取得方法（上記）の確認 |
-| 5 `feat(frontend):` | 降雨帯のDomain検証・表示、取得中判定で`rainForecast`を数えない扱いの恒久化（UI設計 6.5）、既存テスト更新 | 1（4と並行開発可） | 単体テスト、検証画面の目視 |
+| 5 `feat(frontend):` | 降雨帯のDomain検証・表示、取得中判定で`rainForecast`を数えない扱いの恒久化（UI設計 6.5。承認済み）、定数名・コメントの見直し、既存テスト更新 | 1（4と並行開発可） | 単体テスト、検証画面の目視 |
 | 6 `docs:` | 検証記録 | 2〜5、実機確認 | Windows・CI・Pi・実APIを区別して記録 |
 
 PR 4の本番登録（有効化）は、PR 2・3の後で、PR 0（API仕様と利用条件の確認）の結果を反映し、再承認を得てから行う。PR 1（本設計）のMergeはPR 0を待たない。
 
-`rainForecast`は、Tomorrow.io未設定・Secret不正・Provisioning未完了・Trust成立前の環境では省略されたままになる。取得中の1枚表示の判定（表示できるコンテンツが0件のとき。UI設計 6.5）で数えると、起動直後が「取得しています」ではなく「取得できません」になる。API契約は拡張せず、Frontendの定数として`rainForecast`を取得中判定に数えない扱いを**恒久化**する（暫定の撤去は行わない）。降雨帯自体は、これまでどおり個別に「雨の予報を取得できません」等を表示する。
+`rainForecast`は、Tomorrow.io未設定・Secret不正・Provisioning未完了・Trust成立前の環境では省略されたままになる。取得中の1枚表示の判定（表示できるコンテンツが0件のとき。UI設計 6.5）で数えると、起動直後が「取得しています」ではなく「取得できません」になる。そのため、Issue #93で本番Providerを登録した後も、`rainForecast`は全コンテンツの取得中／取得不可を決める1枚表示の判定に**恒久的に数えない**（MVPの正式仕様。2026-11-09に承認。UI設計 6.5）。#9の時点で記した「本番登録時に除外をなくす」は、この決定で変更した。API契約（Published State API・Metadata）は拡張せず、Frontendの定数で扱う。`rainForecast`自体の取得状態は無視せず、降雨帯に取得中・更新待ち・取得不可を個別に表示する。他のStateの取得失敗・省略は除外しない。表示鮮度10分・TTL30分、`status`をFrontendで再計算しない規則は変えない。PR 5では、定数名・コメントの「未実装State」を、全体の取得中判定から除外するStateを表す名称に見直し（命名はPR 5で決める）、`rainForecast`のみ未設定・取得不可でも他の正常な情報が表示されることをテストする。
 
 ---
 
