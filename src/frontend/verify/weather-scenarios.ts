@@ -56,6 +56,13 @@ function weather(now: number, options: Options = {}): WeatherStates {
       },
       meta: meta(now, 2 * HOUR),
     },
+    rainForecast: rainState(now, {
+      status: "dry",
+      intensity: null,
+      rainStartAt: null,
+      rainEndAt: null,
+      forecastUntil: iso(now + 60 * MIN),
+    }),
     weeklyWeather: {
       data: {
         days: Array.from({ length: days }, (_, i) => ({
@@ -79,6 +86,31 @@ function mapStates(
     Object.entries(states).map(([key, state]) => [key, f(state)]),
   );
 }
+
+/** 降雨の合成State。`age`分前に取得し、`failure`なら直近の取得は失敗。 */
+function rainState(
+  now: number,
+  data: Record<string, unknown>,
+  age = 5,
+  failure = false,
+): PublishedState {
+  return {
+    data,
+    meta: {
+      dataUpdatedAt: iso(now - age * MIN),
+      expiresAt: iso(now + 30 * MIN - age * MIN),
+      lastAttemptAt: iso(now - (failure ? 1 : age) * MIN),
+      lastAttemptResult: failure ? "failure" : "success",
+      publishedAt: iso(now - age * MIN),
+      dataSource: failure ? "cache" : "externalApi",
+    },
+  };
+}
+const until = (now: number) => iso(now + 60 * MIN);
+const withRain = (now: number, state: PublishedState): WeatherStates => ({
+  ...weather(now),
+  rainForecast: state,
+});
 
 const noData = (lastAttemptAt: string | null): PublishedState => ({
   data: null,
@@ -154,6 +186,125 @@ export const WEATHER_SCENARIOS: readonly Scenario[] = [
     label: "夜（21:00として評価）",
     states: (now) => weather(now, { code: 0, isDay: false }),
     evaluateAt: at(21),
+  },
+  {
+    label: "降雨：20分後に弱い雨（降り始め）",
+    states: (now) =>
+      withRain(
+        now,
+        rainState(now, {
+          status: "dry",
+          intensity: "light",
+          rainStartAt: iso(now + 20 * MIN),
+          rainEndAt: iso(now + 45 * MIN),
+          forecastUntil: until(now),
+        }),
+      ),
+  },
+  {
+    label: "降雨：まもなく強い雨",
+    states: (now) =>
+      withRain(
+        now,
+        rainState(now, {
+          status: "dry",
+          intensity: "heavy",
+          rainStartAt: iso(now + 3 * MIN),
+          rainEndAt: null,
+          forecastUntil: until(now),
+        }),
+      ),
+  },
+  {
+    label: "降雨：降雨中・やむ見込みあり",
+    states: (now) =>
+      withRain(
+        now,
+        rainState(now, {
+          status: "raining",
+          intensity: "moderate",
+          rainStartAt: null,
+          rainEndAt: iso(now + 30 * MIN),
+          forecastUntil: until(now),
+        }),
+      ),
+  },
+  {
+    label: "降雨：降雨中・終了不明",
+    states: (now) =>
+      withRain(
+        now,
+        rainState(now, {
+          status: "raining",
+          intensity: "light",
+          rainStartAt: null,
+          rainEndAt: null,
+          forecastUntil: until(now),
+        }),
+      ),
+  },
+  {
+    label: "降雨：直近の取得が失敗（更新待ちの札）",
+    states: (now) =>
+      withRain(
+        now,
+        rainState(
+          now,
+          {
+            status: "dry",
+            intensity: "light",
+            rainStartAt: iso(now + 20 * MIN),
+            rainEndAt: null,
+            forecastUntil: until(now),
+          },
+          7,
+          true,
+        ),
+      ),
+  },
+  {
+    label: "降雨：取得から15分（予報を隠す）",
+    states: (now) =>
+      withRain(
+        now,
+        rainState(
+          now,
+          {
+            status: "dry",
+            intensity: "light",
+            rainStartAt: iso(now + 20 * MIN),
+            rainEndAt: null,
+            forecastUntil: until(now),
+          },
+          15,
+          true,
+        ),
+      ),
+  },
+  {
+    label: "降雨：予報時刻を過ぎた",
+    states: (now) =>
+      withRain(
+        now,
+        rainState(
+          now,
+          {
+            status: "dry",
+            intensity: "light",
+            rainStartAt: iso(now - 2 * MIN),
+            rainEndAt: null,
+            forecastUntil: until(now),
+          },
+          8,
+        ),
+      ),
+  },
+  {
+    label: "降雨だけ取得できません",
+    states: (now) => ({
+      ...weather(now),
+      rainForecast: noData(iso(now - MIN)),
+    }),
   },
   {
     label: "現在の天気だけ取得できません",

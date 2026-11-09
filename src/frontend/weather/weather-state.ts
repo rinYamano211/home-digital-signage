@@ -6,11 +6,13 @@ import type { PublishedState } from "../published-state/schema";
 import {
   staleSince,
   tokyoDate,
+  tokyoTime,
   type Staleness,
 } from "../schedule/schedule-state";
 import type {
   CurrentWeatherData,
   HourlyWeatherData,
+  RainForecastData,
   WeeklyWeatherData,
 } from "./weather-data";
 
@@ -248,10 +250,115 @@ export function weeklyWeatherView(
   return { kind: "shown", stale: valid.stale, value: days };
 }
 
+/** 降雨の表示鮮度とTTL（technology-stack 21.6）。基準は`dataUpdatedAt`。 */
+export const RAIN_FRESH_MS = 10 * 60_000;
+export const RAIN_TTL_MS = 30 * 60_000;
+const FIVE_MIN_MS = 5 * 60_000;
+const INTENSITY_NAMES = {
+  light: "弱い雨",
+  moderate: "普通の雨",
+  heavy: "強い雨",
+} as const;
+
+/**
+ * 降雨帯の予報部分（UI設計 5.2）。`status`は再計算しない（21.6）。
+ * - `none`：1時間以内の雨の予報はない
+ * - `rain`：`text`に文言、降り始めの前なら`remaining`に`あと約20分`・`まもなく`
+ * - `passed`：降り始め・降り終わりの予報時刻を過ぎた。降雨状態は推測しない
+ */
+export type RainBand =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "rain";
+      readonly text: string;
+      readonly remaining: string | null;
+    }
+  | { readonly kind: "passed" };
+
+/**
+ * 降雨帯の表示状態（technology-stack 21.6、UI設計 5.2・6.1）：
+ * - `loading`・`unavailable`：取得中・取得できない（30分以上、期限切れ、未来の`dataUpdatedAt`を含む）
+ * - `waiting`：取得から10分以上30分未満。予報は隠し、`since`に最終更新時刻
+ * - `shown`：取得から10分未満。直近の取得が失敗なら`stale`に最終更新時刻
+ */
+export type RainView =
+  | { readonly kind: "loading" }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "waiting"; readonly since: string }
+  | {
+      readonly kind: "shown";
+      readonly stale: Staleness;
+      readonly band: RainBand;
+    };
+
+/** 5分単位に丸めたJSTの時刻。 */
+const roundedTime = (ms: number) =>
+  tokyoTime(Math.round(ms / FIVE_MIN_MS) * FIVE_MIN_MS);
+
+/** 予報の文言と、「あと約N分」（降り始めの前だけ）。時刻を過ぎていれば`passed`。 */
+export function rainBand(data: RainForecastData, nowMs: number): RainBand {
+  if (data.intensity === null) return { kind: "none" };
+  const name = INTENSITY_NAMES[data.intensity];
+  if (data.status === "raining") {
+    if (data.rainEndAt === null)
+      return {
+        kind: "rain",
+        text: `${name}　しばらく続く見込み`,
+        remaining: null,
+      };
+    const end = Date.parse(data.rainEndAt);
+    if (!(nowMs < end)) return { kind: "passed" };
+    return {
+      kind: "rain",
+      text: `${name}　${roundedTime(end)}ごろやむ見込み`,
+      remaining: null,
+    };
+  }
+  // 雨が見込まれるが今は降っていない：降り始めは後（形は検証済み）。
+  const start = Date.parse(data.rainStartAt!);
+  if (!(nowMs < start)) return { kind: "passed" };
+  const minutes = (start - nowMs) / 60_000;
+  return {
+    kind: "rain",
+    text: `${roundedTime(start)}ごろから${name}`,
+    remaining:
+      minutes < 5 ? "まもなく" : `あと約${Math.round(minutes / 5) * 5}分`,
+  };
+}
+
+export function rainForecastView(
+  state: PublishedState | undefined,
+  polling: PollingStatus,
+  nowMs: number,
+): RainView {
+  const valid = validState<RainForecastData>(state, polling, nowMs);
+  if (!valid.ok)
+    return valid.view.kind === "loading"
+      ? { kind: "loading" }
+      : { kind: "unavailable" };
+  // validStateを通ったのでdataUpdatedAtはある（10.6）。
+  const updated = state!.meta.dataUpdatedAt!;
+  const age = nowMs - Date.parse(updated);
+  if (!(age >= 0) || age >= RAIN_TTL_MS) return { kind: "unavailable" };
+  if (age >= RAIN_FRESH_MS)
+    return { kind: "waiting", since: staleSince(updated, nowMs) };
+  const band = rainBand(valid.data, nowMs);
+  // 予報時刻を過ぎたら、更新待ちの札を付ける（降雨状態は推測しない）。
+  const stale: Staleness =
+    valid.stale ??
+    (band.kind === "passed" ? { since: staleSince(updated, nowMs) } : null);
+  return { kind: "shown", stale, band };
+}
+
+/** 巡回の「表示できる」に数えるか。更新待ち・予報時刻超過は数えない（UI設計 6.2）。 */
+export const isRainDisplayable = (view: RainView): boolean =>
+  view.kind === "shown" && view.band.kind !== "passed";
+
 /** 今日の天気（UI設計 5.2）。最高・最低は週間天気の今日が表示できるときだけ持つ。 */
 export type TodayWeatherView = {
   readonly current: PartView<CurrentWeather>;
   readonly hourly: PartView<readonly HourlySlot[]>;
+  readonly rain: RainView;
   readonly highLow: { readonly max: number; readonly min: number } | null;
 };
 
@@ -259,22 +366,28 @@ export function todayWeatherView(
   current: PartView<CurrentWeather>,
   hourly: PartView<readonly HourlySlot[]>,
   weekly: PartView<readonly WeeklyDay[]>,
+  rain: RainView = { kind: "unavailable" },
 ): TodayWeatherView {
   // 週間天気の選択は今日から始まるので、表示できるなら先頭が今日。
   const today = isShown(weekly) ? weekly.value[0] : undefined;
   return {
     current,
     hourly,
+    rain,
     highLow: today?.today ? { max: today.max, min: today.min } : null,
   };
 }
 
 /**
  * 巡回に残すか（UI設計 6.2、frontend-development 12.5）。今日の天気は、現在の天気・時間別・
- * 降雨のどれか1つでも表示できれば残す。降雨は#93が終わるまで常に表示できない。
+ * 降雨のどれか1つでも表示できれば残す。降雨は予報を表示できるときだけ数える。
  */
 export function isTodayWeatherDisplayable(view: TodayWeatherView): boolean {
-  return isShown(view.current) || isShown(view.hourly);
+  return (
+    isShown(view.current) ||
+    isShown(view.hourly) ||
+    isRainDisplayable(view.rain)
+  );
 }
 
 export function isWeeklyWeatherDisplayable(

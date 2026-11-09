@@ -7,7 +7,7 @@ import {
 } from "../../src/frontend/published-state/schema";
 import {
   signageModel,
-  UNIMPLEMENTED_STATES,
+  EXCLUDED_FROM_LOADING_JUDGEMENT,
 } from "../../src/frontend/signage-model";
 import {
   validCurrentWeatherShape,
@@ -544,7 +544,7 @@ describe("signageModel with weather (12.5)", () => {
   });
 
   it("everything loading → the loading card; the unimplemented rainForecast is not counted", () => {
-    expect([...UNIMPLEMENTED_STATES]).toEqual(["rainForecast"]);
+    expect([...EXCLUDED_FROM_LOADING_JUDGEMENT]).toEqual(["rainForecast"]);
     const m = signageModel(snapshot(all(noData(null))), NOW);
     expect([...m.displayable]).toEqual([]);
     expect(m.notice).toBe("loading");

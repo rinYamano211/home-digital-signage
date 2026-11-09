@@ -59,7 +59,24 @@ const WeeklyWeatherDataSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const RainForecastDataSchema = Type.Object(
+  {
+    status: Type.Union([Type.Literal("dry"), Type.Literal("raining")]),
+    intensity: Type.Union([
+      Type.Literal("light"),
+      Type.Literal("moderate"),
+      Type.Literal("heavy"),
+      Type.Null(),
+    ]),
+    rainStartAt: Type.Union([Type.String(), Type.Null()]),
+    rainEndAt: Type.Union([Type.String(), Type.Null()]),
+    forecastUntil: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
 export type CurrentWeatherData = Static<typeof CurrentWeatherDataSchema>;
+export type RainForecastData = Static<typeof RainForecastDataSchema>;
 export type HourlyWeatherData = Static<typeof HourlyWeatherDataSchema>;
 export type HourlyWeatherItem = HourlyWeatherData["hours"][number];
 export type WeeklyWeatherData = Static<typeof WeeklyWeatherDataSchema>;
@@ -118,4 +135,35 @@ export function validWeeklyWeatherShape(
     previous = at;
   }
   return true;
+}
+
+/**
+ * 降雨の見込み（technology-stack 21.3）。日時は`toISOString()`の形だけ（16.6）。
+ * 降雨イベントがない（強さがnull）なら降り始め・降り終わりもnull、降雨中なら降り始めはnull、
+ * 降り終わりがあるなら降り始め（降雨中でなければ）より後であること。
+ */
+export function validRainForecastShape(
+  value: unknown,
+): value is RainForecastData {
+  if (!Value.Check(RainForecastDataSchema, value)) return false;
+  const start =
+    value.rainStartAt === null ? null : scheduleInstant(value.rainStartAt);
+  const end =
+    value.rainEndAt === null ? null : scheduleInstant(value.rainEndAt);
+  if (
+    scheduleInstant(value.forecastUntil) === null ||
+    (value.rainStartAt !== null && start === null) ||
+    (value.rainEndAt !== null && end === null)
+  )
+    return false;
+  if (value.intensity === null)
+    return (
+      value.status === "dry" &&
+      value.rainStartAt === null &&
+      value.rainEndAt === null
+    );
+  if (value.status === "raining") return start === null;
+  // dry with an event: it starts later.
+  if (start === null) return false;
+  return end === null || end > start;
 }

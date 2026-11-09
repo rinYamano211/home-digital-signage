@@ -7,6 +7,7 @@ import { validScheduleShape } from "../schedule/schedule-data";
 import {
   validCurrentWeatherShape,
   validHourlyWeatherShape,
+  validRainForecastShape,
   validWeeklyWeatherShape,
 } from "../weather/weather-data";
 import { utcInstant } from "./utc-instant";
@@ -79,10 +80,11 @@ function validState(value: unknown): value is PublishedState {
   return m.dataSource !== null && m.expiresAt !== null;
 }
 
-/** Domain部分の検証。RainForecastは#93で追加する（frontend-development 12.1）。 */
+/** Domain部分の検証（frontend-development 12.1）。 */
 const DOMAIN: Partial<Record<StateKey, (data: unknown) => boolean>> = {
   currentWeather: validCurrentWeatherShape,
   hourlyWeather: validHourlyWeatherShape,
+  rainForecast: validRainForecastShape,
   weeklyWeather: validWeeklyWeatherShape,
   schedule: validScheduleShape,
 };

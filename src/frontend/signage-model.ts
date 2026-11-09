@@ -12,6 +12,7 @@ import {
   hourlyWeatherView,
   isTodayWeatherDisplayable,
   isWeeklyWeatherDisplayable,
+  rainForecastView,
   todayWeatherView,
   weeklyWeatherView,
   type PartView,
@@ -32,11 +33,13 @@ export type SignageModel = {
 };
 
 /**
- * 本番で未実装と明示したState（frontend-development 12.5、UI設計 6.5）。取得中の1枚表示の判定で
- * 数えない。実装済みのStateの取得失敗・省略は除外しない。#93でRainForecastを本番に登録するときに
- * この一覧から外す。
+ * 取得中の1枚表示の判定（表示できるコンテンツが0件のとき）で数えないState（UI設計 6.5、
+ * frontend-development 12.5。MVPの正式仕様）。RainForecastは、Tomorrow.ioの利用開始条件
+ * （APIキー・Quota Provisioning・Clock Trust）が整うまで省略されたままになりうるため、
+ * 本番に登録した後も恒久的に数えない。降雨帯は個別に表示する。他のStateの取得失敗・省略は
+ * 除外しない。
  */
-export const UNIMPLEMENTED_STATES: ReadonlySet<StateKey> = new Set([
+export const EXCLUDED_FROM_LOADING_JUDGEMENT: ReadonlySet<StateKey> = new Set([
   "rainForecast",
 ]);
 
@@ -56,7 +59,8 @@ export function signageModel(
   const current = currentWeatherView(states.currentWeather, status, nowMs);
   const hourly = hourlyWeatherView(states.hourlyWeather, status, nowMs);
   const weeklyWeather = weeklyWeatherView(states.weeklyWeather, status, nowMs);
-  const todayWeather = todayWeatherView(current, hourly, weeklyWeather);
+  const rain = rainForecastView(states.rainForecast, status, nowMs);
+  const todayWeather = todayWeatherView(current, hourly, weeklyWeather, rain);
   const views = { schedule, todayWeather, weeklyWeather };
   if (status === "waiting")
     return { ...views, displayable: new Set(), notice: "loading" };
@@ -67,19 +71,19 @@ export function signageModel(
   if (isTodayWeatherDisplayable(todayWeather)) displayable.add("todayWeather");
   if (isWeeklyWeatherDisplayable(weeklyWeather))
     displayable.add("weeklyWeather");
-  // 各Stateが表示できない理由。降雨帯は#93が終わるまで常に表示できない（12.3）。
+  // 各Stateが表示できない理由。降雨帯は個別に表示するため、ここでは数えない。
   const reasons: readonly (readonly [StateKey, string])[] = [
     ["schedule", schedule.kind],
     ["currentWeather", current.kind],
     ["hourlyWeather", hourly.kind],
-    ["rainForecast", "unavailable"],
+    ["rainForecast", rain.kind],
     ["weeklyWeather", weeklyWeather.kind],
   ];
   // 0件で、表示できない理由がすべて「取得中」のときだけ取得中の1枚表示にする。
   const allLoading =
     displayable.size === 0 &&
     reasons
-      .filter(([key]) => !UNIMPLEMENTED_STATES.has(key))
+      .filter(([key]) => !EXCLUDED_FROM_LOADING_JUDGEMENT.has(key))
       .every(([, kind]) => kind === "loading");
   return {
     ...views,
