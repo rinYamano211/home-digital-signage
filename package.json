@@ -20,7 +20,8 @@
     "dev:frontend:verify": "vite --config vite.frontend.config.ts --mode verify",
     "build:frontend:verify": "vite build --config vite.frontend.config.ts --mode verify",
     "start:backend": "sh scripts/with-backend-lock.sh backend",
-    "provision:backend": "sh scripts/with-backend-lock.sh provision"
+    "provision:backend": "sh scripts/with-backend-lock.sh provision",
+    "provision:quota": "sh scripts/with-backend-lock.sh provision-quota"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
