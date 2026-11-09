@@ -303,14 +303,14 @@ export function rainBand(data: RainForecastData, nowMs: number): RainBand {
     if (data.rainEndAt === null)
       return {
         kind: "rain",
-        text: `${name}　しばらく続く見込み`,
+        text: `${name}\u3000しばらく続く見込み`,
         remaining: null,
       };
     const end = Date.parse(data.rainEndAt);
     if (!(nowMs < end)) return { kind: "passed" };
     return {
       kind: "rain",
-      text: `${name}　${roundedTime(end)}ごろやむ見込み`,
+      text: `${name}\u3000${roundedTime(end)}ごろやむ見込み`,
       remaining: null,
     };
   }
