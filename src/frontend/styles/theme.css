@@ -325,6 +325,45 @@ body {
   flex-shrink: 0;
 }
 
+/* 雨が見込まれるとき：帯を濃い青で目立たせる（UI設計 5.2。色はUIモックの値）。 */
+.weather-rain.is-rain {
+  background: #34476a;
+  color: #e3edff;
+  font-size: 36px;
+  padding: 20px 28px;
+}
+
+.weather-rain.is-rain .weather-rain-icon {
+  width: 44px;
+  height: 44px;
+}
+
+.weather-rain-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.weather-rain-remaining {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 14px;
+  border-radius: 14px;
+  background: #e3edff;
+  color: #24324d;
+  font-size: 30px;
+}
+
+/* 帯の右端の更新待ち（UI設計 6.1）。 */
+.weather-rain-stale {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--color-stale);
+  font-size: 22px;
+  line-height: 1.25;
+  text-align: right;
+}
+
 .weather-hourly {
   display: flex;
   flex-direction: column;
