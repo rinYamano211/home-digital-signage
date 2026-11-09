@@ -135,6 +135,26 @@ test("the span is checked again at adoption time (stale_data)", () => {
     expect.any(String),
   );
 });
+test("a bad extra slot does not reject the forecast, unless it falls inside the span required at adoption", () => {
+  const { provider, log } = make();
+  const withBadSlot = (index: number) => {
+    const body = timeline();
+    body.data.timelines[0]!.intervals[index]!.startTime = "garbage";
+    return response(body);
+  };
+  // Required from the Request (minute 1): slots 1-60. Slot 65 is an extra.
+  expect(
+    provider.parse(withBadSlot(65), context(startMs + 3 * MIN + 1)).kind,
+  ).toBe("success");
+  // Adopted at minute 4: slots 4-63, so a bad slot 63 is now required.
+  expect(
+    provider.parse(withBadSlot(63), context(startMs + 3 * MIN + 1)).kind,
+  ).toBe("failure");
+  expect(log.warn).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ reason: "invalid_response" }),
+    expect.any(String),
+  );
+});
 test.each([
   ["timeout", { kind: "timeout" } as HttpOutcome, "timeout"],
   ["network", { kind: "network_error" } as HttpOutcome, "network_error"],

@@ -2180,9 +2180,9 @@ Request開始順を判定する単調増加連番を推奨する（具体実装�
 
 <a id="rainforecast-issue-93-design"></a>
 
-### 21.9 Issue #93 実装設計：Tomorrow.io（設計・未実装）
+### 21.9 Issue #93 実装設計：Tomorrow.io（Backend実装済み・実API未確認）
 
-[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)の実装前に整理した設計である（2026-11-09）。**実装は未着手**。21.1〜21.8のDomain Schema・判定・Validation・周期・TTL・表示鮮度、第16章のQuota Guard、23.11のSend Gate・Tx-Q・F-01〜F-03は変更しない。**Tomorrow.ioの現行API仕様は確認していない**ため、「未確認」の項目は確定事項として扱わない。
+[Issue #93](https://github.com/rinYamano211/home-digital-signage/issues/93)の実装前に整理した設計である（2026-11-09）。実装はPR #101（Shutdown Abort）・#102（Provisioning CLI）・#103（Provider。レビュー中）で行った。21.1〜21.8のDomain Schema・判定・Validation・周期・TTL・表示鮮度、第16章のQuota Guard、23.11のSend Gate・Tx-Q・F-01〜F-03は変更しない。Tomorrow.ioの仕様は、**公式ドキュメント（AIが2026-11-09に閲覧）の記載**と**実APIでの確認**を区別する。公式の記載があっても、実APIで確認できていない項目は「未確認」とし、確定事項として扱わない。実APIでの確認は、Pi・実APIの検証（PR 6・#13）で行う。
 
 #### 責務と変更範囲
 
@@ -2240,23 +2240,36 @@ Issue #93のPR 0（ユーザーによる利用条件・APIキーの確認）の�
 
 **同一APIキーの利用状況：未確認。** 同じAPIキーを他のSenderが使っていないことは、今回確認していない。F-01の初回Provisioning（管理者確認の4項目）の実行前に、ユーザーが確認する。16.2・23.11には、プロジェクト初期のPowerShell検証で数回使用したという記録がある。
 
-**PR 4の前に確認すること**：Request・Responseの詳細仕様（認証方式、本文、フィールド名・単位）、時刻境界（21.5・21.9の`requestStartedAt`）、単一Sender前提、21.9に残した未確定事項。
+**実API検証（PR 6・#13）で確認すること**：Request・Responseの実際の形式（認証、本文、フィールド名・単位）、時刻境界（先頭スロットと`requestStartedAt`の関係）、単一Sender前提、実降雨時の値。
 
-**未確認（確定しない）**：認証方式（Query Parameter `apikey`かHeaderか）、Request本文の形式、レスポンスのフィールド名・単位・スロット境界。Query方式の場合、URLにAPIキーが含まれる。共通HTTP Adapterは`config.url`をログに出さないが、ProviderのHTTP設定（`HttpAdapterConfig`）自体もログ・Published State・エラーメッセージに含めない。確認後に本節を更新し、Provider実装前に承認を得る。
+**公式ドキュメントの記載（2026-11-09にAIが閲覧。実APIでの確認ではない）**
+
+- 認証：`apikey`クエリパラメータだけが記載されている（Header指定の記載はない）。実装はこれに従い、URLにAPIキーを入れる（ユーザーが2026-11-09にPR 4の設計案として承認）。
+- `POST /v4/timelines`の本文：`location`、`fields`（必須）、`units`（`metric`）、`timesteps`（`1m`を含む）、`startTime`（`now`）、`endTime`（`nowPlusXm/h/d`の形式）。`nowPlus65m`は一覧に明記がないが、この形式に合う。
+- 応答：`data.timelines[].intervals[]`が`startTime`と`values`を持つ。`rainIntensity`の単位はmm/hr。1分粒度はFreeプランで±6時間、1回の呼出しは24時間以内。
+
+**未確認（実APIで確認できていない）**：`startTime: "now"`を分に丸めるか、`intervals[].startTime`が分境界にそろうか（公式の記載なし）、`rainIntensity`指定時の`values`の形式、実降雨時の値。2026-10-21の疎通（21.2）は、HTTP 200・66スロット・連続1分間隔・先頭が分境界（`13:20:00Z`）・先頭5件が数値0までの確認であり、認証方式の検証や上記の確認を兼ねない。実装は、分境界にそろわない応答を不正として扱い（Fail Closed）、取得失敗は`weather_acquisition_failed`で検知できる。
+
+ProviderのHTTP設定（`HttpAdapterConfig`）は、URLにAPIキーを含むため、ログ・Published State・エラーメッセージに含めない（共通HTTP Adapterも`config.url`をログに出さない）。
 
 #### Provider Interface
 
 - Quota対象は引き続き単一HTTP型（`StateProvider`）とする。複数HTTP型はQuotaなしのProvider専用で、Gateは1回の予約につきHTTP 1回（18.7）。
 - `parse(outcome)`は`parse(outcome, context)`へ拡張する（既存Providerは第2引数を使わない）。`context`は最小限とする。
-  - `requestStartedAt`（案）：API Request開始時刻（UTC RFC 3339）。21.5の「API Request開始時刻」を変更せず、実際のHTTP開始に対応させる。
+  - `requestStartedAt`：API Request開始時刻（UTC RFC 3339）。21.5の「API Request開始時刻」を変更せず、実際のHTTP開始に対応させる。
   - `now()`：採用直前の現在時刻を取得する関数。21.5の2段階目のValidationに使う。
-- **API Request開始時刻の取得方法は、PR 4の設計課題として残す（未確定）。** Coordinatorの`startedAt`は`cycle()`内でGate・Tx-Qより前に取る取得サイクルの開始時刻であり、F-02の「Tx-Q後1秒以内」はTx-Qの計測起点からfetch呼出しまでの制約なので、`startedAt`からHTTP開始までの差を保証しない。そのため`startedAt`を21.5の開始時刻の代わりにしない。最小変更の案として、Coordinatorの`acquire()`がGateの`start()`の`started`を受けた直後に時刻を記録して渡す（Gate・Quotaの変更なし）。Coordinatorの内部変更になるため、PR 4の設計で再承認を得る。先頭スロットが分境界から前後1スロットずれる場合の許容も、実APIの確認後に確定する（**未確認**）。必要期間が不足すれば取得失敗とする（補間・推測なし）。
+- **API Request開始時刻の取得方法（実装済み。ユーザーが2026-11-09にPR 4の設計案として承認）。** Coordinatorの`startedAt`は`cycle()`内でGate・Tx-Qより前に取る取得サイクルの開始時刻であり、F-02の「Tx-Q後1秒以内」はTx-Qの計測起点からfetch呼出しまでの制約なので、`startedAt`からHTTP開始までの差を保証しない。そのため`startedAt`を21.5の開始時刻の代わりにしない。Coordinatorの`acquire()`が、Gateの`start()`が`started`を返した直後（Gateがfetchを同期で呼んだ直後）に`Date.now()`を記録し、`requestStartedAt`として`parse`に渡す（Gate・Quotaの変更なし）。
+  - 実際のHTTP開始との関係：fetchの呼出しより後で、応答より前。差は同期処理の分だけ（ミリ秒以下を想定。実機での計測は未実施）。HTTP開始そのものの物理的な時刻の保証ではない（F-02と同じ境界）。
+  - 分境界：起点は`requestStartedAt`以降の最初の整数分（分境界ちょうどならその分）。Provider側の「now」は`requestStartedAt`より遅れて処理されるため、`requestStartedAt`が分境界の直前（通信遅延以内）にあり、Providerの最初のスロットが次の分から始まる場合は、起点のスロットがなく`invalid_response`（起点の欠損）として失敗する。失敗した場合は1回分のQuotaを使い、既存のBackoffに従う。発生の頻度は実APIで確認する（**未確認**）。
+  - 採用時点の再検証との関係：採用直前に`now()`から同じ検証を行う。HTTPに時間がかかり起点の分が進んだ場合は、`now()`以降の60スロットが必要になる。Providerは66スロットを返すので（疎通の記録）、最大約6分の遅れまで足りる。足りなければ`stale_data`で失敗する。
+  - 先頭スロットの許容幅は、実APIの確認後に確定する（**未確認**）。必要期間が不足すれば取得失敗とする（補間・推測なし）。
+- **余剰スロットの扱い（21.5の「余剰処理」）。** 検証するのは、採用する連続60スロットだけである。採用するスロットの時刻・順序（欠損・重複・逆順）・強度値は厳格に検証し、1つでも異常なら全体を取得失敗とする。採用範囲の前後にある余剰スロットは採用しないので、時刻や値の異常があっても、正常な60スロットを拒否しない。ただし、採用範囲を安全に特定できない場合は取得失敗とする：①分境界にそろった時刻のスロットが1つもない、②起点のスロットが使えない（次に使えるスロットが起点ではない）。起点より前の異常なスロットは、起点の特定に使わないので無視する。Request開始時の範囲では余剰でも、採用時の範囲に入ったスロットは採用対象となり、検証する（2段階Validation）。
 - Provider登録の条件：地点（Config）とAPIキー（Secret）の両方が正常なとき。どちらかが欠落・不正なら、Tomorrow.io Providerだけを登録しない。BackendとOpen-Meteo・Scheduleは動作を続ける。Providerが無いとGateにHTTP Adapterが付かず、送信は常に拒否される（Fail Closed）。
 
 #### Config・Secret
 
 - 地点は、既存の`SIGNAGE_WEATHER_LATITUDE`・`SIGNAGE_WEATHER_LONGITUDE`（16.6）を再利用する。Open-Meteoと同じ地点で、新しい環境変数は追加しない。地点はGit・Issue・PR・ログ・Published Stateに出さない。
-- APIキー：`/etc/home-digital-signage/secrets/weather.json`（0600）。形式の案は`{"tomorrowIoApiKey":"..."}`の1項目。既存Secret Loader（`loadSecret("weather")`）を変更しない。読み込みは起動時に1回で、変更はBackend再起動で反映する（24.2）。
+- APIキー：`/etc/home-digital-signage/secrets/weather.json`（0600）。形式は`{"tomorrowIoApiKey":"..."}`の1項目で、キーは`[A-Za-z0-9_-]{8,128}`に限る（URLに入れるため。ユーザーが2026-11-09にPR 4の設計案として承認。キーの実際の形式との適合は実機で確認する）。既存Secret Loader（`loadSecret("weather")`）を変更しない。読み込みは起動時に1回で、変更はBackend再起動で反映する（24.2）。
 - ログ：固定のEvent名と分類コードだけ（Open-Meteoと同じ方針）。APIキー・地点・Request URL・本文を記録しない。
 
 #### 初回Provisioning（F-01）の管理経路

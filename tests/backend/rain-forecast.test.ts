@@ -140,10 +140,10 @@ test("parseInstant accepts Z and numeric offsets and rejects impossible dates", 
   ])
     expect(parseInstant(text)).toBeNull();
 });
-test("slotsOf reads only the 1m timeline on whole minutes", () => {
+test("slotsOf reads only the 1m timeline and checks structure, not slot times or values", () => {
   expect(slotsOf(body([0, 0.2]))?.map((s) => s.value)).toEqual([0, 0.2]);
   expect(slotsOf(body([0], origin, "5m"))).toBeNull();
-  expect(slotsOf(body([0], origin + 34_000))).toBeNull(); // off the minute grid
+  expect(slotsOf(body([0], origin + 34_000))).toHaveLength(1); // judged by requiredWindow
   for (const bad of [null, [], {}, { data: {} }, { data: { timelines: {} } }])
     expect(slotsOf(bad)).toBeNull();
 });
@@ -212,4 +212,102 @@ test("gaps, duplicates and reversed slots are invalid; extra slots are ignored",
   const values: unknown[] = Array.from({ length: 66 }, () => 0);
   values[63] = "bad";
   expect(requiredWindow(slotsOf(body(values))!, origin).ok).toBe(true);
+});
+
+// ---- Extra slots are not adopted (21.5); the adopted 60 are strict ----
+const times = (n: number, startMs = origin) =>
+  Array.from({ length: n }, (_, i) =>
+    new Date(startMs + i * MIN).toISOString(),
+  );
+const raw = (
+  startTimes: unknown[],
+  values: unknown[] = startTimes.map(() => 0),
+): Slot[] =>
+  startTimes.map((startTime, i) => ({ startTime, value: values[i] }));
+
+test("an invalid time or value only in trailing extra slots does not reject a valid 60-slot window", () => {
+  const t: unknown[] = times(66);
+  t[61] = "garbage";
+  t[62] = null;
+  t[63] = new Date(origin + 63 * MIN + 34_000).toISOString(); // off the grid
+  t[64] = t[10]; // duplicate of an adopted slot's time
+  t[65] = "2026-02-30T00:00:00Z";
+  const v: unknown[] = t.map(() => 0);
+  v[62] = "bad";
+  v[65] = Number.NaN;
+  expect(requiredWindow(raw(t, v), origin)).toMatchObject({
+    ok: true,
+    originMs: origin,
+  });
+});
+test("an invalid time in leading (past) extra slots does not reject the window either", () => {
+  const t: unknown[] = [
+    "garbage",
+    new Date(origin - 2 * MIN + 5000).toISOString(),
+    ...times(60),
+  ];
+  expect(requiredWindow(raw(t), origin)).toMatchObject({ ok: true });
+});
+test("inside the adopted 60 slots a bad time, gap, duplicate or reversal fails closed", () => {
+  const base = times(66);
+  for (const index of [0, 1, 30, 59]) {
+    const bad: unknown[] = [...base];
+    bad[index] = "garbage";
+    expect(requiredWindow(raw(bad), origin)).toEqual({
+      ok: false,
+      reason: "invalid_response",
+    });
+    const dup: unknown[] = [...base];
+    dup[index] = index === 0 ? base[1] : base[index - 1];
+    expect(requiredWindow(raw(dup), origin).ok).toBe(false);
+  }
+  const reversed: unknown[] = [...base];
+  [reversed[20], reversed[21]] = [reversed[21], reversed[20]];
+  expect(requiredWindow(raw(reversed), origin).ok).toBe(false);
+  expect(requiredWindow(raw(base.filter((_, i) => i !== 40)), origin).ok).toBe(
+    false,
+  );
+});
+test("inside the adopted 60 slots a bad intensity fails closed", () => {
+  for (const bad of [null, undefined, "0.2", Number.NaN, Infinity, -1]) {
+    const v: unknown[] = times(66).map(() => 0);
+    v[59] = bad; // the last adopted slot
+    expect(requiredWindow(raw(times(66), v), origin)).toEqual({
+      ok: false,
+      reason: "invalid_response",
+    });
+  }
+});
+test("when the window cannot be located the forecast fails closed", () => {
+  // No usable slot at all (e.g. a timeline that is off the minute grid).
+  const offGrid = times(66, origin + 34_000);
+  expect(requiredWindow(raw(offGrid), origin)).toEqual({
+    ok: false,
+    reason: "invalid_response",
+  });
+  // The origin slot itself is unusable: the next usable slot is not the origin.
+  const t: unknown[] = times(66);
+  t[0] = "garbage";
+  expect(requiredWindow(raw(t), origin)).toEqual({
+    ok: false,
+    reason: "invalid_response",
+  });
+  // Too few slots from the origin, or every slot is in the past.
+  expect(requiredWindow(raw(times(59)), origin).ok).toBe(false);
+  expect(requiredWindow(raw(times(66)), origin + 66 * MIN)).toEqual({
+    ok: false,
+    reason: "stale_data",
+  });
+});
+test("a slot that is extra at the Request start becomes adopted at adoption time (two stages)", () => {
+  // Slot 62 is bad: it is outside the window from the Request start (minute 0)
+  // but inside the window from minute 3 (slots 3-62).
+  const t: unknown[] = times(66);
+  t[62] = "garbage";
+  const slotsWithBadExtra = raw(t);
+  expect(requiredWindow(slotsWithBadExtra, origin).ok).toBe(true);
+  expect(requiredWindow(slotsWithBadExtra, origin + 3 * MIN)).toEqual({
+    ok: false,
+    reason: "invalid_response",
+  });
 });

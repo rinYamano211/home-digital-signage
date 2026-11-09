@@ -36,9 +36,13 @@ const MODERATE_MMH = 1.0;
 const HEAVY_MMH = 10.0;
 const MAX_INTERVALS = 500;
 
+/** One interval as the Provider sent it. Nothing but the structure is checked
+ * here: a slot is validated only if it becomes part of the adopted 60-slot
+ * window (`requiredWindow`). Extra slots are not adopted and cannot make an
+ * otherwise valid forecast fail (technology-stack 21.5).
+ */
 export interface Slot {
-  /** Slot start, epoch ms (a whole minute). */
-  readonly startMs: number;
+  readonly startTime: unknown;
   readonly value: unknown;
 }
 
@@ -81,9 +85,8 @@ export function parseInstant(text: unknown): number | null {
   return Number.isSafeInteger(result) ? result : null;
 }
 
-/** The 1-minute timeline of a `/v4/timelines` response as ordered slots, or
- * null when the structure is not usable. Slot values are validated later,
- * only where required (21.5): extra slots are ignored.
+/** The 1-minute timeline of a `/v4/timelines` response, or null when its
+ * structure is not usable. Slot times and values are NOT validated here.
  */
 export function slotsOf(body: unknown): Slot[] | null {
   const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -96,43 +99,62 @@ export function slotsOf(body: unknown): Slot[] | null {
   );
   if (!timeline || !Array.isArray(timeline.intervals)) return null;
   if (timeline.intervals.length > MAX_INTERVALS) return null;
-  const slots: Slot[] = [];
-  for (const interval of timeline.intervals) {
-    if (!isObject(interval)) return null;
-    const startMs = parseInstant(interval.startTime);
-    // Whole-minute slot starts only; a timeline that is not on the minute grid
-    // cannot be read as 1-minute slots and fails closed.
-    if (startMs === null || startMs % MINUTE_MS !== 0) return null;
+  return timeline.intervals.map((interval): Slot => {
+    if (!isObject(interval)) return { startTime: undefined, value: undefined };
     const values = interval.values;
-    slots.push({
-      startMs,
+    return {
+      startTime: interval.startTime,
       value: isObject(values) ? values.rainIntensity : undefined,
-    });
-  }
-  return slots;
+    };
+  });
 }
 
 export type Window =
   | { ok: true; intensities: number[]; originMs: number }
   | { ok: false; reason: "invalid_response" | "stale_data" };
 
-/** Required span from the first whole minute at/after `atMs` (21.5): 60
- * consecutive slots, strictly increasing by one minute, each a finite
- * intensity >= 0. Too few slots from the origin is `stale_data`; a broken
- * sequence or value is `invalid_response`. No interpolation.
+/** A slot start on the whole-minute grid, or null (unusable as a 1-minute
+ * slot). An unusable slot is simply not a candidate for the window.
+ */
+const gridStart = (slot: Slot): number | null => {
+  const ms = parseInstant(slot.startTime);
+  return ms !== null && ms % MINUTE_MS === 0 ? ms : null;
+};
+
+/** The adopted span from the first whole minute at/after `atMs` (21.5): 60
+ * consecutive slots, each exactly one minute after the previous one (no gap,
+ * duplicate or reversal) and each a finite intensity >= 0. Only these slots
+ * are validated; slots before or after them are ignored. If the origin slot
+ * cannot be identified safely the forecast fails closed: no usable slot at all
+ * or a gap at the origin is `invalid_response`; too few slots from the origin
+ * is `stale_data`. No interpolation.
  */
 export function requiredWindow(slots: readonly Slot[], atMs: number): Window {
   const originMs = Math.ceil(atMs / MINUTE_MS) * MINUTE_MS;
-  const first = slots.findIndex((s) => s.startMs >= originMs);
-  if (first < 0 || slots.length - first < REQUIRED_SLOTS)
+  let usable = 0;
+  let first = -1;
+  let firstMs = 0;
+  for (let i = 0; i < slots.length; i++) {
+    const ms = gridStart(slots[i]!);
+    if (ms === null) continue; // not a candidate; ignored unless adopted
+    usable++;
+    if (ms >= originMs) {
+      first = i;
+      firstMs = ms;
+      break;
+    }
+  }
+  if (usable === 0 && slots.length > 0)
+    return { ok: false, reason: "invalid_response" }; // no usable slot at all
+  if (first < 0) return { ok: false, reason: "stale_data" };
+  if (firstMs !== originMs) return { ok: false, reason: "invalid_response" }; // gap at the origin
+  if (slots.length - first < REQUIRED_SLOTS)
     return { ok: false, reason: "stale_data" };
-  if (slots[first]!.startMs !== originMs)
-    return { ok: false, reason: "invalid_response" }; // a gap at the origin
   const intensities: number[] = [];
   for (let i = 0; i < REQUIRED_SLOTS; i++) {
     const slot = slots[first + i]!;
-    if (slot.startMs !== originMs + i * MINUTE_MS)
-      return { ok: false, reason: "invalid_response" }; // gap, duplicate, reversed
+    if (gridStart(slot) !== originMs + i * MINUTE_MS)
+      return { ok: false, reason: "invalid_response" }; // gap, duplicate, reversed, bad time
     if (
       typeof slot.value !== "number" ||
       !Number.isFinite(slot.value) ||
