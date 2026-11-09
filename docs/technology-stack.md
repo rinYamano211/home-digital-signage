@@ -2214,9 +2214,9 @@ Request開始順を判定する単調増加連番を推奨する（具体実装�
 
 - Quota対象は引き続き単一HTTP型（`StateProvider`）とする。複数HTTP型はQuotaなしのProvider専用で、Gateは1回の予約につきHTTP 1回（18.7）。
 - `parse(outcome)`は`parse(outcome, context)`へ拡張する（既存Providerは第2引数を使わない）。`context`は最小限とする。
-  - `startedAt`：取得サイクルの開始時刻（UTC RFC 3339）。Coordinatorが`runOnce()`内でGate・Tx-Qの前に取る。HTTP Request開始よりも早く、差はF-02の許容遅延（Tx-Q後1秒以内）に収まる。
+  - `requestStartedAt`（案）：API Request開始時刻（UTC RFC 3339）。21.5の「API Request開始時刻」を変更せず、実際のHTTP開始に対応させる。
   - `now()`：採用直前の現在時刻を取得する関数。21.5の2段階目のValidationに使う。
-- 21.5の「API Request開始時刻」は、本節では`startedAt`と定義する。先頭スロットがその分境界から前後1スロットずれる場合の許容は、実APIの確認後に確定する（**未確認**）。必要期間が不足すれば取得失敗とする（補間・推測なし）。
+- **API Request開始時刻の取得方法は、PR 4の設計課題として残す（未確定）。** Coordinatorの`startedAt`は`cycle()`内でGate・Tx-Qより前に取る取得サイクルの開始時刻であり、F-02の「Tx-Q後1秒以内」はTx-Qの計測起点からfetch呼出しまでの制約なので、`startedAt`からHTTP開始までの差を保証しない。そのため`startedAt`を21.5の開始時刻の代わりにしない。最小変更の案として、Coordinatorの`acquire()`がGateの`start()`の`started`を受けた直後に時刻を記録して渡す（Gate・Quotaの変更なし）。Coordinatorの内部変更になるため、PR 4の設計で再承認を得る。先頭スロットが分境界から前後1スロットずれる場合の許容も、実APIの確認後に確定する（**未確認**）。必要期間が不足すれば取得失敗とする（補間・推測なし）。
 - Provider登録の条件：地点（Config）とAPIキー（Secret）の両方が正常なとき。どちらかが欠落・不正なら、Tomorrow.io Providerだけを登録しない。BackendとOpen-Meteo・Scheduleは動作を続ける。Providerが無いとGateにHTTP Adapterが付かず、送信は常に拒否される（Fail Closed）。
 
 #### Config・Secret
@@ -2239,7 +2239,8 @@ Request開始順を判定する単調増加連番を推奨する（具体実装�
 [PR-C統合受入](verification/pr-c-6-integration.md)で「本番Provider登録前に必須」とされた、Gate経路のShutdown時HTTP Abortと停止期限を、本Issueで実装・検証する。
 
 - `onClose`の論理順序：Shutdown状態への遷移 → Quotaなし経路のAbort → **Gateの停止（`stopControl("global").stop()`。Gateを同期で閉じ、実行中のQuota対象HTTPへAbortを要求する）** → `scheduler.stop()` → `drain()` → 監視停止・Gate dispose → DB Close。
-- Coordinatorは、Shutdown中の結果を**Quota経路にも**破棄する（現行はQuotaなし経路だけ）。Tx-A・Tx-Pを行わず、失敗回数・`nextAttemptAt`を変更せず、再取得を予約しない（U-08・F-03）。Tx-Qで消費済みのQuotaは取り消さない。開始済みのDB Transactionは既存の整合性契約に従う。
+- 結果の扱いは既存契約（HTTP-02・03・07、F-03、U-08）に従い、最初に確定した終端結果を一度だけ採用する。制御Abort（Shutdown）が先に確定した場合（HTTP結果が`aborted`）だけ、Tx-A・Tx-Pを行わず、失敗回数・`nextAttemptAt`を変更せず、再取得を予約しない（HTTP-03）。HTTP成功が先なら後続のAbortで変更せず、Timeoutが先なら既存のTimeout失敗処理（C-2）を適用する。いずれも保存直前に停止理由・DB安全性・Evidence・Authorizationを再確認し、Shutdown後の初回INSERTは行わない（HTTP-07）。Tx-Qで消費済みのQuotaは取り消さない。開始済みのDB Transactionは既存の整合性契約に従う。
+- 現行のCoordinatorはQuotaなし経路で、結果の種類にかかわらずShutdown中の結果を破棄する（18.7）。Quota経路の破棄条件を上記（`aborted`のとき）にそろえるか、Quotaなし経路と同じにするかは、HTTP-02・03・07との整合を確認してPR 2の設計で確定する。
 - HTTP Timeout 10秒、Shutdown Timeout 10秒は変更しない。受入条件は#10と同じ：応答しないLoopback HTTPに対し、停止要求からDB Closeまでが10秒より十分短く、Abortした試行が状態を保存しない。
 
 #### 降雨帯の表示規則（Frontend）
@@ -2257,7 +2258,7 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 |---|---|---|
 | 1 | 実降雨の品質確認は#13 | #13の受入で確認 |
 | 2 | Quota安全余裕（1秒・2秒・5秒）の実機妥当性は#13 | F-02、#13 |
-| 3 | PR-D・PR-Eは#93の対象外。Tx-P失敗時は降雨データを保存せず、次の取得（5分後）を待つ。Tx-P結果不明のStateは再起動まで保留 | #16。降雨は5分周期で更新される。保存失敗で予報が古くなれば、10分でFrontendが非表示にする |
+| 3 | PR-D・PR-Eは#93の対象外。Tx-P失敗（`not_saved`・`unknown`）時は、Pending（PR-D）が未実装のため降雨データを保存せず失う（設計上はHTTP-06・SCH-27でPending保持）。CoordinatorがSchedulerへ`blocked`／`suspended`を返し、そのState（DB障害なら全体）は再起動まで再取得しない。Tx-Aで保存済みの`nextAttemptAt`は再起動後も有効で、再起動後すぐには再取得しない | #16。予報が古くなれば、10分でFrontendが非表示、30分で「取得できません」にする |
 | 4 | 管理APIなし。オフラインCLIのみ | 管理APIが必要になった場合は#16 |
 | 5 | Secretは1項目のJSON | 複数キーの切替は対象外（23.11） |
 | 6 | Tomorrow.ioの窓定義へ厳密には追従しない | 16.4 |
@@ -2271,14 +2272,16 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 | PR | 内容 | 依存 | 完了条件 |
 |---|---|---|---|
 | 0（ユーザー） | 利用条件・APIキーの確認 | なし | 結果の記録 |
-| 1 `docs:` | 本設計の反映 | 0（未確認事項は「未確認」のまま） | ユーザーの承認・Merge |
+| 1 `docs:` | 本設計の反映 | なし（未確認事項は「未確認」と明記する。PR 0の結果は、確認後に本節を更新するPRで反映する） | ユーザーの承認・Merge |
 | 2 `feat(backend):` | Gate経路のShutdown Abort、Coordinatorの制御Abort適用、Coordinatorのコメント更新 | 1 | 応答しないLoopback HTTPで停止が10秒より十分短い、Abort試行が状態を保存しない、失敗回数が変わらない、既存テスト成功 |
 | 3 `feat(backend):` | Provisioning CLI | 1 | 4項目の拒否・成功・履歴ありの拒否、秘密が出ない、`PROVISIONED/0`起動後の動作確認、CI成功 |
-| 4 `feat(backend):` | Tomorrow.io Provider、`parse`の拡張、Secret・Config・ログ、起動時の登録 | 2・3、API仕様の確認と再承認 | 合成データの単体テスト（60スロット、途切れ統合、閾値、強度分類、不正値、429）、Quota 400 / 20 / 1を超えない、ログに地点・キーが出ない、CI成功 |
-| 5 `feat(frontend):` | 降雨帯のDomain検証・表示、未実装State除外の撤去、既存テスト更新 | 1（4と並行開発可） | 単体テスト、検証画面の目視 |
+| 4 `feat(backend):` | Tomorrow.io Provider、`parse`の拡張、Secret・Config・ログ、起動時の登録 | 2・3、PR 0（API仕様の確認）と再承認 | 合成データの単体テスト（60スロット、途切れ統合、閾値、強度分類、不正値、429）、Quota 400 / 20 / 1を超えない、ログに地点・キーが出ない、CI成功。POST（method・body・headers）：Loopbackの実Adapterで、GateがPOSTと固定の本文を送れること、本文・Header・URLがログ・Published State・エラーに出ないこと、Gate・Quotaのコードが無変更であること、Body上限1MiB。`requestStartedAt`の取得方法（上記）の確認 |
+| 5 `feat(frontend):` | 降雨帯のDomain検証・表示、取得中判定で`rainForecast`を数えない扱いの恒久化（UI設計 6.5）、既存テスト更新 | 1（4と並行開発可） | 単体テスト、検証画面の目視 |
 | 6 `docs:` | 検証記録 | 2〜5、実機確認 | Windows・CI・Pi・実APIを区別して記録 |
 
-PR 4の本番登録は、PR 2・3の後。未実装State（`rainForecast`）の除外撤去（UI設計 6.5）は、本番登録と同じリリースで行う。除外を先に撤去すると、Provisioning後にTrustが整うまで`rainForecast`が省略され、起動直後の判定が「取得できません」になる。Tomorrow.ioを設定しない環境の扱いもPR 5で確認する。
+PR 4の本番登録（有効化）は、PR 2・3の後で、PR 0（API仕様と利用条件の確認）の結果を反映し、再承認を得てから行う。PR 1（本設計）のMergeはPR 0を待たない。
+
+`rainForecast`は、Tomorrow.io未設定・Secret不正・Provisioning未完了・Trust成立前の環境では省略されたままになる。取得中の1枚表示の判定（表示できるコンテンツが0件のとき。UI設計 6.5）で数えると、起動直後が「取得しています」ではなく「取得できません」になる。API契約は拡張せず、Frontendの定数として`rainForecast`を取得中判定に数えない扱いを**恒久化**する（暫定の撤去は行わない）。降雨帯自体は、これまでどおり個別に「雨の予報を取得できません」等を表示する。
 
 ---
 
