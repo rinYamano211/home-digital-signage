@@ -10,6 +10,7 @@ import {
   DATABASE_UNAVAILABLE,
   type PublishedStatesResponse,
 } from "./published-state-api.js";
+import type { TimeAvailability } from "./time/display-time-availability.js";
 
 export function buildApp(logger: Logger, routes = true) {
   const app = Fastify({
@@ -36,11 +37,26 @@ export function registerRoutes(
     Logger
   >,
   publishedStates: () => PublishedStatesResponse = () => DATABASE_UNAVAILABLE,
+  timeAvailability: () => TimeAvailability = () => "unavailable",
 ) {
   app.get("/ping", async () => ({ message: "pong" }));
   // Registered whether or not the DB is usable; unusable DB answers 503.
   app.get("/api/published-states", async (_request, reply) => {
     const response = publishedStates();
     return reply.code(response.status).send(response.body);
+  });
+  // Current OS state, not a Published State: no DB, always 200 (technology-stack 25.4).
+  app.get("/api/time-availability", async (_request, reply) => {
+    let availability: TimeAvailability = "unavailable";
+    try {
+      availability =
+        timeAvailability() === "available" ? "available" : "unavailable";
+    } catch {
+      /* unconfirmed time is unavailable */
+    }
+    return reply
+      .code(200)
+      .header("cache-control", "no-store")
+      .send({ availability });
   });
 }

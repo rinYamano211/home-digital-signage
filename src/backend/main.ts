@@ -24,6 +24,7 @@ import {
   type StateProvider,
 } from "./acquisition/coordinator.js";
 import { normalizedBootId, readOsBootId } from "./time/boot-id.js";
+import { TimeAvailabilityMonitor } from "./time/display-time-availability.js";
 import { scheduleProvider } from "./schedule/setup.js";
 import { weatherProviders } from "./weather/setup.js";
 import { rainForecastProvider } from "./weather/tomorrow-setup.js";
@@ -92,6 +93,7 @@ export async function startBackend(
   let send: RuntimeSend | null = null;
   let scheduler: StateScheduler | null = null;
   let coordinator: StateAcquisitionCoordinator | null = null;
+  let timeAvailability: TimeAvailabilityMonitor | null = null;
   let providers = options.providers ?? PRODUCTION_PROVIDERS;
   let finishInitialization!: () => void;
   const initialized = new Promise<void>((resolve) => {
@@ -99,6 +101,8 @@ export async function startBackend(
   });
   app.addHook("onClose", async () => {
     await initialized;
+    timeAvailability?.stop(); // Independent of the DB and the Send Gate.
+    timeAvailability = null;
     const store = ownedStore;
     ownedStore = undefined; // One close owner, including failure / Shutdown races.
     const monitoring = send;
@@ -252,7 +256,15 @@ export async function startBackend(
       await shutdown.shutdown();
       return;
     }
-    registerRoutes(app, () => readPublishedStates(runtime));
+    // Display time availability does not depend on the DB (technology-stack 25.3).
+    const monitor = new TimeAvailabilityMonitor(logger);
+    timeAvailability = monitor;
+    monitor.start();
+    registerRoutes(
+      app,
+      () => readPublishedStates(runtime),
+      () => monitor.current(),
+    );
     stage = "listen_failed";
     await app.listen({ host: config.host, port: config.port });
     if (shutdown.requested) {
