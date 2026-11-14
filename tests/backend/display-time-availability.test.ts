@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { buildApp, registerRoutes } from "../../src/backend/app.js";
 import { createLogger } from "../../src/backend/logging/logger.js";
@@ -239,6 +240,84 @@ test("TA-13 a source that throws synchronously is a failed read", async () => {
   await vi.advanceTimersByTimeAsync(0);
   expect(monitor.current()).toBe("available");
   monitor.stop();
+});
+
+test.each([
+  ["NTP times out, RTC valid", "ntp", VALID_RTC, "available"],
+  ["RTC times out, NTP yes", "rtc", "yes\n", "available"],
+] as const)(
+  "TA-17 %s: the evidence that arrived is used (one timeout hides nothing)",
+  async (_name, hanging, value, expected) => {
+    const f = fixture();
+    f.monitor.start();
+    const answered = hanging === "ntp" ? f.rtc : f.ntp;
+    const stalled = hanging === "ntp" ? f.ntp : f.rtc;
+    answered[0].resolve(value);
+    await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS);
+    expect(stalled[0].signal.aborted).toBe(true);
+    expect(f.monitor.current()).toBe(expected);
+    // A late value after the timeout does not change the settled result.
+    stalled[0].resolve(hanging === "ntp" ? "no\n" : "5\n");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.monitor.current()).toBe(expected);
+    expect(f.logger.warn).toHaveBeenCalledWith(
+      { event: "time_evidence_unavailable", source: hanging },
+      expect.any(String),
+    );
+    f.monitor.stop();
+  },
+);
+
+test("TA-18 both time out: unavailable, and late values do not override it", async () => {
+  const f = fixture();
+  f.monitor.start();
+  await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS);
+  expect(f.monitor.current()).toBe("unavailable");
+  f.ntp[0].resolve("yes\n");
+  f.rtc[0].resolve(VALID_RTC);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.monitor.current()).toBe("unavailable");
+  f.monitor.stop();
+});
+
+test("TA-19 abort listeners are removed after success, failure and timeout", async () => {
+  const f = fixture();
+  f.monitor.start();
+  await f.settle(0, "yes\n", new Error("EINVAL"));
+  expect(getEventListeners(f.ntp[0].signal, "abort")).toHaveLength(0);
+  expect(getEventListeners(f.rtc[0].signal, "abort")).toHaveLength(0);
+  await vi.advanceTimersByTimeAsync(CHECK_PERIOD_MS + READ_TIMEOUT_MS);
+  expect(getEventListeners(f.ntp[1].signal, "abort")).toHaveLength(0);
+  f.monitor.stop();
+});
+
+test("TA-20 stop then start behaves like a new monitor", async () => {
+  const f = fixture();
+  f.monitor.start();
+  f.monitor.start(); // no second Timer
+  expect(f.sources.ntp).toHaveBeenCalledTimes(1);
+  await f.settle(0, new Error("ENOENT"), VALID_RTC);
+  expect(f.monitor.current()).toBe("available");
+  await vi.advanceTimersByTimeAsync(CHECK_PERIOD_MS); // read 1 is pending
+  f.monitor.stop();
+  f.monitor.start();
+  // A new read starts at once although read 1 has not settled.
+  expect(f.sources.ntp).toHaveBeenCalledTimes(3);
+  expect(f.monitor.current()).toBe("unavailable");
+  await f.settle(1, "yes\n", VALID_RTC); // the stale read is ignored
+  expect(f.monitor.current()).toBe("unavailable");
+  await f.settle(2, new Error("ENOENT"), "73\n");
+  expect(f.monitor.current()).toBe("unavailable");
+  // First log and the failure log are emitted again after the restart.
+  expect(f.events()).toEqual([
+    "time_evidence_unavailable",
+    "time_availability_changed",
+    "time_evidence_unavailable",
+    "time_availability_changed",
+  ]);
+  await vi.advanceTimersByTimeAsync(CHECK_PERIOD_MS);
+  expect(f.sources.ntp).toHaveBeenCalledTimes(4); // one Timer only
+  f.monitor.stop();
 });
 
 async function getTime(current?: () => TimeAvailability) {

@@ -90,10 +90,19 @@ async function read<T extends string>(
     // The timeout ends the read even if a source ignores the abort signal.
     const value = await new Promise<string>((resolve, reject) => {
       if (signal.aborted) return reject(new Error("aborted"));
-      signal.addEventListener("abort", () => reject(new Error("aborted")), {
-        once: true,
-      });
-      source(signal).then(resolve, reject);
+      const onAbort = () => reject(new Error("aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      const done = () => signal.removeEventListener("abort", onAbort);
+      source(signal).then(
+        (v) => {
+          done();
+          resolve(v);
+        },
+        (e: unknown) => {
+          done();
+          reject(e);
+        },
+      );
     });
     if (signal.aborted || typeof value !== "string") return failed;
     return parse(value);
@@ -104,7 +113,8 @@ async function read<T extends string>(
 
 /** Reads both evidences every 10 seconds and holds the latest result. Until
  * the first read completes (and after stop) the result is `unavailable`.
- * At most one read runs at a time.
+ * At most one read runs at a time. stop() discards every internal state, so a
+ * later start() behaves like a new instance (first log, failures, a new read).
  */
 export class TimeAvailabilityMonitor {
   private result: TimeAvailabilityResult = {
@@ -134,9 +144,13 @@ export class TimeAvailabilityMonitor {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    this.generation++;
+    this.generation++; // a read that settles later is ignored
     this.running?.abort();
+    this.running = undefined; // a restart reads again at once
     this.result = { availability: "unavailable", reason: "none" };
+    this.evaluated = false;
+    this.failing.ntp = false;
+    this.failing.rtc = false;
   }
 
   current(): TimeAvailability {
