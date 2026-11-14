@@ -4580,12 +4580,14 @@ better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確�
 | 通常（Wi-Fiあり） | 正しい | System Timeと一致 | yes |
 | 電源を入れたまま再起動（オフライン） | 正しい | System Timeと一致 | no |
 | 電池なしで電源を完全に切った後（オフライン） | 約7分41秒遅れ | 73（1970年から数え直し。読み取りは成功） | no |
-| Wi-Fiの復旧後 | 補正済み | 起動から3分以内に正しい値へ書き戻し | yes |
+| Wi-Fiの復旧後 | 補正済み | 正しい値へ書き戻し済み（今回は起動から約3分後の確認時点） | yes |
 
 - 起動時、カーネルがRTCからSystem Timeを設定する（dmesg：`rpi-rtc ... setting system clock to ...`）。
 - 電池なしで電源を完全に切ると、RTCは0から数え直す。System Timeは、systemd-timesyncdが保存した`/var/lib/systemd/timesync/clock`の時刻付近から始まる。もっともらしいが誤った時刻である。
 - オフラインで再起動すると、直後から`NTPSynchronized=no`になる。NTPの同期状態だけで判定すると、オフラインで再起動するたびに未同期表示になり、Architecture 10.2に反する。
-- `since_epoch`は一般ユーザー（sudoなし）で読める。`timedatectl show`の`RTCTimeUSec`は人向けの日時文字列（例：`Sat 2026-11-14 21:12:09 JST`）である。
+- 今回の実機確認では、Wi-Fiの復旧後に最初に確認した時点（起動から約3分後）で、RTCは正しい値に書き戻されていた。これは今回の観測結果であり、Linux・systemdが一定時間内の書き戻しを保証するものではない。
+- `since_epoch`は一般ユーザー（sudoなし）で読める。
+- 今回`timedatectl show`（引数なし。`timedatectl`の通常表示ではなく、プロパティの一覧）を実行した出力では、RTCの行は`RTCTimeUSec=Sat 2026-11-14 21:12:09 JST`だった（`TimeUSec`も同じ形式）。RTCの取得には、この出力を解析せず`since_epoch`を使う。
 - 電池を接続した後の挙動（電源を完全に切ってもRTCが時刻を保つか）は未確認。電池の購入後に確認する（#6の未対応事項）。
 
 ### 25.2 判定条件
@@ -4603,7 +4605,11 @@ better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確�
 - 下限日時はコードの固定値とし、Configにしない。未来の日時の上限は設けない（25.1で確認した失敗の形は「0から数え直す」で、未来の値を返す根拠がないため）。
 - 理由（NTP・RTCのどちらで判断したか）は、Backendのログにだけ残す。APIには出さない。
 
-**既知の限界**：この判定は、時刻が正しいことを保証しない。RTCが下限日時以上の値を返していれば、その値が数日ずれていても`available`になる。Architecture 10.2がRTCを信頼する前提であるため、MVPではこの限界を受け入れる。同期の直後、RTCへ書き戻す前に再起動した場合は、RTCが1970年付近のままなので`unavailable`になる（安全側）。
+**既知の限界**：この判定は、時刻が正しいことを保証しない。MVPでは次の限界を受け入れる。
+
+- RTCが下限日時以上の値を返していれば、その値が数日ずれていても`available`になる。Architecture 10.2がRTCを信頼する前提であるため。
+- RTCとSystem Timeの差を見ないため、RTCが有効なまま、Browserが参照するSystem Timeだけが大きくずれた場合（手動での時刻変更など）も`available`になり、ずれた時刻を表示しうる。差の判定を加えると、長期のオフラインで両者が別々にずれたときに未同期になるおそれがあるため、追加しない。
+- 同期の直後、RTCへ書き戻す前に再起動した場合は、RTCが1970年付近のままなので`unavailable`になる（安全側）。
 
 ### 25.3 周期・ログ・責務
 

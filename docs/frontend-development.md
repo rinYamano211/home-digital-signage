@@ -499,8 +499,14 @@ UI設計 6.5の判定を次の優先順で行う。
 
 - 最初の応答を受け取るまでは`unavailable`とする（UI設計 6.5）。
 - 取得に成功したら、受け取った値（`available` / `unavailable`）にする。
-- 取得に失敗したら（通信失敗・Timeout・200以外・JSONとして読めない・Schemaに合わない）、最後に受け取った値を保つ。ただし、最後に成功してから60秒（暫定）を過ぎたら`unavailable`にする。Backendの短い再起動では時計を消さず、Backendが止まったままなら、確認できない時刻を表示し続けないため。
-- 60秒の経過は単調時計（`performance.now()`）で測る。System Timeの補正の影響を受けないようにするため（アーキテクチャ 10.4）。
+- 取得に失敗したら（通信失敗・Timeout・200以外・JSONとして読めない・Schemaに合わない）、最後に受け取った値を保つ。ただし、最後に成功してから60秒（暫定）で`unavailable`にする。Backendの短い再起動では時計を消さず、Backendが止まったままなら、確認できない時刻を表示し続けないため。
+- 60秒の期限は、Pollingとは独立した期限Timerで判定する。
+  - 最後に取得に成功した時刻を単調時計（`performance.now()`）で記録する。System Timeの補正の影響を受けないようにするため（アーキテクチャ 10.4）。
+  - 取得に成功するたびに、期限をその時点から60秒後へ更新する。取得の失敗では期限を延長しない。
+  - 期限に達した時点で、最後の取得値が`available`なら`unavailable`へ移す。Pollingの次の完了を待たない。
+  - APIから`unavailable`を正常に取得した場合は、期限を待たずにすぐ反映する。
+  - Unmount時に、PollingのRequest・Timerと期限Timerをすべて止める。Unmount後に期限Timerが状態を更新しないようにする。
+  - Pollingは取得の結果を伝えるだけとし、期限の管理とは分ける。
 - Responseは`{ "availability": "available" | "unavailable" }`だけを受け付ける（TypeBoxで検証。未知の項目があれば不正とする）。
 - 時刻の表示自体は、引き続きBrowserの現在時刻（OS System Time）を使う（5.2）。APIから時刻は受け取らない。
 
@@ -512,7 +518,13 @@ UI設計 6.5の判定を次の優先順で行う。
 
 ### 13.5 開発・検証
 
-- 単体テスト（Vitest、Fake Timer）：最初は`unavailable`、成功で値が変わる、失敗で最後の値を保つ、最後の成功から60秒で`unavailable`になる、不正なResponseは失敗として扱う、10秒の間隔・3秒のTimeout・同時1件、Unmountで止まる。
+- 単体テスト（Vitest、Fake Timer）：
+  - 最初は`unavailable`。成功で値が変わる。`unavailable`の正常取得はすぐ反映する。
+  - 失敗で最後の値を保つ。最後の成功から60秒未満では状態を保つ。60秒に達した時点で`unavailable`へ移る。
+  - 途中で取得に成功すると期限が更新される。取得の失敗では期限が更新されない。
+  - 不正なResponseは失敗として扱う。
+  - 10秒の間隔・3秒のTimeout・同時1件。
+  - Unmountで止まり、Unmount後に期限Timerが状態を更新しない。
 - 検証画面は変更しない（Spaceキーの手動切替を維持する）。表示の切替は#7で確認済みである。
 - 開発PCのBrowserでは、Development Serverの`/api`転送（11.7）でBackendにつなげる。ただし、時計はPCの時刻で描かれる。
 - Raspberry Piでは、PiのChromiumで実際のFrontendとBackendをつないで確認する（PCのBrowserではPiの時刻を再現できないため）。確認するのは、起動直後（オンライン）、電源を入れたままの再起動（オフライン）、電池なしで電源を完全に切った後（オフライン）とNetworkの復旧、同期済みからの切断、Backendの停止。手順はPiでの確認の段階で決め、結果は`docs/verification/`へ記録する。

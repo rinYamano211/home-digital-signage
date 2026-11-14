@@ -1019,7 +1019,7 @@ OS / RTCが明確に利用不能を示す場合は、その時刻を通常の時
 
 表示用時刻の利用可否は、時刻が正しいと判断できる根拠に基づいて判断する（Issue #65）。根拠は、OSのNTP同期と、RTCによる時刻保持の2つとする。どちらかの根拠を確認できれば利用可能とし、どちらも確認できない場合は、安全側の判断として利用不能とする。上記の「OS / RTCが明確に利用不能を示す場合」は、この「どちらの根拠も確認できない場合」を指す。
 RTCのバックアップ電池がない状態で電源を完全に切ると、OSが前回終了時付近の時刻を復元して、もっともらしいが誤った時刻で起動しうる（Pi実機で確認済み）。このときNTP同期もRTCの時刻保持も確認できないため、R-01に従い通常の時計として表示しない。一方、RTCが時刻を保持していれば、Network切断・NTP未同期だけでは利用不能としない。
-この判断は時刻の正確性を保証しない（RTCが保持している値自体のずれは検出しない）。具体的な判定条件・既知の限界・表示用APIは[技術スタック選定 第25章](technology-stack.md#display-time-availability)、未同期状態の具体的UIは[UI設計 6.3](ui-design.md#63-時刻未同期)に従う。
+この判断は時刻の正確性を保証しない（RTCが保持している値自体のずれや、RTCとSystem Timeの差は検出しない）。具体的な判定条件・既知の限界・表示用APIは[技術スタック選定 第25章](technology-stack.md#display-time-availability)、未同期状態の具体的UIは[UI設計 6.3](ui-design.md#63-時刻未同期)に従う。
 
 Provider送信用Clock Trustは、上記の表示用時刻の利用可否とは別にQuota窓の安全性を確認する。RTC時刻が時計・日付表示に使用可能でも、それだけで送信を許可しない。Clock TrustとHistory Trustは独立評価し、履歴の内部整合性・Timestamp信頼性・完全性が不明ならFail Closedとする。RTCだけで送信可能な具体条件やOS同期確認の実装方法は今回確定せず、既存のOffline表示・RTC利用方針を変更しない。Clock監視はBackend Process内でCommon Time Moduleの時間情報を利用する独立した確認責務とし、新しい独立Process / 常駐Serviceは追加しない。Gateは送信直前にもTrustの鮮度を確認し、時計の安定回復だけでHistory Trustを回復させない。詳細・暫定値・未確定事項は[技術スタック選定 23.11](technology-stack.md#pr-c-c3-clock-history-trust)に従う。表示用時刻の利用可否と送信用Clock Trustは互いに参照せず、表示用が利用可能でも送信は許可しない（[技術スタック選定 25.3](technology-stack.md#display-time-availability)）。
 
