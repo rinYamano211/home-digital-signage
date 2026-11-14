@@ -2279,7 +2279,11 @@ ProviderのHTTP設定（`HttpAdapterConfig`）は、URLにAPIキーを含むた�
 - 実行は既存の`QuotaRepository.provisionProvider()`を呼ぶ。Metadataまたは履歴が既にあれば拒否し、再実行しても初期化し直さない。APIキー・Secretを表示・記録しない。
 - UDS等の管理APIは追加しない。UDS管理者認可（D-04）は異常終了後のHistory復旧用で、F-01とは別の手続きである。
 - `npm run provision:backend`はDBファイルの初期作成用として維持する。DBを削除・再作成した場合は、Quota履歴の安全性を再確認して、Provisioningをやり直す。
-- **未確認（実装段階の検証項目）**：①CLIが`QuotaRepository`を得る経路（`provision.ts`と同様の直接接続とし、Startup Transactionを実行してGenerationを進めない案。実装前に承認を得る）②Provisioning後の起動（`PROVISIONED/0`）で、履歴を起因とする待機（1分・65分・25時間）が空履歴でどう扱われるか。安全性が確認できない場合はFail Closedを維持し、自動で送信を開始しない。
+- **確認状況（2026-11-14のPR 6時点。実装段階の検証項目の整理）**：
+  - 実装・テストで確認済み（PR #102）：①CLIは、Backendと同じ排他Lock下で、`provision.ts`と同様の直接接続（`new Database`と`QuotaRepository.provisionProvider()`）を使い、Startup Transactionを実行しない（`src/backend/storage/provision-quota.ts`）。この経路は、ユーザーがPR 3の設計案として実装前に承認した。4項目の個別確認、1項目でも不成立なら何も書かないこと、再実行の拒否、v3以外のSchemaの拒否、DBがないときの拒否、非対話端末の拒否は`tests/backend/provision-quota.test.ts`で確認した。②Provisioning後の起動（`PROVISIONED/0`）は、同テストの結合テスト（時計は差し替え）で、65分・25時間の待機なしに、約5分の観測期間でClock Trustが成立し、送信可能になることを確認した。
+  - 実機で確認済み：Provisioning後にBackendが起動し、降雨の取得が行われた（[検証記録](verification/issue-93-rainforecast.md)のB）。
+  - 未確認のまま：空履歴での待機の、実機での所要時間（Provisioning直後の起動から最初の予約までを、記録していない）。CLIがGenerationを進めないことは、コードの読解で確認しただけで、直接検証するテストは確認できていない（確認先は未定。必要になれば別途の検証とする）。
+  - 安全性が確認できない場合はFail Closedを維持し、自動で送信を開始しない（変更なし）。
 
 #### Shutdown時のAbort
 
@@ -2305,7 +2309,7 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 
 | 区分 | 内容 |
 |---|---|
-| 実機で確認済み | 認証（`apikey`をクエリで渡す）、POSTと固定の本文、`[A-Za-z0-9_-]{8,128}`の形式のキーでの取得成功、応答の検証と公開（Tx-A・Tx-P）、5分周期の取得、直近60分のQuota予約が20件以内、初回Provisioning後の起動（`PROVISIONED/0`）と待機、通信の遮断中のBackoff（4・8・16・30分を時刻の差で実測）と復旧、画面の表示（実データ・合成データ） |
+| 実機で確認済み | 認証（`apikey`をクエリで渡す）、POSTと固定の本文、`[A-Za-z0-9_-]{8,128}`の形式のキーでの取得成功、応答の検証と公開（Tx-A・Tx-P）、5分周期の取得、直近60分のQuota予約が20件以内、初回Provisioning後の起動（`PROVISIONED/0`）で取得が始まったこと（空履歴での待機の所要時間は記録していない）、通信の遮断中のBackoff（4・8・16・30分を時刻の差で実測）と復旧、画面の表示（実データ・合成データ） |
 | 未確認のまま | `startTime: "now"`の丸め、`intervals[].startTime`の整列の細部、実降雨時の`values`の値と表示（実降雨がなかった。#13）、同一APIキーを他のSenderが使っていないこと、Backoffの1分・2分の実測（単体テストでは確認済み）、障害中の画面の実時間変化（10分・30分の境界）、取得中のShutdown Abortの実機（CIの結合テストで確認済み） |
 | 記録していない | `requestStartedAt`が分境界の直前にあるときの`invalid_response`（起点スロットの欠損）の発生頻度。実機の取得失敗の理由の内訳。`requestStartedAt`とHTTP開始との差（実機での計測は未実施） |
 
@@ -2327,7 +2331,7 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 ##### 運用上の注意
 
 - `npm run start:backend`は、`backend.env`を自動では読み込まない。本番は、systemdの`EnvironmentFile`で渡す（#12）。手動起動では、`set -a; . <backend.envのパス>; set +a`で読み込んでから起動する。`backend.env`・`weather.json`の内容は、表示・記録しない（AGENTS.md 6）。
-- 再起動のたびに、降雨の取得が約65〜70分止まる。不要な再起動（設定の再読み込み・動作の確認）を避ける。
+- 再起動後の降雨取得の待機時間は、旧Quota履歴の件数によって異なる。旧履歴20件未満では約10分で再開した実測例があり、20件以上では約65〜70分の待機を実機で2回確認した。400件以上では約25時間の待機が発生する可能性があるが、これはコードからの推定であり実機未観測である。不要な再起動（設定の再読み込み・動作確認）を避ける。
 
 #### MVPで許容する簡略化
 
