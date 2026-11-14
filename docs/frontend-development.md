@@ -123,7 +123,7 @@ Windowsでは、better-sqlite3のNative Build（Visual Studio C++が必要）で
 
 - 時計タイルは、時刻の利用可否を`available` / `unavailable`の状態として外から受け取る（D6）。ReactのPropsなど単純な方法で渡し、専用のServiceや抽象化は設けない。
 - `unavailable`のときは日付と時刻を表示せず、[UI設計 6.3](ui-design.md#63-時刻未同期)の未同期表示を出す。`available`へ変わったら、操作なしで日付と時刻をフェードで表示する。
-- #7では、OS・RTC・時刻同期の状態に基づく正式な判定を実装しない。判定元がないため、通常の画面では常に`available`として扱う。正式な判定は別Issueで扱う（第9章）。
+- #7では、OS・RTC・時刻同期の状態に基づく正式な判定を実装しない。判定元がないため、通常の画面では常に`available`として扱う。正式な判定はIssue #65で扱い、通常の画面へ渡す値は第13章に従う。
 - 未同期表示の検証には、通常のエントリーポイントとは分離した**検証専用エントリーポイント**を使う（D13）。
   - 通常画面と検証画面は、同じ時計コンポーネントを使う。検証画面で時計コンポーネントを再実装しない。
   - 通常のエントリーポイントは、#7の段階では`available`を固定で渡す。
@@ -209,7 +209,7 @@ rm -rf ~/signage-check
 
 開発PCと実機で未同期表示へ切り替える方式は、D13（検証専用エントリーポイント）で確定した。依存のバージョン、npm scripts、Buildの出力先、検証用のファイル構成、一時HTTPサーバーのコマンドは、#7の実装で確定した（第2・3・6・7章）。以下は未確定である。
 
-- OS・RTC・時刻同期の状態に基づく、正式な時刻利用可否の判定（Issue #65）。
+- OS・RTC・時刻同期の状態に基づく、正式な時刻利用可否の判定（Issue #65）。設計は第13章で確定し、実装は未完了。
 - フォントのライセンス（SIL Open Font License）の表記の扱い（5.4）。
 - 等幅数字が効かないことによる、時刻の右端の動きの見え方（5.2。Issue #13で確認）。
 
@@ -221,7 +221,7 @@ rm -rf ~/signage-check
 - #12：nginxによる本番配信、Chromium Kioskの自動起動、Deploy手順。
 - #13：MVP全体の受入確認（判読性、起動時間、時刻・日付テスト、長時間稼働）。時刻が変わったときに右端が動く見え方が気にならないか（5.2）も確認する。
 - #16：Backend共通基盤と表示用API（Published State API）。
-- #65：OS・RTCに基づく表示用時刻の利用可否判定。判定に使う情報、判定を行う場所、Frontendへの渡し方を決めて実装し、#7の状態入力へ接続する。既存文書の判定方法の参照先（[アーキテクチャ 10.2](architecture.md#102-時刻同期rtcと利用可否)の「Issue #4」、[技術スタック選定 24.3](technology-stack.md#243-time--rtc)の「#6・#13」）との関係もこのIssueで整理する。
+- #65：OS・RTCに基づく表示用時刻の利用可否判定。判定に使う情報、判定を行う場所、Frontendへの渡し方を決めて実装し、#7の状態入力へ接続する。設計は第13章・[技術スタック選定 第25章](technology-stack.md#display-time-availability)に記録し、判定方法の参照先（アーキテクチャ 10.2・技術スタック選定 24.3）も#65へ整理した。
 
 ## 10. コンテンツの自動切替（Issue #8）
 
@@ -478,3 +478,41 @@ UI設計 6.5の判定を次の優先順で行う。
 - 単体テスト（Vitest、Fake Timer）：12.3の各状態、時間別の12枠の選択（正時ちょうど・日付またぎ）、週間の7日の選択（0時の切替）、最高・最低の表示条件、天気コードの区分、12.5の巡回と1枚表示（未実装Stateの除外を含む）。
 - 既存のテスト（`content-display`・`signage-model`の仮パネル前提の部分等）は、PR #96で更新した。
 - Raspberry Pi・実データでの確認方法は11.7と同じ。結果は`docs/verification/`へ記録する。
+
+## 13. 表示用時刻の利用可否（Issue #65）
+
+状態：設計確定（2026-11-14）。実装・Pi実機での確認は未実施。判定方式と表示用APIの契約は[技術スタック選定 第25章](technology-stack.md#display-time-availability)、未同期時の表示は[UI設計 6.3・6.5](ui-design.md#63-時刻未同期)に従う。本章は、Frontendが利用可否を受け取って#7の状態入力（5.3）へ渡す方法を定める。
+
+### 13.1 範囲
+
+- 扱う：`GET /api/time-availability`のPolling、受け取った値から`TimeAvailability`を決めること、通常画面（`App.tsx`）の`time="available"`固定を置き換えること。
+- 扱わない：OS・RTCからの判定（Backend）、時計タイル・未同期表示・巡回停止の描画（#7・#8で実装済み。変更しない）、検証画面の手動切替（D13。変更しない）。
+
+### 13.2 Polling
+
+- 表示用API（第11章）のPollingとは別に、`GET /api/time-availability`をPollingする。Published State APIの503やPolling失敗は、時刻の利用可否に影響させない。
+- 初回は起動直後。以降は前回のRequestの完了から10秒後。Timeoutは3秒。同時に実行するRequestは1件まで。即時Retry・Backoffはしない。
+- Unmount時にRequestとTimerを止める。`App`の直下で1回だけ使う。
+- 既存のPolling（`published-state/polling.ts`）と同じく、Reactに依存しない部分と、Reactへつなぐ部分を分ける。Timer・fetch・単調時計は差し替えられるようにし、Fake Timerでテストする。
+
+### 13.3 状態の決め方
+
+- 最初の応答を受け取るまでは`unavailable`とする（UI設計 6.5）。
+- 取得に成功したら、受け取った値（`available` / `unavailable`）にする。
+- 取得に失敗したら（通信失敗・Timeout・200以外・JSONとして読めない・Schemaに合わない）、最後に受け取った値を保つ。ただし、最後に成功してから60秒（暫定）を過ぎたら`unavailable`にする。Backendの短い再起動では時計を消さず、Backendが止まったままなら、確認できない時刻を表示し続けないため。
+- 60秒の経過は単調時計（`performance.now()`）で測る。System Timeの補正の影響を受けないようにするため（アーキテクチャ 10.4）。
+- Responseは`{ "availability": "available" | "unavailable" }`だけを受け付ける（TypeBoxで検証。未知の項目があれば不正とする）。
+- 時刻の表示自体は、引き続きBrowserの現在時刻（OS System Time）を使う（5.2）。APIから時刻は受け取らない。
+
+### 13.4 表示との関係
+
+- 決めた値を`SignageScreen`の`time`へ渡す。時計タイルとContentSwitcherは、既存の動作のまま切り替わる（`unavailable`で未同期表示と1枚表示、`available`へ戻るとフェードで表示し、巡回を再開）。
+- 予定・天気の有効期限と「今日」の判定は、`available`になった後に、その時点の時刻で評価し直す（既存の1分ごとの再評価と、Responseの更新時の再評価。11.4）。
+- 起動のたびに、最初の応答までの短い間、未同期表示が出る（UI設計 6.5）。
+
+### 13.5 開発・検証
+
+- 単体テスト（Vitest、Fake Timer）：最初は`unavailable`、成功で値が変わる、失敗で最後の値を保つ、最後の成功から60秒で`unavailable`になる、不正なResponseは失敗として扱う、10秒の間隔・3秒のTimeout・同時1件、Unmountで止まる。
+- 検証画面は変更しない（Spaceキーの手動切替を維持する）。表示の切替は#7で確認済みである。
+- 開発PCのBrowserでは、Development Serverの`/api`転送（11.7）でBackendにつなげる。ただし、時計はPCの時刻で描かれる。
+- Raspberry Piでは、PiのChromiumで実際のFrontendとBackendをつないで確認する（PCのBrowserではPiの時刻を再現できないため）。確認するのは、起動直後（オンライン）、電源を入れたままの再起動（オフライン）、電池なしで電源を完全に切った後（オフライン）とNetworkの復旧、同期済みからの切断、Backendの停止。手順はPiでの確認の段階で決め、結果は`docs/verification/`へ記録する。

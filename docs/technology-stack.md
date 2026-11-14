@@ -244,7 +244,7 @@ Display Component
 
 図は概念的な責務と通信経路を示す。Backend技術の正式採用は第11章、MVP実行モデルはArchitecture第16章を参照する。具体的なAPI提供Process構成・Port番号は未決定。
 
-Published State APIのEndpointは10.9節で定める。
+Published State APIのEndpointは10.9節で定める。表示用時刻の利用可否は、別のEndpoint `GET /api/time-availability`で提供する（[第25章](#display-time-availability)）。
 
 API提供処理のためだけに新しい独立Serviceを追加することは、現時点では決定していない。
 
@@ -4501,7 +4501,7 @@ Snapshot2世代保持・世代別Row、State単位Scheduler、Tx-Q / Tx-A / Tx-P
 systemd-timesyncdをMVPで採用する（[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)）。Pi OS実機での確認は実機検証で行う。Pi 5内蔵RTCとRTC Backup Batteryを利用する。
 保存・通信はUTC / ISO 8601を基本とし、既存Published StateのUTC RFC3339、Schedule / WeeklyWeatherのJST暦日表現は維持する。画面はAsia/Tokyo、経過時間・Timeout等はMonotonic Clockを利用する。
 RTCが適切に動作しているなら、NTP未同期だけを理由にSystem Timeを利用不可としない。利用可能性の判定原則はArchitecture第10章を維持する。
-RTC初期化・同期状態・OS設定・実機確認は#6・#13へ引き継ぐ。
+表示用時刻の利用可否の具体的な判定方式と表示用APIは、[Issue #65](https://github.com/rinYamano211/home-digital-signage/issues/65)で[第25章](#display-time-availability)に定めた。Pi OSの同期状態・RTCの挙動の事前確認は25.1、MVPの受入確認は#13で行う。RTCのバックアップ電池は未購入で、電池を付けた後の確認は購入後に行う。
 
 ### 24.4 開発品質・CI
 
@@ -4562,3 +4562,72 @@ better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確�
 - DeployのRelease準備失敗・Health確認・DB互換性を確認したRollback・Backup / Restoreの運用手順は#12で整備し、#13の実機受入前に確認する。
 - UIの時間別予報の表現は#5で照合し、表示範囲を将来12時間へ変更した（[UI設計](ui-design.md)）。
 - RainForecast固有の表示鮮度10分・TTL30分の例外は#13で既存受入条件と照合する。
+
+---
+
+<a id="display-time-availability"></a>
+
+## 25. 表示用時刻の利用可否（Issue #65）
+
+状態：設計確定（2026-11-14）。実装・Pi実機での動作確認は未実施。[Issue #65](https://github.com/rinYamano211/home-digital-signage/issues/65)で検討し、方針を[Issueのコメント](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877050839)と[T2の確定](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877480085)に記録した。原則は[Architecture 10.2](architecture.md#102-時刻同期rtcと利用可否)、表示は[UI設計 6.3](ui-design.md#63-時刻未同期)、Frontendの扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。本章は判定方式と表示用APIの契約を定める。
+
+### 25.1 Piでの事前確認（2026-11-14）
+
+ユーザーがRaspberry Pi 5（Raspberry Pi OS、systemd-timesyncd、RTCのバックアップ電池なし）で確認した。アプリは使わず、OSのコマンドの出力だけを見た。
+
+| 状態 | System Time | RTC（`/sys/class/rtc/rtc0/since_epoch`） | `NTPSynchronized` |
+|---|---|---|---|
+| 通常（Wi-Fiあり） | 正しい | System Timeと一致 | yes |
+| 電源を入れたまま再起動（オフライン） | 正しい | System Timeと一致 | no |
+| 電池なしで電源を完全に切った後（オフライン） | 約7分41秒遅れ | 73（1970年から数え直し。読み取りは成功） | no |
+| Wi-Fiの復旧後 | 補正済み | 起動から3分以内に正しい値へ書き戻し | yes |
+
+- 起動時、カーネルがRTCからSystem Timeを設定する（dmesg：`rpi-rtc ... setting system clock to ...`）。
+- 電池なしで電源を完全に切ると、RTCは0から数え直す。System Timeは、systemd-timesyncdが保存した`/var/lib/systemd/timesync/clock`の時刻付近から始まる。もっともらしいが誤った時刻である。
+- オフラインで再起動すると、直後から`NTPSynchronized=no`になる。NTPの同期状態だけで判定すると、オフラインで再起動するたびに未同期表示になり、Architecture 10.2に反する。
+- `since_epoch`は一般ユーザー（sudoなし）で読める。`timedatectl show`の`RTCTimeUSec`は人向けの日時文字列（例：`Sat 2026-11-14 21:12:09 JST`）である。
+- 電池を接続した後の挙動（電源を完全に切ってもRTCが時刻を保つか）は未確認。電池の購入後に確認する（#6の未対応事項）。
+
+### 25.2 判定条件
+
+表示用時刻の利用可否（以下Time Availability）は、次の2つの根拠で判断する。
+
+| 根拠 | 取得方法 | 根拠ありとする条件 |
+|---|---|---|
+| NTP同期 | `timedatectl show -p NTPSynchronized --value`を`execFile`で非同期実行（Shellなし、固定引数） | 出力が`yes`だけの1行 |
+| RTCによる時刻保持 | `/sys/class/rtc/rtc0/since_epoch`を読む（子Processなし） | 10進数の整数として読め、値が下限日時`2026-01-01T00:00:00Z`（1767225600）以上 |
+
+- どちらか一方の根拠があれば`available`、どちらもなければ`unavailable`とする。
+- 2つは別々に評価する。一方の取得に失敗しても、他方で根拠を確認できれば`available`とする。両方の取得に失敗した場合も`unavailable`とする（Fail Closed）。
+- RTCとSystem Timeの差は見ない。長期のオフラインで両者が別々にずれても、Network切断だけを理由に未同期にしないため（Architecture 10.2）。
+- 下限日時はコードの固定値とし、Configにしない。未来の日時の上限は設けない（25.1で確認した失敗の形は「0から数え直す」で、未来の値を返す根拠がないため）。
+- 理由（NTP・RTCのどちらで判断したか）は、Backendのログにだけ残す。APIには出さない。
+
+**既知の限界**：この判定は、時刻が正しいことを保証しない。RTCが下限日時以上の値を返していれば、その値が数日ずれていても`available`になる。Architecture 10.2がRTCを信頼する前提であるため、MVPではこの限界を受け入れる。同期の直後、RTCへ書き戻す前に再起動した場合は、RTCが1970年付近のままなので`unavailable`になる（安全側）。
+
+### 25.3 周期・ログ・責務
+
+- Backend Processが10秒ごとに2つの根拠を読み、最新の判定を保持する。`timedatectl`のTimeoutは3秒。同時に実行する読み取りは1件まで。Backendの起動直後、最初の読み取りが終わるまでは`unavailable`とする。
+- ログは、判定が変わったとき（理由を含む）と、各根拠の取得失敗が始まったとき・回復したときに出す。取得失敗が続いている間に毎回は出さない。Secret・個人情報は含めない。
+- 判定は`src/backend/time/`のModule（Common Time Moduleの一部。Architecture 10.1）で行う。OSの読み取りと判定（純粋関数）を分け、テストではOSの読み取りを差し替える。新しい独立Process・常駐Serviceは追加しない。
+- 送信用Clock Trust（23.11、[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)）とは互いに参照しない。同じ`NTPSynchronized`を読むが、送信用の`OsSyncReader`は変更せず、別に読む。Time Availabilityが`available`でも、Providerへの送信は許可しない。
+- BackendのScheduler・期限判定・日付判定（Architecture 11.5）へのTime Availabilityの反映は、本章の範囲外とする。[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)で扱う。
+
+### 25.4 表示用API：`GET /api/time-availability`
+
+Published State API（第10章）とは別のEndpointとする。Published Stateは保存したSnapshotで、Time Availabilityは現在のOSの状態であり、性質が異なるため。SQLiteを使わないので、DBが使えない（Published State APIが503を返す）ときも応答する。
+
+```json
+{ "availability": "available" }
+```
+
+```json
+{ "availability": "unavailable" }
+```
+
+- 正常時は常に`200 OK`。`availability`は`"available"`または`"unavailable"`だけで、他の項目は持たない。
+- `Cache-Control: no-store`を付ける。
+- 同一Origin・nginxのReverse Proxyの扱いは7.2と同じ（`/api/`以下をBackendへ転送）。
+- `schemaVersion`は持たない。互換性のない変更が必要になったら、Endpointを分ける。
+
+FrontendのPolling（10秒、Timeout 3秒）、最初の応答の前・取得失敗時の扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。
