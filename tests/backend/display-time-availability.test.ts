@@ -230,8 +230,10 @@ test("TA-12 stop() returns to unavailable and ignores a read that settles later"
 
 test("TA-13 a source that throws synchronously is a failed read", async () => {
   const logger = { info: vi.fn(), warn: vi.fn() };
+  let signal: AbortSignal | undefined;
   const monitor = new TimeAvailabilityMonitor(logger as never, {
-    ntp: () => {
+    ntp: (s) => {
+      signal = s;
       throw new Error("spawn failed");
     },
     rtc: () => Promise.resolve(VALID_RTC),
@@ -239,6 +241,7 @@ test("TA-13 a source that throws synchronously is a failed read", async () => {
   monitor.start();
   await vi.advanceTimersByTimeAsync(0);
   expect(monitor.current()).toBe("available");
+  expect(getEventListeners(signal!, "abort")).toHaveLength(0);
   monitor.stop();
 });
 

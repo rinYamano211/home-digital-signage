@@ -93,16 +93,21 @@ async function read<T extends string>(
       const onAbort = () => reject(new Error("aborted"));
       signal.addEventListener("abort", onAbort, { once: true });
       const done = () => signal.removeEventListener("abort", onAbort);
-      source(signal).then(
-        (v) => {
-          done();
-          resolve(v);
-        },
-        (e: unknown) => {
-          done();
-          reject(e);
-        },
-      );
+      try {
+        source(signal).then(
+          (v) => {
+            done();
+            resolve(v);
+          },
+          (e: unknown) => {
+            done();
+            reject(e);
+          },
+        );
+      } catch (e) {
+        done(); // a source that throws synchronously
+        reject(e);
+      }
     });
     if (signal.aborted || typeof value !== "string") return failed;
     return parse(value);
