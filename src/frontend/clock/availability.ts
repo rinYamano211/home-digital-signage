@@ -1,5 +1,5 @@
 // 時刻の利用可否は、時計タイルの外から状態として受け取る（docs/frontend-development.md 5.3、D6）。
-// 正式な判定（OS・RTC・時刻同期）はIssue #65で扱い、ここでは実装しない。
+// 正式な判定（OS・RTC・時刻同期）はBackendが行い、通常画面はAPIから受け取る（第13章、Issue #65）。
 
 export type TimeAvailability = "available" | "unavailable";
 
