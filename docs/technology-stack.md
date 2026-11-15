@@ -1314,7 +1314,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Cache不正時の物理削除。
 - Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH-01〜33は23.8に個別定義済み。Recovery・競合制御は未実装・未検証。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
-- API Endpoint正式Path・nginx設定。
+- API Endpoint正式Path。nginx設定は[第26章](#startup-recovery-operations)（Issue #12）で定めた。
 - Backup実行時刻・Path・Scheduler・失敗時再試行・復元コマンド。
 - SQLite Lock・Checkpoint異常時の詳細運用。
 - Config・Secret詳細管理、Runtime変更への適用方式。
@@ -4695,8 +4695,13 @@ Backendを専用の非ログインユーザー`hds`（ホームなし、Shellは
 2. 26.3のディレクトリを作る。
 3. `signage.db`を`cp`でコピーする（hardlinkは不可）。正常終了の後に`-wal`が残っていれば、一緒にコピーする。`-shm`はコピーしない。
 4. `chown hds:hds`・`chmod 0600`にする。Secretも`hds`の所有に変える。
-5. systemdでBackendを起動し、`database_status`のログとAPIの応答を確かめる。
-6. 移行後は、旧DBでBackendを起動しない。旧DBの送信履歴は新DBと別になるため、両方を使うとQuotaの判定が正しくなくなる。旧DBは確認が終わってから削除する。
+5. Backendを起動する前に、コピー先のDBを読み取り専用で確かめる。
+   - SQLiteの整合性：`PRAGMA integrity_check`が`ok`を返す。
+   - Quota履歴：`provider_quota_metadata`・`provider_quota_consumptions`の件数と最新の記録が、旧DBと一致する。
+   - 確認に使うツール（`sqlite3`コマンドの有無等）は**検証待ち**とし、実装PRの手順書で決める。どちらかが確認できなければ、Backendを起動せず、旧DBを残したまま原因を調べる。
+6. systemdでBackendを起動し、`database_status`のログとAPIの応答を確かめる。
+7. 移行後は、旧DBでBackendを起動しない。旧DBの送信履歴は新DBと別になるため、両方を使うとQuotaの判定が正しくなくなる。
+8. 旧DBは、移行の検証（26.12のP17）が完了するまで、削除・変更せずに保持する。完了の後に削除する。
 
 DBが失われて作り直す場合だけ、12.3と21.9の手順でProvisioningをやり直す。
 
@@ -4764,8 +4769,10 @@ Architecture 11.3のCrash Loopの値（5分以内に3回、5〜15分後に再試
    1. Releaseを`/opt/home-digital-signage/releases/`へコピーし、所有者をroot・755/644にする。
    2. 直前のReleaseを記録し、`ln -s <新> current.tmp`と`mv -T current.tmp current`で切り替える（Atomicな切替。`ln -sfn`は使わない）。
    3. Backendを`systemctl restart`し、`/ping`と`/api/published-states`の200を待つ（例：30秒）。`/ping`だけでは、DBが使えなくても応答するため不十分である（10.9）。
-   4. 失敗したら直前のReleaseへ切り戻し、Backendを再起動する。
+   4. nginx経由のFrontendの疎通を確かめる：`http://127.0.0.1/`が200で新しいReleaseの`index.html`を返し、`http://127.0.0.1/api/published-states`が200を返す。nginxの`root`・`/api/`の転送が新しいReleaseで働くことを、Kioskと同じ経路で確かめるため。
+   5. 3・4のどちらかが失敗したら、直前のReleaseへ切り戻し、Backendを再起動する。
 5. `signage`としてKiosk Unitを再起動する。
+6. 管理者が画面を目視で確かめる：エラーページではなく、時計を含む基本画面が表示される。描画の成功までは自動では判定しない。表示されない場合は、`activate-release.sh`で直前のReleaseへ手動で切り戻す。
 
 - Scriptは`set -eu`とし、切替の前に失敗したら`current`を変えない。
 - 切替・切戻しは、DBを変えないDeployだけが対象である。Migrationは自動で実行しない（12.4）。Schemaを変えるReleaseは、手順書で別に扱う：Backup（第13章）→ Backend停止 → 明示的なMigration → 切替。
@@ -4807,6 +4814,7 @@ Piで確認するまで、確定扱いしない。結果は`docs/verification/`�
 | P14 | 画面が消えないか、カーソルが見えないか | カーソルは、受け入れるかをユーザーが判断する |
 | P15 | Network未接続で電源を入れても基本画面が出るか | — |
 | P16 | 26.3の管理コマンドの実行方法 | 手順書で別の方法を決める |
+| P17 | 既存DBの移行（26.4）：整合性、Quota履歴の一致、移行後の起動と取得 | 旧DBを残したまま原因を調べる |
 
 ### 26.13 後続への引き継ぎ
 
