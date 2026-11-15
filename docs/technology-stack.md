@@ -4569,7 +4569,7 @@ better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確�
 
 ## 25. 表示用時刻の利用可否（Issue #65）
 
-状態：設計確定（2026-11-14）。実装・Pi実機での動作確認は未実施。[Issue #65](https://github.com/rinYamano211/home-digital-signage/issues/65)で検討し、方針を[Issueのコメント](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877050839)と[T2の確定](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877480085)に記録した。原則は[Architecture 10.2](architecture.md#102-時刻同期rtcと利用可否)、表示は[UI設計 6.3](ui-design.md#63-時刻未同期)、Frontendの扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。本章は判定方式と表示用APIの契約を定める。
+状態：設計確定（2026-11-14）。実装済み（Backend：PR #110、Frontend：PR #111）・Pi実機で確認済み（2026-11-15、[検証記録](verification/issue-65-time-availability.md)）。RTCのバックアップ電池を付けた後の確認は未実施。[Issue #65](https://github.com/rinYamano211/home-digital-signage/issues/65)で検討し、方針を[Issueのコメント](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877050839)と[T2の確定](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877480085)に記録した。原則は[Architecture 10.2](architecture.md#102-時刻同期rtcと利用可否)、表示は[UI設計 6.3](ui-design.md#63-時刻未同期)、Frontendの扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。本章は判定方式と表示用APIの契約を定める。
 
 ### 25.1 Piでの事前確認（2026-11-14）
 
