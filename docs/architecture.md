@@ -1161,7 +1161,7 @@ Service Recovery TimeとFunctional Recovery Timeに加え、
 
 この表はR-06の受け入れ条件（電源投入後2分以内の基本画面、アプリ異常終了後1分以内の基本画面復旧）を置き換えない。
 Displayの30秒は設計上の初期目標であり、R-09の72時間試験と合わせて検証する。
-具体的なSupervisor・抑制値・Watchdog実装や測定方法は第15章へ引き継ぐ。
+具体的なSupervisor・抑制値・Watchdog実装や測定方法は第15章へ引き継ぐ。Supervisor（systemd）の具体設定は[技術スタック選定 第26章](technology-stack.md#startup-recovery-operations)（Issue #12）に従う。本表の目標値は変更しない。
 
 ### 11.4 RecoveryによるFreshness退行の防止
 
@@ -1347,7 +1347,7 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 | Cache | SQLite正式採用、Cache Entry・Validation・Transactionは第16章。初期DDLはtechnology-stack.md 12.6で定義済み。Provider依存の期限評価の詳細は未決定。Timeout・Backoff合意値は16.3 |
 | Config / Secrets | 一般Configはsystemd EnvironmentFile、SecretはGit・Release外のアクセス制限付き専用ローカルファイル、起動時TypeBox検証を正式採用。Path・Permission具体値・更新／Rotation・Recovery詳細・Last Known Valid等の永続化は後続設計（技術選定24.2） |
 | Config変更 | 通知方式（Event / Watch / Callback / Polling等）、Runtime Apply / Retry、Migration Library / 実装方式、Secret切替・Connection Test。Config Revision / Optimistic Lock等はMVPでの必要性を確認し、単一変更元では具体的な競合制御実装を必須としない。不要であればFutureの複数変更元導入時に具体化する |
-| Process / Recovery | 原則1 Backend Process、systemd正式採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制・Watchdogは未決定。Backoff・HTTP Timeoutの合意値は16.3 |
+| Process / Recovery | 原則1 Backend Process、systemd正式採用・有界指数Backoff・2世代復元は第16章。Unit詳細・Restart抑制は技術選定第26章（Issue #12。段階的Backoffは実機確認後に採否決定）。Watchdogの要否は#13で判断。Backoff・HTTP Timeoutの合意値は16.3 |
 | Startup / State更新 | 早期復旧と速やかな外部取得を両立するConcurrency・非同期処理・Task管理、State更新・通知のタイミング・同期方式、Recovery Event / Trigger |
 | Time / Date | systemd-timesyncdをMVP採用（技術選定C-Impl-5B-1、実機確認は後続）。Pi 5内蔵RTC・Backup Battery採用、UTC / ISO 8601・Asia/Tokyo・Monotonic Clockの既存方針を維持。RTC設定・同期状態・Time Usability実機確認は後続（技術選定24.3） |
 | Runtime / Framework | 日時API、Monotonic Clock API、Timer / Scheduler、Polling / Event / Timer等による時間変化検知・再評価起動。標準TimerのMonotonic Time利用を確認し、利用可能なら標準機能を優先する |

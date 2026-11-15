@@ -213,7 +213,7 @@ Raspberry Pi
   Chromium Kiosk
 ```
 
-nginxの具体的な設定、Listen Port、Directory Path等は未決定とする。
+nginxの具体的な設定、Listen Port、Directory Pathは[第26章](#startup-recovery-operations)（Issue #12）で定めた。
 
 ### 7.2 React UIとPublished State APIの接続
 
@@ -339,7 +339,7 @@ Development PCで生成した`dist/`を、SSH経由の`scp`でRaspberry Pi上の
 転送完了後、Productionが参照する`current` symbolic linkを新Releaseへ切り替える。
 Productionが参照しているDirectoryへ直接上書きしない。
 
-以下は配置と切替の概念例であり、`/opt/signage/`やRelease名を実装上の確定値とするものではない。
+以下は配置と切替の概念例であり、`/opt/signage/`やRelease名を実装上の確定値とするものではない。具体的なPath・命名・保持世代数・切替手順は[第26章](#startup-recovery-operations)に従う。
 
 ```text
 Raspberry Pi
@@ -627,7 +627,7 @@ SQLiteはローカル保存とTransactionの実現手段として正式採用し
 5. Backendの再起動・自動起動をsystemdで管理する。
 
 永続DBはRelease Directoryの外に配置する。Deploy失敗時に旧ReleaseへRollbackできる構成を目指す。
-Directory Path、Unit定義、Port、Deploy Script・切替の詳細手順は未決定である。新Release準備失敗時は旧Releaseを維持し、RollbackはDB Schema互換性を確認してから行う。DB変更時はBackup / Restoreと整合させる。MVPは手動Deployとし、自動Deployは導入しない。
+Directory Path、Unit定義、Port、Deploy Script・切替の手順は[第26章](#startup-recovery-operations)（Issue #12）で定めた（未実装・Pi実機で未確認）。新Release準備失敗時は旧Releaseを維持し、RollbackはDB Schema互換性を確認してから行う。DB変更時はBackup / Restoreと整合させる。MVPは手動Deployとし、自動Deployは導入しない。
 
 ### 11.4 Backendの責務分担
 
@@ -692,7 +692,7 @@ Provisioning時に既存DBがあれば上書きせず中止する。失敗後に
 
 DB欠損時は既存DB消失・Mount異常・権限異常等を考慮し、無条件に初回起動とは判断しない。ファイルの存在だけで正常とせず、VersionとSchema構造を確認する。
 
-DBはRelease Directory外に配置し、`/var/lib/home-digital-signage/signage.db`は候補Pathとして扱う。具体Path・Provisioning CLI名・実装詳細は未決定である。Directory作成・Permission・実機Deploy手順はIssue #12と連携する。
+DBはRelease Directory外に配置し、`/var/lib/home-digital-signage/signage.db`を本番のPathとする（[第26章](#startup-recovery-operations)、Issue #12）。Provisioning CLI名・実装詳細は未決定である。Directoryの作成・Permission・既存DBの移行・実機Deploy手順は第26章に従う。
 
 **単一専用LockファイルのLinux flock排他Lock（EX）＋SQLite Transaction**を正式採用する。Backendは起動から終了までEXを保持し、同じLockで多重起動も防ぐ。ProvisioningはDB作成・初期化中、MigrationはBackend起動時のEX保持中に実行する。共有Lock（SH）、EX→SH変換、別のInstance Lockは使用しない。旧共有／排他方式を置き換える決定であり、PoCの履歴は[検証記録](poc/linux-flock-validation.md)に残す。
 
@@ -1300,9 +1300,8 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 
 ### 15.2 Build・Deployの実装詳細
 
-- Release Directoryの具体Path・命名方式・保持世代数。
-- Deploy Script・symbolic link切替コマンド・Chromium Reload方法。
-- SSH認証、systemd Unit・Port、Production自動DeployはMVP対象外。PR検証Workflow等の具体設定は後続実装。
+- Release Directoryの具体Path・命名方式・保持世代数、Deploy Script・symbolic link切替コマンド・Chromium Reload方法、systemd Unit・Portは[第26章](#startup-recovery-operations)（Issue #12）で定めた。
+- SSH認証、Production自動DeployはMVP対象外。PR検証Workflow等の具体設定は後続実装。
 
 ### 15.3 Backend・外部連携の未決定事項
 
@@ -1315,7 +1314,7 @@ Vitestを正式採用する。以下は検証すべき観点であり、実装�
 - Cache不正時の物理削除。
 - Backoff・HTTP Timeout・429・Control State待機は第23章に具体化済み。SCH-01〜33は23.8に個別定義済み。Recovery・競合制御は未実装・未検証。
 - Backend ModuleのDirectory構成、API提供Processの詳細構成、Health Check Endpoint。
-- API Endpoint正式Path・nginx設定。
+- API Endpoint正式Path。nginx設定は[第26章](#startup-recovery-operations)（Issue #12）で定めた。
 - Backup実行時刻・Path・Scheduler・失敗時再試行・復元コマンド。
 - SQLite Lock・Checkpoint異常時の詳細運用。
 - Config・Secret詳細管理、Runtime変更への適用方式。
@@ -4520,7 +4519,7 @@ CPU・メモリ・温度・Disk・Service状態・再起動／障害履歴を計
 開発PCでtsc Compile、原則Bundlingなし、SSH / scp転送、Piでnpm ci --omit=dev、Release Directory / symbolic link切替、systemd再起動を正式採用する。
 新Release準備に失敗したら稼働中旧Releaseを維持する。DB・Config・SecretはRelease外へ置く。
 RollbackはDB Schema互換性を確認して旧Releaseへ戻し、DB変更を伴う場合はSQLite Backup / Restore方針との整合を確認する。MVP自動Deployは採用しない。
-better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確認・Rollback手順・Release保持数は未実装・実機確認待ち。
+better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確認・Rollback手順・Release保持数は未実装・実機確認待ち。具体的な構成・手順は[第26章](#startup-recovery-operations)（Issue #12）で定めた。
 
 ### 24.7 後続Issueへの引継ぎ
 
@@ -4637,3 +4636,188 @@ Published State API（第10章）とは別のEndpointとする。Published State
 - `schemaVersion`は持たない。互換性のない変更が必要になったら、Endpointを分ける。
 
 FrontendのPolling（10秒、Timeout 3秒）、最初の応答の前・取得失敗時の扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。
+
+<a id="startup-recovery-operations"></a>
+
+## 26. 起動・復旧・Deployの運用構成（Issue #12）
+
+状態：設計確定（2026-11-15）。未実装・Pi実機で未確認。[Issue #12](https://github.com/rinYamano211/home-digital-signage/issues/12)の論点A〜Lと、実装前の設計レビューで見つかった問題（M1〜M5）への修正を、ユーザーが承認した。Piでしか確かめられない事項は「**検証待ち**」と書き、確定扱いしない（26.12）。
+
+受入条件は[R-06](requirements.md#r-06電源投入再起動異常終了からの自動復旧)（電源投入から2分以内、異常終了から1分以内に基本画面）を優先する。[Architecture 11.3](architecture.md#113-recovery-escalationと初期目標)の初期目標と、本書第9・11・14・24章で採用済みの方式（systemd、nginx、Chromium Kiosk、Pino + persistent journald、scp + Release Directory + symbolic link）は変更しない。本章は、それらの具体的なPath・ユーザー・設定・手順を定める。
+
+### 26.1 範囲
+
+| 区分 | 内容 |
+|---|---|
+| #12で扱う | Backend・Kioskの自動起動とCrash復旧、Kiosk・画面の設定、nginx、journald、手動Deploy・Rollbackの最小構成、既存DB・Secretの移行、Secretの更新手順 |
+| #13へ引き継ぐ | 72時間試験と計測Script（24.5）、OS Hang Watchdog・Backend Watchdog（`sd_notify`）の要否、Chromiumのタブ単独のCrash、Chromiumのログ量、Crash Loopの値の実測 |
+| #113で扱う | Network復旧から再取得までの時間（Architecture 11.3の1分以内）と、Backoffの変更 |
+| 対象外 | systemdのHardening（`ProtectSystem`等）、自動Deploy、DB Migrationの自動実行、時間帯による画面のON/OFF（Future） |
+
+### 26.2 全体構成
+
+| 要素 | 実行ユーザー | 起動の仕組み | 配置 |
+|---|---|---|---|
+| Backend | `hds`（専用のシステムユーザー） | systemdのシステムUnit `home-digital-signage-backend.service` | `/opt/home-digital-signage/current/` |
+| nginx | OS標準（Debianの`www-data`） | OS標準のUnit | 設定：`/etc/nginx/sites-available/home-digital-signage` |
+| Kiosk（Chromium） | `signage`（既存のDesktopユーザー） | labwcのautostart → systemdのユーザーUnit `home-digital-signage-kiosk.service` | 起動Scriptは稼働中のRelease内 |
+| 永続データ | `hds` | — | `/var/lib/home-digital-signage/`（12.3の候補Pathを確定する） |
+| 一般Config | root（読むのはsystemd） | `EnvironmentFile` | `/etc/home-digital-signage/backend.env` |
+| Secret | `hds` | Backendが起動時に読む | `/etc/home-digital-signage/secrets/` |
+
+- どのUnitも`network-online.target`・`time-sync.target`を待たない（R-06：Network・時刻同期を起動条件にしない）。BackendのUnitは`After=network.target`だけとする。
+- KioskはnginxのHTTP応答だけを待ち、Backendを待たない。Backendの応答前・停止中の表示は[UI設計 6.5](ui-design.md#65-起動直後初回取得中ローディング表示)と第25章に従い、Frontendが自力で正常表示へ戻る。
+- Unit名・Script名は本章の名前を使う。中身の細部は実装PRで決める。
+
+### 26.3 実行ユーザーと所有権
+
+Backendを専用の非ログインユーザー`hds`（ホームなし、Shellは`nologin`）で動かし、Chromiumを動かす`signage`から分ける。Chromiumが乗っ取られても、Secret・DBを直接読めないようにするため。代わりに、移行（26.4）と管理コマンドの手順が増える。既存のSecret Loader・データディレクトリの検証（実行UIDとの一致）は変更しない。
+
+| Path | 所有者 | Mode | 備考 |
+|---|---|---|---|
+| `/var/lib/home-digital-signage/` | `hds` | 0700 | 管理者が明示的に作る（systemdの`StateDirectory=`は使わない）。DBは自動作成しない（12.3） |
+| `signage.db`・`-wal`・`-shm`・`backend.lock` | `hds` | 0600 | リンク数1（`src/backend/storage/paths.ts`の検証） |
+| `/etc/home-digital-signage/` | root | 0755 | |
+| `/etc/home-digital-signage/backend.env` | root | 0600 | systemd（PID 1）が読む。Secretを書かない |
+| `/etc/home-digital-signage/secrets/` | `hds` | 0700 | |
+| `secrets/weather.json`・`schedule.json` | `hds` | 0600 | |
+| `/opt/home-digital-signage/`以下（Release） | root | 755 / 644 | `signage`が書き換えられないようにする（M3）。26.9 |
+
+- Node.jsは、`hds`が実行できるシステム全体のPath（`/usr/bin`か`/usr/local/bin`）に置く。`signage`のホームの下（nvm等）にある場合は、入れ直す（M5。**検証待ち**）。Lock Scriptは`node`をPATHから探す。
+- `hds`での`timedatectl show`と`/sys/class/rtc/rtc0/since_epoch`の読み取り（第25章・C-Impl-5B-1）は、一般ユーザーの権限で足りる想定である（**検証待ち**）。読めない場合は、権限を変える前に報告して判断する。
+- 管理コマンド（`provision`・`provision-quota`・`migrate-*`）は、Backendを止めてから`hds`として、`backend.env`の値を与えて実行する。方法の例：`sudo systemd-run --uid=hds --pty -p EnvironmentFile=/etc/home-digital-signage/backend.env /bin/sh /opt/home-digital-signage/current/scripts/with-backend-lock.sh <command>`。`provision-quota`は対話端末が必須なので`--pty`を付ける（21.9）。この方法は**検証待ち**とし、実装PRの手順書で確定する。
+
+### 26.4 既存DB・Secretの移行
+
+既存のDB（Issue #9・#10・#65・#93の確認で使った手動起動のもの）を移し、Tomorrow.ioのQuota履歴を維持する（M2）。新しくProvisioningすると履歴が消える。その場合、`provision:quota`の確認項目（過去のAPI使用がQuota判定期間の外にあること。21.9）を満たすまで最後の使用から24時間以上待つことになり、その間は降雨予報が出ない。
+
+1. 手動で起動していたBackendを正常に終了し、Lockを持つProcessがないことを確かめる。
+2. 26.3のディレクトリを作る。
+3. `signage.db`を`cp`でコピーする（hardlinkは不可）。正常終了の後に`-wal`が残っていれば、一緒にコピーする。`-shm`はコピーしない。
+4. `chown hds:hds`・`chmod 0600`にする。Secretも`hds`の所有に変える。
+5. Backendを起動する前に、コピー先のDBを読み取り専用で確かめる。
+   - SQLiteの整合性：`PRAGMA integrity_check`が`ok`を返す。
+   - Quota履歴：`provider_quota_metadata`・`provider_quota_consumptions`の件数と最新の記録が、旧DBと一致する。
+   - 確認に使うツール（`sqlite3`コマンドの有無等）は**検証待ち**とし、実装PRの手順書で決める。どちらかが確認できなければ、Backendを起動せず、旧DBを残したまま原因を調べる。
+6. systemdでBackendを起動し、`database_status`のログとAPIの応答を確かめる。
+7. 移行後は、旧DBでBackendを起動しない。旧DBの送信履歴は新DBと別になるため、両方を使うとQuotaの判定が正しくなくなる。
+8. 旧DBは、移行の検証（26.12のP17）が完了するまで、削除・変更せずに保持する。完了の後に削除する。
+
+DBが失われて作り直す場合だけ、12.3と21.9の手順でProvisioningをやり直す。
+
+### 26.5 Backendのsystemd Unit
+
+| 設定 | 値 | 理由 |
+|---|---|---|
+| `ExecStart` | `/bin/sh /opt/home-digital-signage/current/scripts/with-backend-lock.sh backend` | `npm run`を経由しない。npmが親Processになると、Signal・終了コードの扱いが変わる。Lock Scriptは`exec`するので、Nodeが主Processになる（12.3） |
+| `User` / `Group` | `hds` | 26.3 |
+| `EnvironmentFile` | `/etc/home-digital-signage/backend.env` | 24.2。`SIGNAGE_LOG_LEVEL=info` |
+| `After` | `network.target`のみ | Networkを待たない |
+| `TimeoutStopSec` | `15s` | BackendのGraceful Shutdown 10秒（PR-A）＋余裕 |
+| `Restart` / `RestartSec` | `always` / `5s` | 異常終了から1分以内の復旧（R-06） |
+| `StartLimitIntervalSec`（`[Unit]`） | `0` | systemdの既定の回数制限で`failed`になり、再起動が止まるのを防ぐ（Architecture 11.3：Crash Loopで永久停止しない） |
+| `WantedBy` | `multi-user.target` | |
+
+**段階的Backoff（`RestartSteps`・`RestartMaxDelaySec`、最大10分）は条件付きとする（M1）**。Crash Loopの間、再起動の間隔を伸ばしてCPU・ログの消費を抑える案である。ただし、再起動の回数（`NRestarts`）がいつ0に戻るかがsystemdの文書に書かれていない。戻らない場合、過去にCrash Loopがあると、後の1回だけのCrashでも最大10分待ち、R-06の1分以内に反する。Piで次の両方を確認できた場合だけ採用する。確認できなければ、`RestartSec=5s`固定・回数制限なしとする。
+
+- systemdが254以上である。
+- 正常に動いた後の1回だけのCrashが、1分以内に復旧する。
+
+Architecture 11.3のCrash Loopの値（5分以内に3回、5〜15分後に再試行）は検討値なので、固定間隔を採っても正本には反しない。採否と理由は、実機の検証記録と本節に残す。
+
+- Config不正（終了コード1）・Lock Scriptの失敗（73〜75）も、再起動の対象から外さない。Configを直した後は、管理者が`systemctl restart`する手順を標準とする。Architecture 11.3の「Config / Secret Correction：1分以内」は、この再起動を起点とする（24.2：変更は再起動で反映）。
+- `systemctl stop`での停止では、`Restart=always`でも再起動しない。
+- Backendの異常だけを理由に、OSを再起動しない（Architecture 11.3）。
+- Hardeningは入れない。`/proc/self/fd`の利用やPathの検証と干渉しないことを確かめる手間が大きいため（Future）。
+- Crash・Deployでの再起動のたびに、Tomorrow.ioの降雨は約65〜70分取得されない（[Issue #93の検証記録](verification/issue-93-rainforecast.md)、受け入れ済みの方針A）。手順書に注意として書く。
+
+### 26.6 nginx
+
+- `127.0.0.1:80`だけで待ち受け、LANへは公開しない。Debianの既定のサイト（全Interfaceの80番で待ち受ける）は無効化する（M4）。MVPでは別の端末から見る必要がなく、攻撃を受ける範囲を増やさないため。
+- `root`は`/opt/home-digital-signage/current/dist/frontend`とする。`dist/`の構成はRelease内でも変えない。
+- `location /`は`try_files $uri /index.html`。`index.html`には`Cache-Control: no-cache`を付け、Deploy後に古い画面が残らないようにする。ハッシュ付きのファイル名の静的ファイルは、既定のままにする。
+- `location /api/`は`proxy_pass http://127.0.0.1:3000`（URIを付けず、Pathをそのまま転送する）。既存の`/api/published-states`・`/api/time-availability`と、Frontendの相対Path・Vite Previewの転送（開発用）に整合する（7.2）。
+- Backendが止まっている間は502になる。Frontendが503以外の失敗も取得失敗として扱うことを、実装時に確かめる。
+
+### 26.7 Kiosk・画面
+
+- `signage`のDesktop Autologin（Raspberry Pi OSの設定）を有効にする。画面の前で誰でも操作できるが、家庭内・タッチ操作なし（Out of Scope）の前提で受け入れる。
+- labwcのautostart（`~/.config/labwc/autostart`）で、`WAYLAND_DISPLAY`等の環境変数をsystemdのユーザーManagerへ渡してから、`systemctl --user start home-digital-signage-kiosk.service`を実行する。`graphical-session.target`への依存にしないのは、Pi OSのlabwcで使えるかが未確認でも、同じ形で動くようにするため。XDG autostart等と二重に起動しない。
+  - ユーザーのautostartファイルを置くと、システムのautostart（パネル等）が実行されなくなる可能性がある（**検証待ち**。Kioskでは問題ない）。
+- Kiosk Unitは`Restart=always`とする。起動Scriptは、nginxの`/`が応答するまでChromiumを起動しない。60秒以内に応答がなければ終了し、systemdの再起動で待ち直す。応答の前に起動すると、Chromiumがエラーページのまま止まるため。起動後にnginxが止まっても、読み込み済みの画面がPollingの失敗を表示するだけである。
+- Chromiumは、Kiosk用の専用プロファイル（`--user-data-dir`）と`--kiosk`・`--password-store=basic`等で起動する。`--password-store=basic`は、OSのKeyringを使わないことで、起動時のKeyringのパスワード要求（#6）を避ける。保存したパスワードは暗号化されないが、Kioskではパスワードを保存しないため受け入れる。要求が実際に出なくなるかは**検証待ち**。
+- Deploy後のChromiumの再読み込みは、Kiosk Unitの再起動で行う（15.2の未決定事項）。管理者は、SSHで`signage`としてログインして`systemctl --user restart`する。
+- Screen Blankingを無効にする。マウスカーソルは、labwcで使える方法で隠す（方法は**検証待ち**。隠せない場合は、受け入れるかをユーザーが判断する）。画面を時間帯で消す機能はFutureのまま扱う。
+
+### 26.8 ログ
+
+- journaldの設定を`/etc/systemd/journald.conf.d/home-digital-signage.conf`に置く：`Storage=persistent`、`SystemMaxUse=100M`、`MaxRetentionSec=7day`。値は24.5の初期設定案のままで、#13で見直す。
+- この設定はOS全体のログに効く（7日より古いログはOS全体で消える）。Piはサイネージ専用機のため受け入れる。設定後に`systemd-journald`の再起動が必要。
+- Chromiumのログは、ユーザーUnitの出力としてjournaldに入る。量は#13で観察する。
+
+### 26.9 Deploy・Rollback
+
+- Release：`/opt/home-digital-signage/releases/<YYYYMMDD-HHMMSS>-<git短縮SHA>/`。中身は`dist/backend/`・`dist/frontend/`・`scripts/`・`package.json`・`package-lock.json`・`node_modules/`。`/opt/home-digital-signage/current`が稼働中のReleaseを指す。
+- 保持は3世代とする。現在と直前のReleaseは削除しない。実行中のProcessは、再起動するまで旧Releaseのファイルを使うため。LockはReleaseの外（`/var/lib`）にあり、切替の影響を受けない。
+
+手順（M3）：
+
+1. 開発PC（Windows）で`npm run check`の後、`npm run build:backend`・`npm run build:frontend`。
+2. `scp`で`signage`のホームの下の受け取り用ディレクトリへ転送する。
+3. Piで`signage`として、受け取り用ディレクトリで`npm ci --omit=dev`を実行する（`npm ci`をrootで実行しない）。
+4. `sudo`で`activate-release.sh`を実行する。Scriptは次の順に処理する。
+   1. Releaseを`/opt/home-digital-signage/releases/`へコピーし、所有者をroot・755/644にする。
+   2. 直前のReleaseを記録し、`ln -s <新> current.tmp`と`mv -T current.tmp current`で切り替える（Atomicな切替。`ln -sfn`は使わない）。
+   3. Backendを`systemctl restart`し、`/ping`と`/api/published-states`の200を待つ（例：30秒）。`/ping`だけでは、DBが使えなくても応答するため不十分である（10.9）。
+   4. nginx経由のFrontendの疎通を確かめる：`http://127.0.0.1/`が200で新しいReleaseの`index.html`を返し、`http://127.0.0.1/api/published-states`が200を返す。nginxの`root`・`/api/`の転送が新しいReleaseで働くことを、Kioskと同じ経路で確かめるため。
+   5. 3・4のどちらかが失敗したら、直前のReleaseへ切り戻し、Backendを再起動する。
+5. `signage`としてKiosk Unitを再起動する。
+6. 管理者が画面を目視で確かめる：エラーページではなく、時計を含む基本画面が表示される。描画の成功までは自動では判定しない。表示されない場合は、`activate-release.sh`で直前のReleaseへ手動で切り戻す。
+
+- Scriptは`set -eu`とし、切替の前に失敗したら`current`を変えない。
+- 切替・切戻しは、DBを変えないDeployだけが対象である。Migrationは自動で実行しない（12.4）。Schemaを変えるReleaseは、手順書で別に扱う：Backup（第13章）→ Backend停止 → 明示的なMigration → 切替。
+- Rollbackは、旧ReleaseがDBの現在のSchemaに対応していると確認できる場合だけ行う。対応が不明なら実行せず、Backupからの復元を含めて手動で判断する（24.6）。
+
+### 26.10 Secretの更新
+
+1. 同じディレクトリ（`/etc/home-digital-signage/secrets/`）の中に、rootが一時ファイルを作る。
+2. `chown hds:hds`・`chmod 600`にする。
+3. `mv`で正式な名前へ置き換える（Atomic Rename）。
+4. `systemctl restart home-digital-signage-backend`で反映する（24.2）。
+
+Secretの値・Pathの内容をログ・Issue・チャットへ出さない。Piで、正常な読み込みと、権限が不正なときに読み込みを拒否することを確かめる（#16 PR-Aからの引継ぎ）。
+
+### 26.11 Network未接続・時刻未同期・Network復旧
+
+- 26.2のとおり、Network・時刻同期を待たずに基本画面を出す。時計の表示は第25章に従う。
+- Network復旧後は、既存の取得制御（Backoff）で、操作なしに取得が回復することを#12で確かめる。回復までの時間（現状は最大約30分。[Issue #65の検証記録](verification/issue-65-time-availability.md)）とBackoffの変更は、[Issue #113](https://github.com/rinYamano211/home-digital-signage/issues/113)で扱う。#12では取得制御を変更しない。
+
+### 26.12 検証待ちの事項
+
+Piで確認するまで、確定扱いしない。結果は`docs/verification/`の記録と本章に反映する。
+
+| # | 事項 | 確認できなかった場合 |
+|---|---|---|
+| P1 | systemdのバージョン（254以上か） | `RestartSec=5s`固定 |
+| P2 | 段階的Backoffの下で、正常に動いた後の1回だけのCrashが1分以内に復旧するか | `RestartSec=5s`固定 |
+| P3 | Node.jsが`hds`から実行できるPathにあるか | システム全体へ入れ直す（ユーザーが行う） |
+| P4 | `hds`で`timedatectl`・`since_epoch`を読めるか | 権限を変える前に報告する |
+| P5 | labwcのautostartから、ユーザーUnitでKioskを起動できるか | labwcのautostartから直接起動し、再起動のループをScriptで持つ |
+| P6 | `--password-store=basic`でKeyringのパスワード要求が出ないか | 専用プロファイルを作り直して再確認。だめならユーザーと相談 |
+| P7 | nginxが`127.0.0.1:80`だけで待ち受けているか（`ss -ltnp`） | 既定のサイトを無効化する |
+| P8 | 電源投入から2分以内に時計を含む基本画面が出るか | Bootの時間とKioskの待ち時間を分けて調べる |
+| P9 | Backend・Chromiumを止めたとき（`kill -9`）に自動で復旧するか | Unitの設定を見直す |
+| P10 | nginxより先にKioskが動いても、エラーページで止まらないか | 起動Scriptを見直す |
+| P11 | OSの再起動後に前回のBootのログが残るか | journaldの設定を見直す |
+| P12 | Releaseの切替と、失敗時の切戻し | Scriptを直す |
+| P13 | Secretの正常な読み込みと、権限が不正なときの拒否 | — |
+| P14 | 画面が消えないか、カーソルが見えないか | カーソルは、受け入れるかをユーザーが判断する |
+| P15 | Network未接続で電源を入れても基本画面が出るか | — |
+| P16 | 26.3の管理コマンドの実行方法 | 手順書で別の方法を決める |
+| P17 | 既存DBの移行（26.4）：整合性、Quota履歴の一致、移行後の起動と取得 | 旧DBを残したまま原因を調べる |
+
+### 26.13 後続への引き継ぎ
+
+- [#13](https://github.com/rinYamano211/home-digital-signage/issues/13)：R-06の受入確認（2分・1分の実測）、72時間試験と計測Script、OS Hang Watchdog・Backend Watchdogの要否、Chromiumのタブ単独のCrash、Chromiumのログ量、Crash Loopの値と再起動による降雨の欠測の評価。
+- [#113](https://github.com/rinYamano211/home-digital-signage/issues/113)：Network復旧後の再取得までの時間とBackoff。
+- Future：systemdのHardening、Deployの自動化、時間帯による画面のON/OFF。

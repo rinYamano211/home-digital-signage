@@ -51,7 +51,7 @@ WindowsのChildProcess.killはPOSIX Signalの配送と同一ではないため�
 
 ## Secrets
 
-運用時の配置は以下。実ファイルはGit・Release Directoryの外へ置き、Backend実行ユーザーを所有者にする。
+運用時の配置は以下。実ファイルはGit・Release Directoryの外へ置き、Backend実行ユーザー（本番は専用ユーザー`hds`。所有権・更新手順は[技術スタック選定 第26章](technology-stack.md#startup-recovery-operations)）を所有者にする。
 
 ```text
 /etc/home-digital-signage/backend.env
