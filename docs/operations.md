@@ -103,50 +103,80 @@ journalctl --disk-usage
 3. 旧DB（保存した複製）と移行対象のDB（`/var/lib`の本体）の両方について、整合性とQuota履歴を出力し、比べる。`sqlite3`コマンドを使う（入っていなければ`sudo apt install sqlite3`。P17）。
    - 本体や保存した複製をSQLiteで直接開くと、rootの所有のファイルが作られたり内容が変わったりするおそれがある。そのため、毎回、使い捨ての作業用の複製を作って開く。
    - 出力は件数・連番・時刻だけで、Secretは含まない。値はチャットに貼らなくてよい（一致したかどうかだけ報告する）。
+   - 比較結果は、`mktemp -d`で作る専用の一時ディレクトリ（権限0700）に保存する。
+   - 2.〜5.は、変数（`src`・`bak`・`rep`・`verified`）と関数を引き継ぐため、同じターミナルで続けて実行する。
+   - `db_report`は、コピー・SQLiteのどれかが失敗すると、作業用の複製を消した後に失敗（終了コード1）を返す。後片付けの成功で、失敗が隠れないようにするため。`sqlite3 -bail`は、SQLのエラーで止まって失敗を返す。
 
    ```sh
    db_report() {
-     work=$(sudo mktemp -d)
-     sudo cp -p "$1/signage.db" "$work/"
-     if sudo test -e "$1/signage.db-wal"; then sudo cp -p "$1/signage.db-wal" "$work/"; fi
-     sudo sqlite3 "$work/signage.db" "PRAGMA integrity_check;
-       SELECT 'metadata', provider_key, history_status, initialized_at_ms, last_sequence FROM provider_quota_metadata ORDER BY provider_key;
-       SELECT 'consumptions', provider_key, COUNT(*), MAX(sequence), MAX(reserved_at_ms) FROM provider_quota_consumptions GROUP BY provider_key ORDER BY provider_key;"
+     work=$(sudo mktemp -d) || return 1
+     status=0
+     sudo cp -p "$1/signage.db" "$work/" || status=1
+     if [ "$status" -eq 0 ] && sudo test -e "$1/signage.db-wal"; then
+       sudo cp -p "$1/signage.db-wal" "$work/" || status=1
+     fi
+     if [ "$status" -eq 0 ]; then
+       sudo sqlite3 -bail "$work/signage.db" "PRAGMA integrity_check;
+         SELECT 'metadata', provider_key, history_status, initialized_at_ms, last_sequence FROM provider_quota_metadata ORDER BY provider_key;
+         SELECT 'consumptions', provider_key, COUNT(*), MAX(sequence), MAX(reserved_at_ms) FROM provider_quota_consumptions GROUP BY provider_key ORDER BY provider_key;" ||
+         status=1
+     fi
      sudo rm -rf "$work"
+     return "$status"
    }
-   db_report "$bak" > /tmp/hds-db-backup.txt
-   db_report "$src" > /tmp/hds-db-live.txt
-   head -1 /tmp/hds-db-backup.txt /tmp/hds-db-live.txt
-   diff /tmp/hds-db-backup.txt /tmp/hds-db-live.txt && echo match
+   rep=$(mktemp -d)
+   echo "$rep"
+   verified=no
+   if db_report "$bak" > "$rep/backup.txt" &&
+     db_report "$src" > "$rep/live.txt" &&
+     [ "$(head -n 1 "$rep/backup.txt")" = ok ] &&
+     [ "$(head -n 1 "$rep/live.txt")" = ok ] &&
+     diff "$rep/backup.txt" "$rep/live.txt"; then
+     verified=yes
+     echo 'MATCH: 4.へ進んでよい'
+   else
+     echo 'STOP: 4.へ進まない'
+   fi
    ```
 
-   - 両方の1行目（`integrity_check`）が`ok`であること。
-   - `diff`の結果が`match`であること。`metadata`（Providerごとの状態・最後の連番）と`consumptions`（件数・最大の連番・最新の予約時刻）が一致する。
-   - **どちらかが期待どおりでなければ、ここで止める。所有者の変更（4.）にもBackendの起動にも進まず、原因を調べる**。
+   - `MATCH`は、両方の`integrity_check`が`ok`で、`metadata`（Providerごとの状態・最後の連番）と`consumptions`（件数・最大の連番・最新の予約時刻）が一致したことを示す。
+   - **`STOP`のときは、ここで止める。所有者の変更（4.）にもBackendの起動にも進まず、原因を調べる**。DB本体・保存した複製は、この手順では変更しない。
 
-4. 所有者を変える。Modeは0700・0600のまま変えない。
+4. 所有者を変える。Modeは0700・0600のまま変えない。3.で`MATCH`になっていなければ、何も変更しない。
 
    ```sh
-   sudo chown hds:hds /var/lib/home-digital-signage /var/lib/home-digital-signage/*
-   sudo chown hds:hds /etc/home-digital-signage/secrets /etc/home-digital-signage/secrets/schedule.json /etc/home-digital-signage/secrets/weather.json
-   sudo chown root:root /etc/home-digital-signage/backend.env
-   sudo chown root:root /etc/home-digital-signage
-   sudo chmod 0755 /etc/home-digital-signage
+   if [ "$verified" = yes ]; then
+     sudo chown hds:hds /var/lib/home-digital-signage /var/lib/home-digital-signage/* &&
+       sudo chown hds:hds /etc/home-digital-signage/secrets /etc/home-digital-signage/secrets/schedule.json /etc/home-digital-signage/secrets/weather.json &&
+       sudo chown root:root /etc/home-digital-signage/backend.env &&
+       sudo chown root:root /etc/home-digital-signage &&
+       sudo chmod 0755 /etc/home-digital-signage &&
+       echo 'CHANGED' || echo 'STOP: 所有者の変更が途中で失敗した'
+   else
+     echo 'STOP: 3.の比較が成功していない'
+   fi
    sudo ls -la /var/lib/home-digital-signage /etc/home-digital-signage /etc/home-digital-signage/secrets
    ```
+
+   - 途中で失敗したら、`ls`の結果を見て、変わった所有者を元（`signage`）に戻し、原因を調べる。
 
    - `backend.env`はsystemd（root）が読む。以後、`signage`は読めない。
    - `/etc/home-digital-signage`をrootの所有にするのは、`signage`が`backend.env`・`secrets/`を差し替えられないようにするため（26.3）。
    - `backend.env.save`は、削除・上書き・所有者の変更をしない。設定情報（地点・カレンダーID等）を含む可能性があるため、内容をログ・Issue・チャットへ貼らない。用途はユーザーの確認待ちとし、扱いは確認の後に決める。
 
-5. 所有者を変えた後に、もう一度比べる。一致しなければBackendを起動しない（所有者を`signage`に戻して原因を調べる）。
+5. 所有者を変えた後に、もう一度比べる。`MATCH`にならなければ、2.6以降（Backendの起動）へ進まない（所有者を`signage`に戻して原因を調べる）。
 
    ```sh
-   db_report "$src" > /tmp/hds-db-after.txt
-   diff /tmp/hds-db-backup.txt /tmp/hds-db-after.txt && echo match
+   if db_report "$src" > "$rep/after.txt" &&
+     [ "$(head -n 1 "$rep/after.txt")" = ok ] &&
+     diff "$rep/backup.txt" "$rep/after.txt"; then
+     echo 'MATCH: 2.6へ進んでよい'
+   else
+     echo 'STOP: Backendを起動しない'
+   fi
    ```
 
-   `/tmp/hds-db-*.txt`は、P17が終わるまで残し、その後に削除する。
+   `$rep`（3.で表示したPath）の比較結果は、P17が終わるまで残す。その後、`rm -rf -- "$rep"`で削除する。ターミナルを閉じた場合は、表示したPathを指定して削除する。
 
 6. 移行の後は、`signage`として`npm run start:backend`を実行しない（所有者が合わず起動できない。旧DBの複製でも起動しない）。
 
