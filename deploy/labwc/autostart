@@ -1,0 +1,5 @@
+# Home Digital Signage (Issue #12, technology-stack 26.7).
+# Add to ~signage/.config/labwc/autostart. Pass the Wayland session to the
+# systemd user manager, then start the Kiosk unit.
+systemctl --user import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP
+systemctl --user start home-digital-signage-kiosk.service

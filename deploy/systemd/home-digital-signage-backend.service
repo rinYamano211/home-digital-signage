@@ -1,0 +1,23 @@
+# Backend (Issue #12, technology-stack 26.5). Install to /etc/systemd/system/.
+[Unit]
+Description=Home Digital Signage Backend
+# Do not wait for network-online.target or time-sync.target (R-06).
+After=network.target
+# Never stop restarting after repeated failures (architecture 11.3).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=hds
+Group=hds
+EnvironmentFile=/etc/home-digital-signage/backend.env
+# Not via npm: the lock script execs node, so node is the main process.
+ExecStart=/bin/sh /opt/home-digital-signage/current/scripts/with-backend-lock.sh backend
+Restart=always
+# Fixed interval. Staged backoff (RestartSteps) waits for Pi check P2 (26.5).
+RestartSec=5s
+# Backend graceful shutdown is 10 s.
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target
