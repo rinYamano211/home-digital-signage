@@ -37,34 +37,52 @@ function run(args: string[], env: NodeJS.ProcessEnv): Promise<Run> {
   });
 }
 
-// health: "ok" or "fail". The fake curl serves current/dist/frontend for /,
-// like nginx, so the index.html comparison is exercised.
-async function setup(health = "ok") {
+// Fakes:
+// - curl fails while `current` points at a release listed in `bad`. For
+//   http://127.0.0.1/... (nginx) it serves files of current/dist/frontend.
+// - systemctl logs its arguments; `systemctl-mode` is ok, fail or fail-once.
+async function setup() {
   const root = await mkdtemp(join(tmpdir(), "hds-deploy-"));
   dirs.push(root);
   const base = join(root, "opt");
   const bin = join(root, "bin");
+  const log = join(root, "systemctl.log");
+  const mode = join(root, "systemctl-mode");
+  const bad = join(root, "bad");
   await mkdir(join(base, "releases"), { recursive: true });
   await mkdir(bin);
-  const log = join(root, "systemctl.log");
   await writeFile(
     join(bin, "systemctl"),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n`,
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> '${log}'`,
+      `case "$(cat '${mode}')" in`,
+      "  fail) exit 1 ;;",
+      `  fail-once) echo ok > '${mode}'; exit 1 ;;`,
+      "esac",
+      "",
+    ].join("\n"),
   );
   await writeFile(
     join(bin, "curl"),
     [
       "#!/bin/sh",
-      `[ "$(cat '${join(root, "health")}')" = ok ] || exit 22`,
+      `cur=$(basename "$(readlink '${base}/current')")`,
+      `grep -qx "$cur" '${bad}' && exit 22`,
       'out=""; url=""',
       'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2;; --max-time) shift 2;; -*) shift;; *) url=$1; shift;; esac; done',
-      `if [ "$url" = http://127.0.0.1/ ] && [ "$out" != /dev/null ]; then cp '${base}/current/dist/frontend/index.html' "$out"; fi`,
+      'case "$url" in http://127.0.0.1/*)',
+      "  path=${url#http://127.0.0.1}",
+      '  [ "$path" != / ] || path=/index.html',
+      `  [ "$out" = /dev/null ] || cp '${base}/current/dist/frontend'"$path" "$out" || exit 22`,
+      ";; esac",
       "",
     ].join("\n"),
   );
   await chmod(join(bin, "systemctl"), 0o755);
   await chmod(join(bin, "curl"), 0o755);
-  await writeFile(join(root, "health"), health);
+  await writeFile(mode, "ok");
+  await writeFile(bad, "");
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -76,23 +94,49 @@ async function setup(health = "ok") {
     const dir = join(root, "incoming", name);
     for (const sub of [
       "dist/backend",
-      "dist/frontend",
+      "dist/frontend/assets",
       "scripts",
       "node_modules",
     ])
       await mkdir(join(dir, sub), { recursive: true });
     await writeFile(join(dir, "dist/backend/main.js"), "");
-    await writeFile(join(dir, "dist/frontend/index.html"), name);
+    await writeFile(
+      join(dir, "dist/frontend/index.html"),
+      `<script type="module" src="/assets/app-${name}.js"></script>` +
+        `<link rel="stylesheet" href="/assets/app-${name}.css">`,
+    );
+    await writeFile(join(dir, `dist/frontend/assets/app-${name}.js`), name);
+    await writeFile(join(dir, `dist/frontend/assets/app-${name}.css`), name);
     await writeFile(join(dir, "scripts/with-backend-lock.sh"), "");
     await writeFile(join(dir, "scripts/kiosk.sh"), "");
     await writeFile(join(dir, "package.json"), "{}");
     return dir;
   };
+  const release = (name: string) => join(base, "releases", name);
   const link = (name: string) =>
     readlink(join(base, name)).catch(() => undefined);
-  const setHealth = (value: string) => writeFile(join(root, "health"), value);
-  const calls = () => readFile(log, "utf8").catch(() => "");
-  return { base, env, stage, link, setHealth, calls };
+  const markBad = (...names: string[]) => writeFile(bad, names.join("\n"));
+  const setSystemctl = (value: string) => writeFile(mode, value);
+  const restarts = async () =>
+    (await readFile(log, "utf8").catch(() => ""))
+      .split("\n")
+      .filter((line) => line === "restart home-digital-signage-backend.service")
+      .length;
+  const activate = async (name: string) =>
+    run([script, "activate", await stage(name)], env);
+  const rollback = () => run([script, "rollback", "--schema-checked"], env);
+  return {
+    base,
+    env,
+    stage,
+    release,
+    link,
+    markBad,
+    setSystemctl,
+    restarts,
+    activate,
+    rollback,
+  };
 }
 
 const names = [
@@ -113,65 +157,113 @@ linux("scripts pass the shell syntax check", async () => {
 
 linux("activates releases and records the previous one", async () => {
   const t = await setup();
-  const first = await t.stage(names[0]);
-  expect((await run([script, "activate", first], t.env)).code).toBe(0);
-  expect(await t.link("current")).toBe(join(t.base, "releases", names[0]));
+  expect((await t.activate(names[0])).code).toBe(0);
+  expect(await t.link("current")).toBe(t.release(names[0]));
   expect(await t.link("previous")).toBeUndefined();
-  expect(await t.calls()).toBe(
-    "restart home-digital-signage-backend.service\n",
-  );
+  expect(await t.restarts()).toBe(1);
 
-  const second = await t.stage(names[1]);
-  expect((await run([script, "activate", second], t.env)).code).toBe(0);
-  expect(await t.link("current")).toBe(join(t.base, "releases", names[1]));
-  expect(await t.link("previous")).toBe(join(t.base, "releases", names[0]));
+  expect((await t.activate(names[1])).code).toBe(0);
+  expect(await t.link("current")).toBe(t.release(names[1]));
+  expect(await t.link("previous")).toBe(t.release(names[0]));
 });
 
 linux("keeps three releases", async () => {
   const t = await setup();
-  for (const name of names)
-    expect(
-      (await run([script, "activate", await t.stage(name)], t.env)).code,
-    ).toBe(0);
+  for (const name of names) expect((await t.activate(name)).code).toBe(0);
   expect((await readdir(join(t.base, "releases"))).sort()).toEqual(
     names.slice(1),
   );
 });
 
-linux("switches back when the health check fails", async () => {
-  const t = await setup();
-  await run([script, "activate", await t.stage(names[0])], t.env);
-  await t.setHealth("fail");
-  const result = await run(
-    [script, "activate", await t.stage(names[1])],
-    t.env,
-  );
-  expect(result.code).not.toBe(0);
-  expect(result.stderr).toContain("switched back");
-  expect(await t.link("current")).toBe(join(t.base, "releases", names[0]));
-  expect(await t.link("previous")).toBeUndefined();
-});
-
 linux("refuses a badly named or incomplete staging directory", async () => {
   const t = await setup();
   const bad = await t.stage("latest");
-  expect((await run([script, "activate", bad], t.env)).code).not.toBe(0);
+  expect((await run([script, "activate", bad], t.env)).code).toBe(1);
   const incomplete = await t.stage(names[0]);
   await rm(join(incomplete, "node_modules"), { recursive: true });
-  expect((await run([script, "activate", incomplete], t.env)).code).not.toBe(0);
+  expect((await run([script, "activate", incomplete], t.env)).code).toBe(1);
   expect(await readdir(join(t.base, "releases"))).toEqual([]);
   expect(await t.link("current")).toBeUndefined();
 });
 
+linux("fails the check when a static file is missing", async () => {
+  const t = await setup();
+  const dir = await t.stage(names[0]);
+  await rm(join(dir, `dist/frontend/assets/app-${names[0]}.css`));
+  const result = await run([script, "activate", dir], t.env);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("no previous release");
+});
+
+linux("switches back when the restart of the new release fails", async () => {
+  const t = await setup();
+  await t.activate(names[0]);
+  await t.setSystemctl("fail-once");
+  const result = await t.activate(names[1]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("systemctl restart failed");
+  expect(result.stderr).toContain("it is healthy");
+  expect(await t.link("current")).toBe(t.release(names[0]));
+  expect(await t.link("previous")).toBeUndefined();
+  expect(await t.restarts()).toBe(3);
+});
+
+linux("switches back and recovers from an unhealthy release", async () => {
+  const t = await setup();
+  await t.activate(names[0]);
+  await t.markBad(names[1]);
+  const result = await t.activate(names[1]);
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(`switched back to ${names[0]}`);
+  expect(result.stderr).toContain("it is healthy");
+  expect(await t.link("current")).toBe(t.release(names[0]));
+  expect(await t.link("previous")).toBeUndefined();
+});
+
+linux("reports when the switched-back release is unhealthy too", async () => {
+  const t = await setup();
+  await t.activate(names[0]);
+  await t.markBad(names[0], names[1]);
+  const result = await t.activate(names[1]);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("NOT healthy");
+  expect(await t.link("current")).toBe(t.release(names[0]));
+  expect(await t.link("previous")).toBeUndefined();
+});
+
 linux("rolls back only with the schema confirmation", async () => {
   const t = await setup();
-  await run([script, "activate", await t.stage(names[0])], t.env);
-  await run([script, "activate", await t.stage(names[1])], t.env);
-  expect((await run([script, "rollback"], t.env)).code).not.toBe(0);
-  expect(await t.link("current")).toBe(join(t.base, "releases", names[1]));
-  expect(
-    (await run([script, "rollback", "--schema-checked"], t.env)).code,
-  ).toBe(0);
-  expect(await t.link("current")).toBe(join(t.base, "releases", names[0]));
-  expect(await t.link("previous")).toBe(join(t.base, "releases", names[1]));
+  await t.activate(names[0]);
+  await t.activate(names[1]);
+  const refused = await run([script, "rollback"], t.env);
+  expect(refused.code).toBe(1);
+  expect(await t.link("current")).toBe(t.release(names[1]));
+  expect((await t.rollback()).code).toBe(0);
+  expect(await t.link("current")).toBe(t.release(names[0]));
+  expect(await t.link("previous")).toBe(t.release(names[1]));
+});
+
+linux("returns to the original when the rollback target fails", async () => {
+  const t = await setup();
+  await t.activate(names[0]);
+  await t.activate(names[1]);
+  await t.markBad(names[0]);
+  const result = await t.rollback();
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(`switched back to ${names[1]}`);
+  expect(result.stderr).toContain("it is healthy");
+  expect(await t.link("current")).toBe(t.release(names[1]));
+  expect(await t.link("previous")).toBe(t.release(names[0]));
+});
+
+linux("reports when the original also fails after a rollback", async () => {
+  const t = await setup();
+  await t.activate(names[0]);
+  await t.activate(names[1]);
+  await t.setSystemctl("fail");
+  const result = await t.rollback();
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("NOT healthy");
+  expect(await t.link("current")).toBe(t.release(names[1]));
+  expect(await t.link("previous")).toBe(t.release(names[0]));
 });

@@ -6,6 +6,8 @@
 # <staging-dir> is named <YYYYMMDD-HHMMSS>-<git short SHA> and holds dist/,
 # scripts/, package.json, package-lock.json and node_modules/ (npm ci done).
 # The DB is never migrated here; switching back is only safe because of that.
+# Exit codes: 0 done; 1 failed, and the release that was running before is
+# back and healthy; 2 failed, and that release is not healthy either (act now).
 # HDS_BASE, HDS_RELEASE_OWNER and HDS_HEALTH_TRIES exist for tests only.
 set -eu
 base=${HDS_BASE:-/opt/home-digital-signage}
@@ -13,8 +15,11 @@ owner=${HDS_RELEASE_OWNER:-root:root}
 health_tries=${HDS_HEALTH_TRIES:-15}
 unit=home-digital-signage-backend.service
 keep=3
-fail() {
+say() {
   printf 'activate-release: %s\n' "$1" >&2
+}
+fail() {
+  say "$1"
   exit 1
 }
 
@@ -31,35 +36,63 @@ point() {
   mv -T "$base/$1.tmp" "$base/$1"
 }
 
-# Backend directly, then the same path as the Kiosk (nginx). /ping alone
-# answers even when the DB is unusable (10.9), so the API is checked too.
+# GET through nginx (the Kiosk's path) and compare with the release's file.
+# A missing file would come back as index.html (SPA fallback) with 200, so a
+# byte comparison is needed; a status code alone would be a false positive.
+same_as_release() {
+  out=$(mktemp)
+  if curl -fs -o "$out" --max-time 3 "http://127.0.0.1$2" &&
+    cmp -s "$out" "$1/dist/frontend$3"; then
+    rm -f "$out"
+    return 0
+  fi
+  rm -f "$out"
+  return 1
+}
+
+# Backend directly, then nginx. /ping alone answers even when the DB is
+# unusable (10.9), so the API is checked too. The static JS/CSS that
+# index.html references must come back unchanged as well.
 healthy() {
-  page=$(mktemp)
-  ok=1
   for url in http://127.0.0.1:3000/ping \
     http://127.0.0.1:3000/api/published-states \
     http://127.0.0.1/api/published-states; do
-    curl -fs -o /dev/null --max-time 3 "$url" || ok=0
+    curl -fs -o /dev/null --max-time 3 "$url" || return 1
   done
-  if [ "$ok" -eq 1 ]; then
-    curl -fs -o "$page" --max-time 3 http://127.0.0.1/ || ok=0
-  fi
-  if [ "$ok" -eq 1 ]; then
-    cmp -s "$page" "$1/dist/frontend/index.html" || ok=0
-  fi
-  rm -f "$page"
-  [ "$ok" -eq 1 ]
+  same_as_release "$1" / /index.html || return 1
+  assets=$(grep -Eo '(src|href)="/assets/[^"]+"' "$1/dist/frontend/index.html" |
+    sed -E 's/^(src|href)="//; s/"$//') || :
+  [ -n "$assets" ] || return 1
+  for asset in $assets; do
+    same_as_release "$1" "$asset" "$asset" || return 1
+  done
 }
 
-# Wait up to about 30 s for the restarted Backend.
+# Restart the Backend on $1 and wait up to about 30 s. A failed restart is a
+# failed check, so the caller can switch back (set -e does not apply inside
+# a function called from an if condition).
 restart_and_check() {
-  systemctl restart "$unit"
+  if ! systemctl restart "$unit"; then
+    say "systemctl restart failed for $(basename -- "$1")"
+    return 1
+  fi
   tries=0
   until healthy "$1"; do
     tries=$((tries + 1))
     [ "$tries" -lt "$health_tries" ] || return 1
     sleep 2
   done
+}
+
+# Point current back at $1 (the release that was running) and check it.
+switch_back() {
+  point current "$1"
+  if restart_and_check "$1"; then
+    say "$2; switched back to $(basename -- "$1") and it is healthy"
+    exit 1
+  fi
+  say "$2; switched back to $(basename -- "$1") but it is NOT healthy; check the logs"
+  exit 2
 }
 
 # Keep the newest $keep releases; never remove current or previous.
@@ -99,15 +132,14 @@ case "${1-}" in
     if restart_and_check "$new"; then
       [ -z "$old" ] || point previous "$old"
       prune
-      printf 'activate-release: %s is active\n' "$name"
+      say "$name is active"
       exit 0
     fi
-    if [ -n "$old" ]; then
-      point current "$old"
-      systemctl restart "$unit" || :
-      fail "health check failed; switched back to $(basename -- "$old")"
+    if [ -z "$old" ]; then
+      say 'health check failed and there is no previous release; check the logs'
+      exit 2
     fi
-    fail 'health check failed and there is no previous release'
+    switch_back "$old" "health check failed for $name"
     ;;
   rollback)
     # The operator confirms that the previous release supports the current
@@ -117,13 +149,15 @@ case "${1-}" in
     prev=$(readlink "$base/previous" || :)
     [ -n "$prev" ] && [ -d "$prev" ] || fail 'no previous release'
     cur=$(readlink "$base/current" || :)
+    [ -n "$cur" ] || fail 'no current release'
     point current "$prev"
     if restart_and_check "$prev"; then
-      [ -z "$cur" ] || point previous "$cur"
-      printf 'activate-release: rolled back to %s\n' "$(basename -- "$prev")"
+      point previous "$cur"
+      say "rolled back to $(basename -- "$prev")"
       exit 0
     fi
-    fail 'health check failed after rollback; check the logs'
+    # previous is left as it was.
+    switch_back "$cur" "health check failed for $(basename -- "$prev")"
     ;;
   *)
     fail 'usage: activate <staging-dir> | rollback --schema-checked'

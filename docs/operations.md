@@ -12,7 +12,7 @@
 - Node.js v24.22.1が`signage`のnvm（`/home/signage/.nvm/`）にある。システム共通のNode.jsは未確認。
 - nginxは導入済みか未確認で、サービスはinactive。
 - `/var/lib/home-digital-signage/`（`signage.db`・`backend.lock`を含む）、`/etc/home-digital-signage/secrets/`（`schedule.json`・`weather.json`）、`/etc/home-digital-signage/backend.env`は、いずれも`signage`が所有し、0700（ディレクトリ）・0600（ファイル）。
-- `/etc/home-digital-signage/backend.env.save`がある。用途が分からないため、本書の手順では削除・上書き・所有者変更をしない（扱いは確認待ち）。
+- `/etc/home-digital-signage/backend.env.save`がある。設定情報を含む可能性がある。用途が分からないため、本書の手順では削除・上書き・所有者変更をしない（扱いはユーザーの確認待ち）。
 
 ## 2. 初回の設置
 
@@ -87,28 +87,42 @@ journalctl --disk-usage
 
    `signage.db-wal`・`signage.db-shm`の有無を記録する。
 
-2. 変更前の複製（旧DB）を保存する。**移行の検証（P17）が終わるまで、削除・変更しない**。
+2. 変更前の複製（旧DB）を保存する。`signage.db`と、あれば`signage.db-wal`を保存する（`-shm`は保存しない。26.4）。**移行の検証（P17）が終わるまで、削除・変更しない**。
 
    ```sh
-   sudo install -d -m 0700 /var/backups/home-digital-signage/pre-hds
-   sudo cp -p /var/lib/home-digital-signage/signage.db* /var/backups/home-digital-signage/pre-hds/
-   sudo cmp /var/lib/home-digital-signage/signage.db /var/backups/home-digital-signage/pre-hds/signage.db && echo same
+   src=/var/lib/home-digital-signage
+   bak=/var/backups/home-digital-signage/pre-hds
+   sudo install -d -m 0700 "$bak"
+   for f in signage.db signage.db-wal; do
+     if sudo test -e "$src/$f"; then
+       sudo cp -p "$src/$f" "$bak/$f" && sudo cmp "$src/$f" "$bak/$f" && echo "$f saved"
+     fi
+   done
    ```
 
-3. 整合性とQuota履歴を確かめる。本番のディレクトリでSQLiteを開くと、rootの所有のファイルが作られることがあるため、**作業用の複製で**確かめる。`sqlite3`コマンドを使う（入っていなければ`sudo apt install sqlite3`。P17）。
+3. 旧DB（保存した複製）と移行対象のDB（`/var/lib`の本体）の両方について、整合性とQuota履歴を出力し、比べる。`sqlite3`コマンドを使う（入っていなければ`sudo apt install sqlite3`。P17）。
+   - 本体や保存した複製をSQLiteで直接開くと、rootの所有のファイルが作られたり内容が変わったりするおそれがある。そのため、毎回、使い捨ての作業用の複製を作って開く。
+   - 出力は件数・連番・時刻だけで、Secretは含まない。値はチャットに貼らなくてよい（一致したかどうかだけ報告する）。
 
    ```sh
-   work=$(sudo mktemp -d)
-   sudo sh -c 'cp -p /var/backups/home-digital-signage/pre-hds/signage.db* "$1"/' _ "$work"
-   sudo sqlite3 -readonly "$work/signage.db" 'PRAGMA integrity_check;'
-   sudo sqlite3 -readonly "$work/signage.db" 'SELECT provider_key, COUNT(*), MAX(sequence) FROM provider_quota_consumptions GROUP BY provider_key;'
-   sudo sqlite3 -readonly "$work/signage.db" 'SELECT COUNT(*) FROM provider_quota_metadata;'
-   sudo rm -rf "$work"
+   db_report() {
+     work=$(sudo mktemp -d)
+     sudo cp -p "$1/signage.db" "$work/"
+     if sudo test -e "$1/signage.db-wal"; then sudo cp -p "$1/signage.db-wal" "$work/"; fi
+     sudo sqlite3 "$work/signage.db" "PRAGMA integrity_check;
+       SELECT 'metadata', provider_key, history_status, initialized_at_ms, last_sequence FROM provider_quota_metadata ORDER BY provider_key;
+       SELECT 'consumptions', provider_key, COUNT(*), MAX(sequence), MAX(reserved_at_ms) FROM provider_quota_consumptions GROUP BY provider_key ORDER BY provider_key;"
+     sudo rm -rf "$work"
+   }
+   db_report "$bak" > /tmp/hds-db-backup.txt
+   db_report "$src" > /tmp/hds-db-live.txt
+   head -1 /tmp/hds-db-backup.txt /tmp/hds-db-live.txt
+   diff /tmp/hds-db-backup.txt /tmp/hds-db-live.txt && echo match
    ```
 
-   - `integrity_check`が`ok`であること。
-   - Quota履歴の件数と最大の`sequence`を記録する（値はチャットに貼らなくてよい。件数があることだけ報告する）。
-   - どちらかが期待どおりでなければ、ここで止め、Backendを起動せずに原因を調べる。
+   - 両方の1行目（`integrity_check`）が`ok`であること。
+   - `diff`の結果が`match`であること。`metadata`（Providerごとの状態・最後の連番）と`consumptions`（件数・最大の連番・最新の予約時刻）が一致する。
+   - **どちらかが期待どおりでなければ、ここで止める。所有者の変更（4.）にもBackendの起動にも進まず、原因を調べる**。
 
 4. 所有者を変える。Modeは0700・0600のまま変えない。
 
@@ -123,9 +137,18 @@ journalctl --disk-usage
 
    - `backend.env`はsystemd（root）が読む。以後、`signage`は読めない。
    - `/etc/home-digital-signage`をrootの所有にするのは、`signage`が`backend.env`・`secrets/`を差し替えられないようにするため（26.3）。
-   - `backend.env.save`は変更しない（1.の確認待ち）。
+   - `backend.env.save`は、削除・上書き・所有者の変更をしない。設定情報（地点・カレンダーID等）を含む可能性があるため、内容をログ・Issue・チャットへ貼らない。用途はユーザーの確認待ちとし、扱いは確認の後に決める。
 
-5. 移行の後は、`signage`として`npm run start:backend`を実行しない（所有者が合わず起動できない。旧DBの複製でも起動しない）。
+5. 所有者を変えた後に、もう一度比べる。一致しなければBackendを起動しない（所有者を`signage`に戻して原因を調べる）。
+
+   ```sh
+   db_report "$src" > /tmp/hds-db-after.txt
+   diff /tmp/hds-db-backup.txt /tmp/hds-db-after.txt && echo match
+   ```
+
+   `/tmp/hds-db-*.txt`は、P17が終わるまで残し、その後に削除する。
+
+6. 移行の後は、`signage`として`npm run start:backend`を実行しない（所有者が合わず起動できない。旧DBの複製でも起動しない）。
 
 ### 2.6 Backendのsystemd Unit
 
