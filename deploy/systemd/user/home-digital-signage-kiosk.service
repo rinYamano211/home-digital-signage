@@ -1,0 +1,12 @@
+# Kiosk (Issue #12, technology-stack 26.7). Install to ~signage/.config/systemd/user/.
+# Started from labwc autostart (deploy/labwc/autostart), not from a target.
+[Unit]
+Description=Home Digital Signage Kiosk (Chromium)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Waits for nginx, then execs Chromium (exits after 60 s to be restarted).
+ExecStart=/bin/sh /opt/home-digital-signage/current/scripts/kiosk.sh
+Restart=always
+RestartSec=5s
