@@ -4807,8 +4807,8 @@ Piで確認するまで、確定扱いしない。結果は`docs/verification/`�
 | P5 | labwcのautostartから、ユーザーUnitでKioskを起動できるか | labwcのautostartから直接起動し、再起動のループをScriptで持つ | 確認済み |
 | P6 | `--password-store=basic`でKeyringのパスワード要求が出ないか | 専用プロファイルを作り直して再確認。だめならユーザーと相談 | 確認済み |
 | P7 | nginxが`127.0.0.1:80`だけで待ち受けているか（`ss -ltnp`） | 既定のサイトを無効化する | 確認済み（設定の反映に`restart`が必要だった） |
-| P8 | 電源投入から2分以内に時計を含む基本画面が出るか | Bootの時間とKioskの待ち時間を分けて調べる | 検証待ち（体感だけ） |
-| P9 | Backend・Chromiumを止めたとき（`kill -9`）に自動で復旧するか | Unitの設定を見直す | 一部確認（Chromiumは確認済み。Backendは検証待ち） |
+| P8 | 電源投入から2分以内に時計を含む基本画面が出るか | Bootの時間とKioskの待ち時間を分けて調べる | 確認済み（電源ボタンから基本画面まで実測20秒） |
+| P9 | Backend・Chromiumを止めたとき（`kill -9`）に自動で復旧するか | Unitの設定を見直す | 確認済み（Chromium：約5秒後に起動し直した。Backend：約6秒で処理可能に） |
 | P10 | nginxより先にKioskが動いても、エラーページで止まらないか | 起動Scriptを見直す | 確認済み |
 | P11 | OSの再起動後に前回のBootのログが残るか | journaldの設定を見直す | 検証待ち |
 | P12 | Releaseの切替と、失敗時の切戻し | Scriptを直す | 一部確認（初回の切替だけ） |
