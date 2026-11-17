@@ -29,7 +29,7 @@
 
 ### DB・Secret・Configの所有者の移行（手順書 2.5）
 
-- DBは、第26章 26.4が想定した「別の場所へコピーする」形ではなく、既にあった本番のPath（`/var/lib/home-digital-signage/`）で、**その場で所有者を`hds`に変えた**。変更前の複製を`/var/backups/home-digital-signage/pre-hds/`に保存した。
+- DBは、第26章 26.4が想定した「別の場所へコピーする」形ではなく、既にあった本番のPath（`/var/lib/home-digital-signage/`）で、**その場で所有者を`hds`に変えた**。変更前の複製を`/var/backups/home-digital-signage/pre-hds/`に保存した。26.4は、この結果に合わせて更新した（本PR）。
 - 変更前：Backendの停止を確認した。複製と本体のSHA256が一致した。両方の`integrity_check`が`ok`だった。Quota履歴（`provider_quota_metadata`・`provider_quota_consumptions`の件数・最後の連番・最新の予約時刻）が一致した（`MATCH`）。
 - 所有者：DB・`-wal`・`-shm`・`backend.lock`は`hds:hds`、Secretは`hds:hds`、`backend.env`は`root:root`。`backend.env.save`は変更していない（用途はユーザーの確認待ち）。
 - 変更後：もう一度比べて一致した（`MATCH`）。
