@@ -52,15 +52,17 @@ sudo -u hds cat /sys/class/rtc/rtc0/since_epoch
 
 ```sh
 sudo apt install nginx
-sudo rm /etc/nginx/sites-enabled/default
+sudo rm -f /etc/nginx/sites-enabled/default
 sudo install -m 0644 deploy/nginx/home-digital-signage.conf /etc/nginx/sites-available/home-digital-signage
-sudo ln -s /etc/nginx/sites-available/home-digital-signage /etc/nginx/sites-enabled/home-digital-signage
-sudo nginx -t
-sudo systemctl enable --now nginx
+sudo ln -sfn /etc/nginx/sites-available/home-digital-signage /etc/nginx/sites-enabled/home-digital-signage
+sudo nginx -t && sudo systemctl enable nginx && sudo systemctl restart nginx
 sudo ss -ltnp | grep ':80 '
 ```
 
 - `sites-enabled/default`はsymbolic linkで、削除しても`sites-available/default`は残る。
+- Debianの`apt install nginx`は、その時点で既定のサイト（全Interfaceの80番）のnginxを起動する。`systemctl enable --now`は、既に動いているnginxには何もしないため、設定を変えても古い待ち受けが残る（Issue #12の実機で確認）。そのため、`nginx -t`が成功した後に必ず`restart`する。初めて導入したときも、既に動いているときも、同じ手順でよい。
+- `enable`は、OSの起動時にnginxを自動で起動する設定である。`restart`は、いま動いているnginxを止めて、新しい設定で起動し直す。
+- `rm -f`・`ln -sfn`は、手順をやり直しても失敗しないようにするため。
 - 最後の確認で、`127.0.0.1:80`だけが表示されること（P7）。Releaseを配置するまでは、画面は404等になる。
 
 ### 2.4 journald
@@ -155,10 +157,13 @@ journalctl --disk-usage
    else
      echo 'STOP: 3.の比較が成功していない'
    fi
-   sudo ls -la /var/lib/home-digital-signage /etc/home-digital-signage /etc/home-digital-signage/secrets
+   sudo find /var/lib/home-digital-signage -maxdepth 1 -printf '%m %u:%g %p\n' | sort
+   sudo find /etc/home-digital-signage -maxdepth 2 -printf '%m %u:%g %p\n' | sort
    ```
 
-   - 途中で失敗したら、`ls`の結果を見て、変わった所有者を元（`signage`）に戻し、原因を調べる。
+   - 確認には`find`を使う。所有者を変えた後は、`signage`は`hds`の0700のディレクトリの中を読めないため、`/var/lib/home-digital-signage/*`のような`*`は、`sudo`の前に`signage`のShellで展開できない。`find`はroot（`sudo`）として中を列挙する。
+   - 期待値：`/var/lib/home-digital-signage`は`700 hds:hds`、中のファイルは`600 hds:hds`。`/etc/home-digital-signage`は`755 root:root`、`backend.env`は`600 root:root`、`secrets`は`700 hds:hds`、その中は`600 hds:hds`。`backend.env.save`は変更前のまま。
+   - 途中で失敗したら、`find`の結果を見て、変わった所有者を元（`signage`）に戻し、原因を調べる。
 
    - `backend.env`はsystemd（root）が読む。以後、`signage`は読めない。
    - `/etc/home-digital-signage`をrootの所有にするのは、`signage`が`backend.env`・`secrets/`を差し替えられないようにするため（26.3）。
@@ -186,22 +191,32 @@ journalctl --disk-usage
 sudo install -m 0644 deploy/systemd/home-digital-signage-backend.service /etc/systemd/system/
 sudo systemd-analyze verify /etc/systemd/system/home-digital-signage-backend.service
 sudo systemctl daemon-reload
-sudo systemctl enable home-digital-signage-backend.service
+systemctl show home-digital-signage-backend.service -p LoadState -p UnitFileState -p ActiveState -p User
 ```
 
-ここでは起動しない。最初のRelease（2.7）の切替で起動する。
+- 期待値：`LoadState=loaded`・`UnitFileState=disabled`・`ActiveState=inactive`・`User=hds`。
+- ここでは`enable`も`start`もしない。`enable`は「OSの起動時に自動で起動する」設定で、`start`（`restart`）は「いま起動する」操作である。Releaseがない間に`enable`すると、Piの再起動のたびに`/opt/home-digital-signage/current`がないまま起動を試み、5秒ごとに失敗を繰り返す（害はないが、ログが増える）。`disabled`のままなら、Releaseの前にPiが再起動しても、Backendは起動しない。
+- 最初の起動は、2.7の`activate-release.sh`が行う（Scriptの`systemctl restart`は、`disabled`のUnitも起動する）。`enable`は、最初のReleaseが正常に動くことを確かめた後に行う（2.7）。
 
 ### 2.7 最初のRelease
 
-4.の手順で配置する。最初は`previous`がないため、疎通確認に失敗しても切り戻しはしない。失敗したら、5.のログで原因を調べる。
+1. 4.1の手順で配置する。`activate-release.sh`がBackendを起動し、疎通を確かめる。
+   - 最初は`previous`がないため、疎通確認に失敗しても切り戻せない（終了コード2）。その場合は、`sudo systemctl stop home-digital-signage-backend`で止め（`Restart=always`のため、止めるまで再起動を繰り返す）、3.1のログで原因を調べる。`enable`はしない。
+2. 終了コード0（`... is active`）を確かめたら、OSの起動時の自動起動を有効にする。
 
-起動したら、次を確かめる（P17の後半）。
+   ```sh
+   sudo systemctl enable home-digital-signage-backend.service
+   systemctl show home-digital-signage-backend.service -p UnitFileState -p ActiveState
+   ```
 
-- `journalctl -u home-digital-signage-backend -b`に`database_status`・`startup_complete`があること。
-- `curl -fsS http://127.0.0.1/api/published-states`が応答すること。
-- 予定・天気が取得されること。降雨は、再起動から約65〜70分は取得されない（受け入れ済みの方針A。26.5）。
+   期待値：`UnitFileState=enabled`・`ActiveState=active`。R-06の電源投入後の自動起動は、ここから有効になる（確認はP8）。
 
-確認が終わったら、P17を完了とし、`/var/backups/home-digital-signage/pre-hds/`を削除してよい。
+3. 起動したら、次を確かめる（P17の後半）。
+   - `journalctl -u home-digital-signage-backend -b`に`database_status`・`startup_complete`があること。
+   - `curl -fsS http://127.0.0.1/api/published-states`が応答すること。
+   - 予定・天気が取得されること。降雨は、再起動から約65〜70分は取得されない（受け入れ済みの方針A。26.5）。
+
+   確認が終わったら、P17を完了とし、`/var/backups/home-digital-signage/pre-hds/`を削除してよい。
 
 ### 2.8 Kiosk・画面
 
@@ -309,7 +324,7 @@ sudo systemctl start home-digital-signage-backend
    cd ~/incoming/<name> && npm ci --omit=dev
    ```
 
-5. 切り替える。初回だけ、先に`/opt/home-digital-signage/releases`を作る。
+5. 切り替える。初回だけ、先に`/opt/home-digital-signage/releases`を作り、成功した後に2.7の2.（`enable`）を行う。
 
    ```sh
    sudo install -d -m 0755 /opt/home-digital-signage /opt/home-digital-signage/releases
