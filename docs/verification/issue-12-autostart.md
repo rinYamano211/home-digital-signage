@@ -7,7 +7,7 @@
 - 確認日：2026-11-16〜2026-11-18
 - 対象：`main`のMerge Commit `b82ff45`（PR #115）。Release `20261117-222638-b82ff45`
 - 環境：Raspberry Pi 5、Debian 13（trixie）・ARM64、systemd 257、LightDM + labwc（Wayland）、Chromium、nginx 1.26.3、Node.js v24.22.1。RTCのバックアップ電池なし
-- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P12・P17まで確認し、P16は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
+- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P13・P17まで確認し、P16は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
 - Secret・地点・カレンダーID・Quota履歴の値は記録しない
 
 ## 方法
@@ -149,6 +149,21 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 
 **確認時点の運用の状態**（記録時点。以後の操作で変わる）：稼働中はRelease B、`previous`はRelease A、Release Cは故障を入れた確認用として残している。Releaseの削除・整理はしていない。DBの複製（`pre-hds`）は、残りの検証とGitHubへの記録が終わるまで残す。
 
+### P13：Secretの正常な読み込みと、権限が不正なときの拒否：PASS
+
+- 正常な読み込み：本番のSecretでは、予定の取得の成功で確認できている（「初回Release」）。
+- 拒否：2026-11-18に、`dist/backend/config/secrets.js`の`loadSecret()`を、`hds`として実行して確かめた。**本番のSecretには触れず、`/tmp/hds-p13-secrets`に隔離した偽のSecretを作って試した**。Secret Loaderだけの実機での確認で、本番のSecretの権限を変える試験ではない。Backendの停止・再起動とDBの変更はしていない。
+
+| ID  | 条件                                        | 期待                         | 結果 |
+| --- | ------------------------------------------- | ---------------------------- | ---- |
+| T1  | ディレクトリ0700、ファイル0600、所有者`hds` | 正常に読み込む               | PASS |
+| T2  | ディレクトリ0755                            | `SecretError("permission")`  | PASS |
+| T3  | ファイル0644                                | `SecretError("permission")`  | PASS |
+| T4  | ファイルの所有者root、実行ユーザー`hds`     | `SecretError("permission")`  | PASS |
+| T5  | `schedule.json`をsymbolic linkにする        | `SecretError("unsafe_path")` | PASS |
+
+- 試験の後、試験用のファイルとディレクトリを削除した。偽のSecretの値は記録しない。
+
 ### P16：管理コマンドの実行方法：一部確認
 
 手順書3.5の方法（`systemd-run --uid=hds --pty -p EnvironmentFile=…`）の実行の経路を確かめた。DB・Quotaを変える操作はしていない。
@@ -185,7 +200,7 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 | P10 | nginxより先にKioskが動いても止まらない           | 確認済み                                                                                                                 |
 | P11 | 再起動の後も前回の起動のログが残る               | 確認済み                                                                                                                 |
 | P12 | Releaseの切替と失敗時の切戻し                    | 確認済み（正常な切替と、静的ファイルの不整合による自動の切戻し。手動の`rollback`は未実施）                               |
-| P13 | Secretの正常な読み込みと、権限が不正なときの拒否 | 正常な読み込みは、予定の取得の成功で確認できた。拒否は未実施                                                             |
+| P13 | Secretの正常な読み込みと、権限が不正なときの拒否 | 確認済み（読み込みは本番のSecret、拒否は隔離した偽のSecretで確認）                                                       |
 | P14 | 画面が消えない・カーソルが見えない               | 未確認。マウスをつないだ状態では、再起動の後もカーソルが残った。マウスをつながない状態は未確認                           |
 | P15 | Network未接続で電源を入れても基本画面が出る      | 未実施                                                                                                                   |
 | P16 | 管理コマンドの実行方法                           | 一部確認（`hds`・対話端末・`EnvironmentFile`での実行、不正なコマンドの拒否。管理コマンドの実行の成功と排他制御は未確認） |
@@ -205,7 +220,7 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 
 ## 未実施の項目
 
-1. P2の採否、P12の残り（手動の`rollback --schema-checked`、Backendの起動の失敗による切戻し）、P13の拒否、P14、P15、P16の残り（管理コマンドの実行の成功と排他制御）
+1. P2の採否、P12の残り（手動の`rollback --schema-checked`、Backendの起動の失敗による切戻し）、P14、P15、P16の残り（管理コマンドの実行の成功と排他制御）
 2. Open-Meteoの天気の回復（A）
 3. Network復旧の後、操作なしで取得が回復すること（Issue #12の完了条件。回復までの時間の目標は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)）
 4. `backend.env.save`の扱いの判断
