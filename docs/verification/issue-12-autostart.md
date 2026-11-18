@@ -7,7 +7,7 @@
 - 確認日：2026-11-16〜2026-11-18
 - 対象：`main`のMerge Commit `b82ff45`（PR #115）。Release `20261117-222638-b82ff45`
 - 環境：Raspberry Pi 5、Debian 13（trixie）・ARM64、systemd 257、LightDM + labwc（Wayland）、Chromium、nginx 1.26.3、Node.js v24.22.1。RTCのバックアップ電池なし
-- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8・P9・P10・P11・P17まで確認し、P16は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
+- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P12・P17まで確認し、P16は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
 - Secret・地点・カレンダーID・Quota履歴の値は記録しない
 
 ## 方法
@@ -110,6 +110,45 @@ nginxを止めてからKioskを再起動し、nginxを戻した。
 - 2026-11-18 00:08:21（JST）の`startup_complete`・`database_status`（`HEALTHY`）と、00:12:54の`shutdown_complete`を確認した。
 - OSの再起動をまたいで、journaldのログが残ること（`Storage=persistent`）を確認した。
 
+### P12：Releaseの切替と、失敗時の切戻し：PASS
+
+確認日：2026-11-18。`scripts/activate-release.sh activate`で、正常な切替と、切替の失敗時の自動の切戻しを確かめた。
+
+| 名前      | ディレクトリ              | 用途               |
+| --------- | ------------------------- | ------------------ |
+| Release A | `20261117-222638-b82ff45` | 初回のRelease      |
+| Release B | `20261118-010000-b82ff45` | 正常な切替の確認用 |
+| Release C | `20261118-220000-b82ff45` | 故障を入れる確認用 |
+
+Release B・Cは、既存のReleaseを複製して作った確認用のReleaseである。名前の時刻は、実際のBuildの時刻ではない。
+
+**1. 正常な切替（A→B）：PASS**
+
+- 実行：`sudo sh /opt/home-digital-signage/current/scripts/activate-release.sh activate /home/signage/incoming/20261118-010000-b82ff45`
+- 期待：`current`がB、`previous`がAになり、Backendが動き、APIが応答する。
+- 結果：`activate-release: 20261118-010000-b82ff45 is active`。`current`はB、`previous`はA、Backendは`active`、nginx経由の`/api/published-states`は200。
+- 終了コードは記録していない。成功のメッセージと、切替の後の状態で判定した。
+
+**2. 切替の失敗時の自動の切戻し（B→C→B）：PASS**
+
+- 故障の入れ方：Release Cの`dist/frontend/index.html`に、存在しないJavaScriptへの参照（`<script type="module" src="/assets/p12-rollback-test-missing.js"></script>`）を加えた。参照先がないことを確かめた。切替の前のファイルの確認は通り、切替の後の疎通確認（静的ファイルの比較）で失敗させるため。
+- 期待：疎通確認が失敗し、Bへ切り戻し、切り戻した先が正常であれば終了コード1になる。
+- 結果：`activate-release: health check failed for 20261118-220000-b82ff45; switched back to 20261118-010000-b82ff45 and it is healthy`、`activate_exit_code=1`。
+
+**3. 最終の状態（Scriptの外から確認）：PASS**
+
+- `current`はB、`previous`はAのまま。Backendは`active`、APIは200。
+- `releases/`にはA・B・Cの3つがある。Cは稼働せずに残っている（失敗したときは古いReleaseの整理をしないため）。
+
+**今回は確かめていないこと**：
+
+- `rollback --schema-checked`による手動の切戻し
+- DB Schemaの異なるRelease間の切替
+- Backendの起動の失敗を原因とする切戻し（CIのテストでは、偽の`systemctl`・`curl`による模擬の失敗で確認済み。実機は未実施）
+- 切替の直後のKioskの画面の目視
+
+**確認時点の運用の状態**（記録時点。以後の操作で変わる）：稼働中はRelease B、`previous`はRelease A、Release Cは故障を入れた確認用として残している。Releaseの削除・整理はしていない。DBの複製（`pre-hds`）は、残りの検証とGitHubへの記録が終わるまで残す。
+
 ### P16：管理コマンドの実行方法：一部確認
 
 手順書3.5の方法（`systemd-run --uid=hds --pty -p EnvironmentFile=…`）の実行の経路を確かめた。DB・Quotaを変える操作はしていない。
@@ -145,7 +184,7 @@ nginxを止めてからKioskを再起動し、nginxを戻した。
 | P9  | Backend・Chromiumを止めたときの自動復旧          | 確認済み（Chromium：約5秒後に起動し直した。Backend：約6秒で`startup_complete`）                                          |
 | P10 | nginxより先にKioskが動いても止まらない           | 確認済み                                                                                                                 |
 | P11 | 再起動の後も前回の起動のログが残る               | 確認済み                                                                                                                 |
-| P12 | Releaseの切替と失敗時の切戻し                    | 初回の切替だけ確認済み。2回目の切替・切戻しは未実施                                                                      |
+| P12 | Releaseの切替と失敗時の切戻し                    | 確認済み（正常な切替と、静的ファイルの不整合による自動の切戻し。手動の`rollback`は未実施）                               |
 | P13 | Secretの正常な読み込みと、権限が不正なときの拒否 | 正常な読み込みは、予定の取得の成功で確認できた。拒否は未実施                                                             |
 | P14 | 画面が消えない・カーソルが見えない               | 未確認。マウスをつないだ状態では、再起動の後もカーソルが残った。マウスをつながない状態は未確認                           |
 | P15 | Network未接続で電源を入れても基本画面が出る      | 未実施                                                                                                                   |
@@ -166,7 +205,7 @@ nginxを止めてからKioskを再起動し、nginxを戻した。
 
 ## 未実施の項目
 
-1. P2の採否、P12の切戻し、P13の拒否、P14、P15、P16の残り（管理コマンドの実行の成功と排他制御）
+1. P2の採否、P12の残り（手動の`rollback --schema-checked`、Backendの起動の失敗による切戻し）、P13の拒否、P14、P15、P16の残り（管理コマンドの実行の成功と排他制御）
 2. Open-Meteoの天気の回復（A）
 3. Network復旧の後、操作なしで取得が回復すること（Issue #12の完了条件。回復までの時間の目標は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)）
 4. `backend.env.save`の扱いの判断
