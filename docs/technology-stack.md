@@ -2776,7 +2776,7 @@ global停止時はTimer取消しに加え、実行中の別Stateも新たなProv
 
 #### recheckAt・Timer・時計変更
 
-recheckAtはSchedulerの次回判定時刻であり、永続Control StateのnextAttemptAt（HTTP開始可能な最早時刻）とは別である。UTCを明示したRFC3339形式の実在する日時として厳密に検証する。Timer予約判断時点の実際の現在時刻と比べた扱いは次のとおりとする（Issue #108で、過去・現在の扱いを「保留」から「60秒後の再評価」へ変更した）。
+recheckAtはSchedulerの次回判定時刻であり、永続Control StateのnextAttemptAt（HTTP開始可能な最早時刻）とは別である。UTCを明示したRFC3339形式の実在する日時として厳密に検証する。Timer予約判断時点の実際の現在時刻と比べた扱いは次のとおりとする（Issue #108で、過去・現在の扱いを「保留」から「60秒後の再評価」へ変更した。実装済み：#126。Piでの確認は#13）。
 
 | recheckAt | Schedulerの動作 |
 |---|---|
@@ -4773,7 +4773,7 @@ FrontendのPolling（10秒、Timeout 3秒）、最初の応答の前・取得失
 
 ### 25.5 Backendの時刻依存処理とTime Availability（Issue #108）
 
-状態：設計確定（2026-11-21）。Schedulerの変更（下記の対策）は未実装・Pi実機で未確認。[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)で検討した。[Architecture 11.5](architecture.md#115-system-time-recovery)の「誤った現在時刻を使用しない」の適用範囲（利用者に何を表示するかの判断。Backendの取得・保存の内部は対象外）を受けて、Backendの時刻依存処理の扱いを定める。
+状態：設計確定（2026-11-21、#125）。Schedulerの変更（下記の対策）は実装済み（#126。Unit Test・CI成功）。Pi実機では未確認（#13）。[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)で検討した。[Architecture 11.5](architecture.md#115-system-time-recovery)の「誤った現在時刻を使用しない」の適用範囲（利用者に何を表示するかの判断。Backendの取得・保存の内部は対象外）を受けて、Backendの時刻依存処理の扱いを定める。
 
 #### 方針
 
@@ -4830,8 +4830,8 @@ S1〜S3について、上記の仕組みのもとで、誤った内容の予定�
 
 #### 確認
 
-- Schedulerの変更は、実装PRでUnit Test（Fake Timerと壁時計の変更）によって確認する。F2の競合はPiでの再現が難しいため、Unit Testで確認する。
-- Piでは、電池なしで電源を完全に切った後のNTPの復旧（各Stateが戻るまでの時間）と、72時間の連続稼働（定期的な再評価による負荷・ログ量）を確認する（[#13](https://github.com/rinYamano211/home-digital-signage/issues/13)へ追加する方針）。
+- Schedulerの変更は、#126のUnit Test（Fake Timerと壁時計の変更）で確認した。`tests/backend/state-scheduler.test.ts`（F1・F2、F2の競合を含む）と、実際のCoordinator・SQLiteと組み合わせた`tests/backend/coordinator.test.ts`（待機中の再評価で書込みがないこと、Backoff・Quota抑止の維持、DB読取りエラー時の保留）である。F2の競合はPiでの再現が難しいため、Unit Testでの確認とする。検証の対応は[C-Impl-1 検証記録](verification/c-impl-1-state-scheduler.md#issue-108による変更)に記録した。
+- Piでは、電池なしで電源を完全に切った後のNTPの復旧（各Stateが戻るまでの時間）と、72時間の連続稼働（定期的な再評価による負荷・ログ量）を確認する（[#13](https://github.com/rinYamano211/home-digital-signage/issues/13)へ引き継ぐ）。Unit Test・CIの成功は、Pi実機での確認の代わりにしない。
 
 <a id="startup-recovery-operations"></a>
 
