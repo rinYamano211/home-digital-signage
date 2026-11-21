@@ -206,6 +206,18 @@ test("releaseAtMs is a lower bound when a future row enters afterwards", () => {
   expect(later.count).toBe(20);
   expect(later.releaseAtMs!).toBeGreaterThan(first.releaseAtMs!);
 });
+test("releaseAtMs beyond the valid Timestamp range is omitted (caller fails closed)", () => {
+  const max = 8_640_000_000_000_000; // largest valid Date and Quota Timestamp
+  const r = evaluateConservativeQuota(model([max]), max);
+  expect(r.evaluation).toBe("QUOTA_BLOCKED");
+  if (r.evaluation === "BLOCKED") return;
+  expect(r.windows.map((w) => w.count)).toEqual([1, 1, 1]);
+  for (const w of r.windows) expect(w).not.toHaveProperty("releaseAtMs");
+  // In range the same row still yields a valid hint.
+  const ok = evaluateConservativeQuota(model([now]), now);
+  if (ok.evaluation === "BLOCKED") throw Error();
+  expect(ok.windows[2].releaseAtMs).toBe(now + 1000 + QUOTA_MARGIN_MS + 1);
+});
 for (const value of [NaN, -1, Number.MAX_SAFE_INTEGER])
   test(`Invalid now ${value} fails closed`, () =>
     expect(evaluateConservativeQuota(model([1]), value).evaluation).toBe(

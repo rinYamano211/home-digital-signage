@@ -53,7 +53,10 @@ export function evaluateConservativeQuota(
         widthMs: w.widthMs,
         count: usage.count,
         limit: w.limit,
-        ...(usage.releaseAtMs === undefined
+        // A release beyond the valid Timestamp range gives no recheck hint;
+        // the caller fails closed (quota_boundary_unavailable).
+        ...(usage.releaseAtMs === undefined ||
+        !quotaTimestamp(usage.releaseAtMs)
           ? {}
           : { releaseAtMs: usage.releaseAtMs }),
       });

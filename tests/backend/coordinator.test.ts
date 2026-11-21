@@ -77,7 +77,7 @@ const move = (ms: number) => {
   perf += ms;
 };
 /** Committed real v3 Store; the Connection is captured for test-only checks. */
-function committed(provisioned = false) {
+function committed(provisioned = false, consumptionsAtMs: number[] = []) {
   const dir = mkdtempSync(join(tmpdir(), "signage-coordinator-"));
   dirs.push(dir);
   const seed = new Database(join(dir, "signage.db"));
@@ -89,8 +89,13 @@ function committed(provisioned = false) {
     .run(boot);
   if (provisioned)
     seed
-      .prepare("INSERT INTO provider_quota_metadata VALUES (?,'ACTIVE',0,0)")
-      .run(TOMORROW_IO);
+      .prepare("INSERT INTO provider_quota_metadata VALUES (?,'ACTIVE',0,?)")
+      .run(TOMORROW_IO, consumptionsAtMs.length);
+  consumptionsAtMs.forEach((at, i) =>
+    seed
+      .prepare("INSERT INTO provider_quota_consumptions VALUES (?,?,?)")
+      .run(TOMORROW_IO, i + 1, at),
+  );
   seed.pragma("user_version=3");
   seed.close();
   const lock = {
@@ -327,6 +332,42 @@ test("Quota Provider is suppressed without an open Gate; Control State is unchan
   expect(
     db.prepare("SELECT COUNT(*) AS n FROM provider_quota_consumptions").get(),
   ).toEqual({ n: 0 });
+});
+test("Q-01 Quota exhausted with an open Gate is retried in 60s, not held, with no HTTP or Control change", async () => {
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  });
+  // A future old row enters the 1s Window (|now - t| <= 3s) after Recovery.
+  const future = wall + 310_000;
+  const { h, db, runtime } = committed(true, [future]);
+  const rain = mock({
+    stateKey: "rainForecast",
+    quota: true,
+    http: { url: "https://rain.example.test/v4", maxBodyBytes: 4096 },
+  });
+  const send = createRuntimeSend(h, rain.http)!;
+  send.startMonitoring();
+  for (let i = 0; i < 5 * 60 + 5; i++) {
+    move(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+  }
+  expect(send.reservationStatus(TOMORROW_IO).allowed).toBe(true);
+  move(3000); // now = future - 2000
+  const c = new StateAcquisitionCoordinator(runtime, send, [rain]);
+  expect(await c.runOnce("rainForecast")).toEqual({
+    kind: "scheduled",
+    recheckAt: iso(wall + 60_000),
+  });
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(control(db, "rainForecast")).toBeNull();
+  expect(
+    db.prepare("SELECT COUNT(*) AS n FROM provider_quota_consumptions").get(),
+  ).toEqual({ n: 1 });
+  // Once the row has left the 1s Window, the next evaluation sends.
+  move(6000);
+  await c.runOnce("rainForecast");
+  expect(fetchMock).toHaveBeenCalledOnce();
+  send.stopMonitoring();
 });
 test("Quota Provider: Tx-Q is committed before the single HTTP request through the Gate", async () => {
   vi.useFakeTimers({
