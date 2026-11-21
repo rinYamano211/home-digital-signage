@@ -6,7 +6,7 @@
 
 - `StateScheduler`：`start(): void`、`requestRecheck(StateKey): void`、`stop(): Promise<void>`。
 - `AcquisitionCoordinator.runOnce(StateKey): Promise<RunOnceResult>`は依存先Interfaceのみ。scheduled / suspended / blockedと既存scope・reasonを維持する。
-- 既存5 Stateごとの単一Timer・単一inFlight、再判定要求集約、Callback世代無効化、最大2^31−1msでの長時間Timer分割とCoordinatorによる再評価。
+- 既存5 Stateごとの単一Timer・単一inFlight、再判定要求集約、Callback世代無効化、最大2^31−1msでの長時間Timer分割とCoordinatorによる再評価（Issue #108で上限を60秒に変更。下記「Issue #108による変更」）。
 - 停止・保留はstart / requestRecheckでは解除しない。安全確認後の再開は後続Recoveryへ残す。
 - 既存Cacheの`utcInstant()`を共通Time Moduleへそのまま移動し、Cache側のexportを維持した。UTC明示・実在日付・未来時刻を検証し、独自の時刻補正や無条件Retryはしない。従来のJS Date表現・精度と閏秒非対応を維持する。
 - Provider・DB・Backoff・Quota・Tx-A/P/C・Pending・Domain処理は持たない。ログは固定event・State・scope・reasonのみで、例外本文・外部入力は出力しない。
@@ -35,7 +35,7 @@ PASSは記載した検証範囲のみ。後続統合待ちの行は単体部分�
 | C1-16 | 後続統合待ち                     | Scheduler独自Task Timeoutなし、長時間Task重複なし。実HTTP Timeoutとの結合は後続                                                                 |
 | C1-17 | 後続統合待ち                     | 試験で既存installShutdown・Fastifyを利用しSignal Listener各1個。本番へのScheduler登録は後続                                                     |
 | C1-18 | PASS（Scheduler単体）            | suspended / blockedの通常Timerなし、start・再判定では解除しない。Recovery再開は後続                                                             |
-| C1-19 | PASS                             | 過去・現在・Promise解決遅延による過去化を拒否、集約要求があっても救済しない                                                                     |
+| C1-19 | PASS                             | （C-Impl-1時点）過去・現在・Promise解決遅延による過去化を拒否、集約要求があっても救済しない。Issue #108で契約を変更（下記）                     |
 | C1-20 | PASS                             | 実在日付・UTC形式・時刻範囲を厳密検証、固定reasonログ、不正値の非出力                                                                           |
 | C1-21 | PASS                             | 不正recheckAt等のState異常を局所化し他Stateを継続                                                                                               |
 | C1-22 | PASS（Scheduler単体）            | Global保留後の通常再実行・遅延結果からの再予約なし。実DBとの統合は後続                                                                          |
@@ -44,7 +44,7 @@ PASSは記載した検証範囲のみ。後続統合待ちの行は単体部分�
 | C1-25 | PASS                             | 同期throw・Promise Rejectを捕捉しstopの終了待機も完了                                                                                           |
 | C1-26 | PASS                             | 予期しない例外・不正な結果契約をGlobal保留、即時Retryなし                                                                                       |
 | C1-27 | PASS                             | 取消し・再予約・stop後の古いCallback、同じCallbackの重複呼出しを無効化                                                                          |
-| C1-28 | PASS                             | Node Timer上限で分割し、中間境界でCoordinatorを再実行して時刻・条件の再評価を委譲                                                               |
+| C1-28 | PASS                             | Node Timer上限で分割し、中間境界でCoordinatorを再実行して時刻・条件の再評価を委譲。Issue #108で上限を60秒に変更（下記）                         |
 | C1-29 | 後続統合待ち（未実施）           | Schedulerは全Timerを止め遅延結果を無効化するが、実行中Coordinatorの実Provider送信を阻止するPermit / Send Gateは未実装。送信安全性PASSとはしない |
 
 ## Lifecycle試験からの引継ぎ
@@ -84,3 +84,24 @@ Windows：Scheduler関連65件成功（既存57件＋追加8件）。全体364�
 PR-BのPublished State保存53件・Read66件、Cache Repository80件・Cache Entry29件を回帰確認。日時関数の移動以外にPR-Bの証跡・Transaction・Generation・TTL・DB処理は変更していない。設計正本、DDL、Migration、依存関係、HTTP Routeも変更していない。
 
 C-Impl-2〜6では、既存の工程分担に従ってCoordinator・Acquisition Control / Tx-A・Backoff、Quota Guard / Tx-Q / Provider Send Gate、各停止理由の連携、本番Lifecycle接続と受入統合を検証する。今回その順序・Interface・責務を新たに決定しない。Tx-P / Tx-C全体連携・PendingはPR-D、継続Recovery・安全確認後再開はPR-E、OS・systemd・Pi実機はIssue #12 / #13へ維持する。
+
+## Issue #108による変更
+
+2026-11-21、[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)。設計は#125（[technology-stack 23.9](../technology-stack.md#pr-c-c1-scheduler)・[25.5](../technology-stack.md#backend-time-dependency)）、実装は#126。上の対応表はC-Impl-1時点の記録として残し、本節で変更分を記録する。
+
+- 1回の待機を最長60秒（`RECHECK_INTERVAL_MS`）に分割する（従来は2^31−1ms）。
+- 有効な日時で過去・現在の`recheckAt`は保留せず、警告ログ（`scheduler_recheck_deferred`。同じStateで続く間は1回。値は出さない）を残して60秒後に再評価する。形式が不正な場合と、現在時刻が不正な場合は、従来どおり保留する。
+
+| ID    | 状態                               | #126の証拠                                                                                                                                                                                                                                                 |
+| ----- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1-19 | PASS（変更後の契約）               | 過去・現在・Promise解決遅延による過去化で保留せず、60秒後に再評価。集約要求でも短縮しない。F2の競合（結果の受取りと検証の間の時計の前進）、警告の重複抑制と解除、値の非出力、他Stateへの非波及                                                             |
+| C1-20 | PASS                               | 形式不正の`recheckAt`は従来どおり保留（既存テストを維持）                                                                                                                                                                                                  |
+| C1-23 | PASS（Scheduler・Coordinator結合） | 待機中に時計が進むと、最長60秒で再評価して取得。実Coordinator・SQLiteで、待機中の再評価にProvider送信・DB書込みがないこと、時計の1日の前進後60秒以内に取得すること                                                                                         |
+| C1-24 | PASS（Scheduler単体）              | 時計の後退後も`nextAttemptAt`まで取得しない（Mock Coordinator）。実Coordinatorとの結合では、時計の後退ではなく、Backoff中の分割が送信・失敗回数を変えないことと、Quota抑止中に送信・書込みがないことを確認した。実取得制約での時計の後退の結合確認は未実施 |
+| C1-27 | PASS                               | 60秒の分割後の古いCallbackを、`requestRecheck()`後に無効化                                                                                                                                                                                                 |
+| C1-28 | PASS（変更後の上限）               | 1回の待機は最長60秒。時計が変わらなければ必要な回数だけ再評価を繰り返す                                                                                                                                                                                    |
+
+- PASSは記載した範囲のUnit Test（Windows・CI）の結果であり、Raspberry Pi実機での確認ではない。電池なしで起動した後のNTPの復旧と、72時間の連続稼働での再評価の負荷は#13で確認する。
+- C1-01〜C1-29のうち上記以外の行の状態は変更しない。上表のPASSも、C1-29（実Provider送信の安全性）等の後続統合の完了を意味しない。
+- 24.8日（2^31−1ms）を超える`recheckAt`の分割は、60秒の分割の一般の場合として扱い、専用のテストは追加していない（`C1-28`は60秒の3倍、F1のテストは6時間・1日の時計の前進で確認）。
+- 検証：#126のCI（Quality checks）成功。Windowsでは`npm test`が1984件成功・Linux専用67件Skip（#126のPR本文）。
