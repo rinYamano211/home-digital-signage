@@ -4727,6 +4727,12 @@ DBが失われて作り直す場合だけ、12.3と21.9の手順でProvisioning�
 
 Architecture 11.3のCrash Loopの値（5分以内に3回、5〜15分後に再試行）は検討値なので、固定間隔を採っても正本には反しない。採否と理由は、実機の検証記録と本節に残す。
 
+**採否の結果（2026-11-21、ユーザーが判断）：不採用**。`RestartSec=5s`の固定を正式とする。
+
+- 採用の条件を確かめるには、本番のUnitを書き換え、わざとCrash Loopを起こしてから、正常に動いた後にもう一度Crashさせる必要がある。本番の設定の変更と障害の注入に見合う利点が小さい。
+- 5秒の固定で、R-06（異常終了から1分以内）はPiで満たしている（P9。Backendは約6秒で処理できる状態に戻った）。`StartLimitIntervalSec=0`なので、Crash Loopでも再起動は止まらない。
+- トレードオフ：Crash Loopの間は、5秒ごとに起動を繰り返し、CPUとログを使う（journaldは100MiBが上限。26.8）。Crash Loopの実際の影響は、#13の72時間試験で観察する。
+
 - Config不正（終了コード1）・Lock Scriptの失敗（73〜75）も、再起動の対象から外さない。Configを直した後は、管理者が`systemctl restart`する手順を標準とする。Architecture 11.3の「Config / Secret Correction：1分以内」は、この再起動を起点とする（24.2：変更は再起動で反映）。
 - `systemctl stop`での停止では、`Restart=always`でも再起動しない。
 - Backendの異常だけを理由に、OSを再起動しない（Architecture 11.3）。
@@ -4801,7 +4807,7 @@ Piで確認するまで、確定扱いしない。結果は`docs/verification/`�
 | # | 事項 | 確認できなかった場合 | 状態 |
 |---|---|---|---|
 | P1 | systemdのバージョン（254以上か） | `RestartSec=5s`固定 | 確認済み（257） |
-| P2 | 段階的Backoffの下で、正常に動いた後の1回だけのCrashが1分以内に復旧するか | `RestartSec=5s`固定 | 検証待ち（現在は`RestartSec=5s`固定） |
+| P2 | 段階的Backoffの下で、正常に動いた後の1回だけのCrashが1分以内に復旧するか | `RestartSec=5s`固定 | 確認せずに不採用とした（`RestartSec=5s`の固定を正式とする。26.5） |
 | P3 | Node.jsが`hds`から実行できるPathにあるか | システム全体へ入れ直す（ユーザーが行う） | 確認済み（nvmだけだったため、`/usr/local`へ導入した） |
 | P4 | `hds`で`timedatectl`・`since_epoch`を読めるか | 権限を変える前に報告する | 確認済み |
 | P5 | labwcのautostartから、ユーザーUnitでKioskを起動できるか | labwcのautostartから直接起動し、再起動のループをScriptで持つ | 確認済み |
