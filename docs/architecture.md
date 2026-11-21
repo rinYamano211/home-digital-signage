@@ -1188,8 +1188,17 @@ System TimeがUnusableでも、自身が動作可能なServiceは停止させな
 ただしClock / Date表示、TodayScheduleの日付判定、Cache / Published StateのexpiresAt評価、
 Weatherの日付・時刻依存処理等へ、誤った現在時刻を使用しない。
 
+この要求は、利用者に**何を表示するか**の判断に適用する（Issue #108）。MVPでは、表示の可否と内容を表示の時点で判定し直すことで満たし、Backendの取得・保存処理の内部で使う現在時刻までは対象にしない。10.2の「明確にinvalid / unavailableと判断できる時刻は、現在時刻として利用しない」も、同じ適用範囲とする。
+
+- 表示用時刻が`unavailable`の間は、Frontendが時計・予定・天気を表示しない。
+- 時刻の復旧後は、表示用APIとFrontendが、表示の時点の時刻で期限・日付を判定し直す。
+- BackendはTime Availabilityで取得・保存を止めない。時刻が不正確な間に取得・保存したデータを保持しうることを許容する（そのデータは上の判定で表示を判断する）。
+
+Time Availabilityが`available`でも、時刻の正確性は保証されない（10.2）。そのため上の判定も、誤表示を完全に防ぐ保証ではない。評価の範囲（時計が遅れて起動し、NTPで進む場合）と、対象外の故障（時刻の後退、RTCが有効でも時刻がずれている場合）は[技術スタック選定 25.5](technology-stack.md#backend-time-dependency)に従う。
+
 System Timeが再びUsableになったら、Time-dependent StateのUsabilityと必要なStateを再評価し、
 必要に応じてReconstruction / Refreshを行って正常状態へ自動収束する。
+Backendは時刻の復旧を検知する専用の処理を持たない。Schedulerが通常Timerで待機中のStateを最長約60秒ごとに再評価し、通常の取得周期で収束する。60秒はTimer待機の分割上限であり、取得成功・データ更新の期限ではない。suspended・blockedのStateは対象外で、再開は既存のRecovery契約に従う（[技術スタック選定 23.9](technology-stack.md#pr-c-c1-scheduler)）。
 OS System Timeの利用境界、System Time / Monotonic Timeの使い分けは第10章に従い、
 独自の時刻同期・Time Adjustment Event機構は追加しない。
 
@@ -1469,9 +1478,9 @@ State SchedulerはState単位のTimer最大1個、予約・取消し・再予約
 
 結果はscheduled、suspended / blockedとstate / globalの範囲を区別する。scheduledはHTTP成功を意味しない。State固有異常は局所化するが、共有DB障害や影響範囲不明では全体を安全側に保留する。global停止時には実行中の別Stateからの新たなProvider送信も防ぐ共通停止ゲートが必要であり、停止理由別のTx-A可否はC-2で定め、Provider送信開始との競合を防ぐ具体Permit方式はC-3で検討する。単純なBoolean確認だけで競合防止が完成したとはしない。Commit結果不明時の既存照合・Fail Closed契約は変更しない。
 
-recheckAtは次回判定時刻であり永続nextAttemptAtとは別とする。予約判断時の現在より未来の厳密なUTC RFC3339日時だけを許可し、不正・過去・現在は原則対象Stateをblocked相当で保留してログに記録する。Promise解決遅延も含め、独自の時刻加算や即時Retryで救済しない。発火時は実時刻で再評価し、長時間Timerは安全な範囲で分割する。requestRecheck()は取得制約を迂回せず、inFlight中は集約し、古いCallbackは世代識別子等で無効化する。suspended・blockedの再開契約はPR-Eへ引き継ぐ。
+recheckAtは次回判定時刻であり永続nextAttemptAtとは別とする。厳密なUTC RFC3339日時として検証し、形式が不正なら原則対象Stateをblocked相当で保留してログに記録する。有効な日時でも予約判断時に過去・現在なら、保留せず警告ログを残して60秒後に再評価する（Issue #108。時計の補正だけでStateが再起動まで止まることを防ぐ。契約違反の検出は保留ではなく警告ログに頼るトレードオフを受け入れる）。独自の時刻加算や即時Retryで救済しない。発火時は実時刻で再評価し、1回の待機は最長60秒に分割する。requestRecheck()は取得制約を迂回せず、inFlight中は集約し、古いCallbackは世代識別子等で無効化する。suspended・blockedの再開契約はPR-Eへ引き継ぐ。
 
-時計進行時の即時前倒しは保証せず、巻戻り時もnextAttemptAt・Quota履歴を維持する。時計変更専用監視はMVPに追加しない。これはSchedulerの時計変更イベント発行・専用再スケジュールを目的とする監視の方針である。C-3 Quota Guardの時計監視はProvider送信安全性の別責務で、新規Tx-Q・HTTPを抑止してもC-2のnextAttemptAt・consecutiveFailuresを更新せず、Scheduler全体を再設計しない。論理Interface、scope / reasonの意味的制約、Timer・Reject・Shutdown契約、未実施のC1-01〜C1-29とSCH対応は[技術スタック選定 23.9](technology-stack.md#pr-c-c1-scheduler)を正本とする。C-1は設計確定であり、PR-C実装完了ではない。
+時計進行時の即時前倒しは保証しないが、Schedulerが動作中で、通常Timerにより待機中のStateは、最長約60秒で現在時刻による取得条件の再評価を受ける。suspended・blockedのState、inFlight中のTaskの完了時刻、取得の完了時刻は保証の対象外とする。巻戻り時もnextAttemptAt・Quota履歴を維持する。時計変更専用監視はMVPに追加しない。これはSchedulerの時計変更イベント発行・専用再スケジュールを目的とする監視の方針である。60秒ごとの再評価は時計の変化を検知するものではなく、この方針に反しない。C-3 Quota Guardの時計監視はProvider送信安全性の別責務で、新規Tx-Q・HTTPを抑止してもC-2のnextAttemptAt・consecutiveFailuresを更新せず、Scheduler全体を再設計しない。論理Interface、scope / reasonの意味的制約、Timer・Reject・Shutdown契約、未実施のC1-01〜C1-29とSCH対応は[技術スタック選定 23.9](technology-stack.md#pr-c-c1-scheduler)を正本とする。C-1は設計確定であり、PR-C実装完了ではない。
 
 #### PR-C / C-2の取得制御保存
 
