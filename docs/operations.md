@@ -12,7 +12,7 @@
 - Node.js v24.22.1が`signage`のnvm（`/home/signage/.nvm/`）にある。システム共通のNode.jsは未確認。
 - nginxは導入済みか未確認で、サービスはinactive。
 - `/var/lib/home-digital-signage/`（`signage.db`・`backend.lock`を含む）、`/etc/home-digital-signage/secrets/`（`schedule.json`・`weather.json`）、`/etc/home-digital-signage/backend.env`は、いずれも`signage`が所有し、0700（ディレクトリ）・0600（ファイル）。
-- `/etc/home-digital-signage/backend.env.save`がある。設定情報を含む可能性がある。用途が分からないため、本書の手順では削除・上書き・所有者変更をしない（扱いはユーザーの確認待ち）。
+- `/etc/home-digital-signage/backend.env.save`があった（`signage`の所有、0600）。`backend.env`の編集の途中の退避とみられ、システムからは使われていない。2026-11-21に、ユーザーが確認して削除した（Issue #12の検証の記録を参照）。
 
 ## 2. 初回の設置
 
@@ -162,12 +162,12 @@ journalctl --disk-usage
    ```
 
    - 確認には`find`を使う。所有者を変えた後は、`signage`は`hds`の0700のディレクトリの中を読めないため、`/var/lib/home-digital-signage/*`のような`*`は、`sudo`の前に`signage`のShellで展開できない。`find`はroot（`sudo`）として中を列挙する。
-   - 期待値：`/var/lib/home-digital-signage`は`700 hds:hds`、中のファイルは`600 hds:hds`。`/etc/home-digital-signage`は`755 root:root`、`backend.env`は`600 root:root`、`secrets`は`700 hds:hds`、その中は`600 hds:hds`。`backend.env.save`は変更前のまま。
+   - 期待値：`/var/lib/home-digital-signage`は`700 hds:hds`、中のファイルは`600 hds:hds`。`/etc/home-digital-signage`は`755 root:root`、`backend.env`は`600 root:root`、`secrets`は`700 hds:hds`、その中は`600 hds:hds`。`backend.env.save`は変更前のまま（設置の時点。後に削除した）。
    - 途中で失敗したら、`find`の結果を見て、変わった所有者を元（`signage`）に戻し、原因を調べる。
 
    - `backend.env`はsystemd（root）が読む。以後、`signage`は読めない。
    - `/etc/home-digital-signage`をrootの所有にするのは、`signage`が`backend.env`・`secrets/`を差し替えられないようにするため（26.3）。
-   - `backend.env.save`は、削除・上書き・所有者の変更をしない。設定情報（地点・カレンダーID等）を含む可能性があるため、内容をログ・Issue・チャットへ貼らない。用途はユーザーの確認待ちとし、扱いは確認の後に決める。
+   - `backend.env.save`は、この手順では削除・上書き・所有者の変更をしない。設定情報（地点・カレンダーID等）を含む可能性があるため、内容をログ・Issue・チャットへ貼らない（2026-11-21に、ユーザーが確認して削除した）。
 
 5. 所有者を変えた後に、もう一度比べる。`MATCH`にならなければ、2.6以降（Backendの起動）へ進まない（所有者を`signage`に戻して原因を調べる）。
 
@@ -292,7 +292,7 @@ sudo systemctl restart home-digital-signage-backend
 
 ### 3.5 管理コマンド（Provisioning・Migration）
 
-Backendを止めてから、`hds`として、`backend.env`の値を与えて実行する（26.3）。この方法は**検証待ち**（P16）。
+Backendを止めてから、`hds`として、`backend.env`の値を与えて実行する（26.3）。この方法はPiで確認した（P16。実行の経路・排他制御・安全な拒否。[検証の記録](verification/issue-12-autostart.md)）。
 
 ```sh
 sudo systemctl stop home-digital-signage-backend
