@@ -33,8 +33,14 @@ interface Slot {
   inFlight?: Promise<void>;
   recheck: boolean;
   held: boolean;
+  /** A past/current recheckAt was already logged; cleared by a future one. */
+  deferredLogged: boolean;
 }
-const maximumDelay = 2 ** 31 - 1;
+/** Longest single wait, and the delay after a past/current recheckAt
+ * (technology-stack 23.9, Issue #108). A fixed code value, not Config. Each
+ * firing only re-evaluates through the Coordinator; it grants no acquisition.
+ */
+export const RECHECK_INTERVAL_MS = 60_000;
 
 /** Only schedules evaluation. Owns no Provider, DB, signal handler or recovery.
  * Held states cannot be resumed by start/requestRecheck; safe resume is PR-E.
@@ -43,7 +49,7 @@ export class StateScheduler {
   private readonly slots = new Map<StateKey, Slot>(
     STATE_KEYS.map((key) => [
       key,
-      { generation: 0, recheck: false, held: false },
+      { generation: 0, recheck: false, held: false, deferredLogged: false },
     ]),
   );
   private started = false;
@@ -109,7 +115,7 @@ export class StateScheduler {
         // inFlight. A shutdown between timer firing and invocation wins.
         slot.inFlight = Promise.resolve().then(() => this.run(key, slot));
       },
-      Math.min(maximumDelay, Math.max(0, Math.ceil(delay))),
+      Math.min(RECHECK_INTERVAL_MS, Math.max(0, Math.ceil(delay))),
     );
   }
 
@@ -121,10 +127,17 @@ export class StateScheduler {
       if (result.kind === "scheduled") {
         const at = utcInstant(result.recheckAt);
         const now = Date.now();
-        if (at === null || !Number.isFinite(now) || at <= now) {
+        if (at === null || !Number.isFinite(now)) {
           this.hold(key, slot, "state", "invalid_recheck_at");
           return;
         }
+        if (at <= now) {
+          // A valid instant made past by clock movement (or a Coordinator
+          // defect) is re-evaluated later, never held or retried at once.
+          this.deferPast(key, slot);
+          return;
+        }
+        slot.deferredLogged = false;
         // A coalesced request asks the Coordinator to evaluate again; it never
         // grants acquisition permission. Validate even when a request is queued.
         const delay = slot.recheck ? 0 : at - now;
@@ -161,6 +174,27 @@ export class StateScheduler {
     } finally {
       slot.inFlight = undefined;
     }
+  }
+
+  private deferPast(key: StateKey, slot: Slot): void {
+    if (!slot.deferredLogged) {
+      slot.deferredLogged = true;
+      // Key and reason only: the recheckAt value is never logged.
+      try {
+        this.logger.warn(
+          {
+            event: "scheduler_recheck_deferred",
+            stateKey: key,
+            reason: "recheck_at_not_future",
+          },
+          "State Scheduler deferred a non-future recheck",
+        );
+      } catch {
+        /* Observability failure does not stop the deferred re-evaluation. */
+      }
+    }
+    // A queued requestRecheck does not shorten this delay (no immediate retry).
+    this.arm(key, slot, RECHECK_INTERVAL_MS);
   }
 
   private hold(

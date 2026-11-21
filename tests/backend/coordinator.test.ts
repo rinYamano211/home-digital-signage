@@ -1262,3 +1262,93 @@ test("Weather Providers end to end: Tx-A / Tx-P, Cache on failure, no location s
     expect(JSON.stringify(logger.debug.mock.calls)).not.toContain(s);
   }
 });
+
+// ---- Issue #108: Scheduler slices with the real Coordinator ----
+/** Advance the wall, monotonic and fake Timer clocks together, 1 s per step. */
+async function elapse(ms: number) {
+  for (let left = ms; left > 0; left -= 1000) {
+    move(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+  }
+}
+const slicedScheduler = (
+  runtime: RuntimeStoreAccess,
+  providers: (StateProvider | MultiHttpProvider)[],
+) => {
+  const coordinator = new StateAcquisitionCoordinator(runtime, null, providers);
+  const runOnce = vi.spyOn(coordinator, "runOnce");
+  const scheduler = new StateScheduler(coordinator, quiet);
+  const evaluations = (key: string) =>
+    runOnce.mock.calls.filter(([k]) => k === key).length;
+  return { scheduler, evaluations };
+};
+test("Issue #108: waiting re-evaluations write nothing, and a forward clock jump acquires within 60 s", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const { db, runtime } = committed();
+  const weekly = mock({ periodMs: 6 * 3_600_000 });
+  const { scheduler, evaluations } = slicedScheduler(runtime, [weekly]);
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(fetchMock).toHaveBeenCalledOnce();
+  const saved = { control: control(db), snapshots: snapshots(db) };
+  await elapse(5 * 60_000);
+  expect(evaluations("currentWeather")).toBe(6); // 0 s + one per 60 s slice
+  expect(fetchMock).toHaveBeenCalledOnce();
+  expect({ control: control(db), snapshots: snapshots(db) }).toEqual(saved);
+  wall += 86_400_000; // NTP steps only the wall clock forward one day
+  await elapse(60_000);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(control(db)).toMatchObject({ consecutiveFailures: 0 });
+  await scheduler.stop();
+});
+test("Issue #108: a 60 s slice inside a Backoff neither sends nor counts a failure", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  fetchMock.mockImplementation(async () => new Response("", { status: 500 }));
+  const { db, runtime } = committed();
+  const { scheduler, evaluations } = slicedScheduler(runtime, [mock()]);
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  await elapse(60_000); // the 1-minute Backoff ends: second failure
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(control(db)).toMatchObject({ consecutiveFailures: 2 });
+  await elapse(60_000); // slice inside the 2-minute Backoff
+  expect(evaluations("currentWeather")).toBe(3);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(control(db)).toMatchObject({ consecutiveFailures: 2 });
+  await elapse(60_000);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(control(db)).toMatchObject({ consecutiveFailures: 3 });
+  await scheduler.stop();
+});
+test("Issue #108: re-evaluations of a suppressed Quota Provider (no Gate) never send or write", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const { db, runtime } = committed(true);
+  const rain = mock({ stateKey: "rainForecast", quota: true });
+  const { scheduler, evaluations } = slicedScheduler(runtime, [rain]);
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  await elapse(5 * 60_000);
+  expect(evaluations("rainForecast")).toBe(6);
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(control(db, "rainForecast")).toBeNull();
+  expect(
+    db.prepare("SELECT COUNT(*) AS n FROM provider_quota_consumptions").get(),
+  ).toEqual({ n: 0 });
+  await scheduler.stop();
+});
+test("Issue #108: a DB read error during a slice keeps the existing global hold", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const { runtime } = committed();
+  const failing = forcedRead(runtime, {
+    outcome: "database_error",
+    layer: "L1",
+  } as never);
+  const { scheduler, evaluations } = slicedScheduler(failing, [mock()]);
+  scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(vi.getTimerCount()).toBe(0);
+  await elapse(3 * 60_000);
+  expect(evaluations("currentWeather")).toBeLessThanOrEqual(1);
+  expect(fetchMock).not.toHaveBeenCalled();
+  await scheduler.stop();
+});
