@@ -7,7 +7,7 @@
 - 確認日：2026-11-16〜2026-11-21
 - 対象：`main`のMerge Commit `b82ff45`（PR #115）。Release `20261117-222638-b82ff45`
 - 環境：Raspberry Pi 5、Debian 13（trixie）・ARM64、systemd 257、LightDM + labwc（Wayland）、Chromium、nginx 1.26.3、Node.js v24.22.1。RTCのバックアップ電池なし
-- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P17まで確認し（P2は不採用）、Network復旧後の自動回復は、降雨を除いて確認した（降雨は[#117](https://github.com/rinYamano211/home-digital-signage/issues/117)の後に確かめる）。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
+- **状態：Issue #12の範囲で完了**。設置・初回Release・Kioskの自動起動・P1・P3〜P17を確認し（P2は不採用）、Network復旧後の自動回復は、降雨を除いて確認した（降雨は[#117](https://github.com/rinYamano211/home-digital-signage/issues/117)の後に確かめる）。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。実機で確かめていない事項は「未実施の項目」に残す
 - Secret・地点・カレンダーID・Quota履歴の値は記録しない
 
 ## 方法
