@@ -15,11 +15,11 @@ test.each([
   [0, 1],
   [1, 2],
   [2, 4],
-  [3, 8],
-  [4, 16],
-  [5, 30],
-  [6, 30],
-  [1000, 30],
+  [3, 5],
+  [4, 5],
+  [5, 5],
+  [6, 5],
+  [1000, 5],
 ])("C2-22 failures %i -> %i minute deterministic Backoff", (n, minutes) => {
   const outcome = { kind: "failure" as const, completedAt: base };
   const result = nextControlState(previous(n), outcome);
@@ -90,6 +90,19 @@ test.each([
   ).toBe(new Date(Date.parse(base) + minutes * 60000).toISOString());
 });
 test.each([
+  ["240", 5],
+  ["600", 10],
+])("429 delta %s near the cap waits %i minutes", (retryAfter, minutes) => {
+  expect(
+    nextControlState(previous(3), {
+      kind: "failure",
+      completedAt: base,
+      httpStatus: 429,
+      retryAfter,
+    }).nextAttemptAt,
+  ).toBe(new Date(Date.parse(base) + minutes * 60000).toISOString());
+});
+test.each([
   undefined,
   "",
   "-10",
@@ -116,7 +129,7 @@ test.each([
   "Thu, 01 Jan 2026 02:00:00 GMT",
   "Thursday, 01-Jan-26 02:00:00 GMT",
   "Thu Jan  1 02:00:00 2026",
-])("HTTP-date %s is respected beyond 30-minute cap", (retryAfter) => {
+])("HTTP-date %s is respected beyond 5-minute cap", (retryAfter) => {
   expect(
     nextControlState(previous(6), {
       kind: "failure",
