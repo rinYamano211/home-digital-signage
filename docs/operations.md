@@ -292,7 +292,7 @@ sudo systemctl restart home-digital-signage-backend
 
 ### 3.5 管理コマンド（Provisioning・Migration）
 
-Backendを止めてから、`hds`として、`backend.env`の値を与えて実行する（26.3）。この方法は**検証待ち**（P16）。
+Backendを止めてから、`hds`として、`backend.env`の値を与えて実行する（26.3）。この方法はPiで確認した（P16。実行の経路・排他制御・安全な拒否。[検証の記録](verification/issue-12-autostart.md)）。
 
 ```sh
 sudo systemctl stop home-digital-signage-backend
