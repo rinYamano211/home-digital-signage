@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  RECHECK_INTERVAL_MS,
   StateScheduler,
   type RunOnceResult,
 } from "../../src/backend/scheduler/state-scheduler.js";
@@ -175,8 +176,6 @@ test("global hold ignores late scheduled results and queued rechecks from anothe
 });
 
 test.each([
-  "2030-01-01T00:00:00Z",
-  "2029-12-31T23:59:59Z",
   "not-a-date",
   "2030-02-30T00:00:00Z",
   "2031-02-29T00:00:00Z",
@@ -190,30 +189,27 @@ test.each([
   "2030-01-01T00:01:00-00:00",
   " 2030-01-01T00:01:00Z",
   "2030-01-01T00:01:00Z trailing",
-])(
-  "C1-19/20 invalid or nonfuture recheckAt is held locally: %s",
-  async (recheckAt) => {
-    const f = fixture(async (key) =>
-      key === "schedule" ? { kind: "scheduled", recheckAt } : scheduled(),
-    );
-    f.scheduler.start();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(vi.getTimerCount()).toBe(4);
-    expect(f.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        stateKey: "schedule",
-        reason: "invalid_recheck_at",
-        scope: "state",
-      }),
-      expect.any(String),
-    );
-    expect(JSON.stringify(f.logger.warn.mock.calls)).not.toContain(recheckAt);
-    f.scheduler.requestRecheck("schedule");
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(callsFor(f, "schedule")).toBe(1);
-    await f.scheduler.stop();
-  },
-);
+])("C1-20 malformed recheckAt is still held locally: %s", async (recheckAt) => {
+  const f = fixture(async (key) =>
+    key === "schedule" ? { kind: "scheduled", recheckAt } : scheduled(),
+  );
+  f.scheduler.start();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(vi.getTimerCount()).toBe(4);
+  expect(f.logger.warn).toHaveBeenCalledWith(
+    expect.objectContaining({
+      stateKey: "schedule",
+      reason: "invalid_recheck_at",
+      scope: "state",
+    }),
+    expect.any(String),
+  );
+  expect(JSON.stringify(f.logger.warn.mock.calls)).not.toContain(recheckAt);
+  f.scheduler.requestRecheck("schedule");
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(callsFor(f, "schedule")).toBe(1);
+  await f.scheduler.stop();
+});
 
 test.each([
   "2030-01-01T00:00:01Z",
@@ -229,7 +225,7 @@ test.each([
   await f.scheduler.stop();
 });
 
-test("C1-19 delayed Promise makes past reservation invalid even with queued recheck", async () => {
+test("C1-19 delayed Promise past reservation is deferred 60s, even with a queued recheck", async () => {
   const task = deferred<RunOnceResult>();
   const f = fixture(async (key) =>
     key === "schedule" ? task.promise : scheduled(),
@@ -242,7 +238,12 @@ test("C1-19 delayed Promise makes past reservation invalid even with queued rech
   task.resolve(result);
   await vi.advanceTimersByTimeAsync(1);
   expect(callsFor(f, "schedule")).toBe(1);
-  expect(vi.getTimerCount()).toBe(4);
+  expect(vi.getTimerCount()).toBe(5); // not held
+  f.runOnce.mockImplementation(async () => scheduled());
+  await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS - 2);
+  expect(callsFor(f, "schedule")).toBe(1); // the queued recheck did not shorten it
+  await vi.advanceTimersByTimeAsync(1);
+  expect(callsFor(f, "schedule")).toBe(2);
   await f.scheduler.stop();
 });
 
@@ -285,7 +286,7 @@ test("C1-27 canceled, repeated and stopped callbacks cannot launch Tasks", async
 });
 
 test("C1-28 long delay is capped and reevaluated at the intermediate boundary", async () => {
-  const max = 2 ** 31 - 1;
+  const max = RECHECK_INTERVAL_MS;
   const spy = vi.spyOn(globalThis, "setTimeout");
   const f = fixture(async () => scheduled(max * 3));
   f.scheduler.start();
@@ -497,4 +498,244 @@ test("an invalid actual clock cannot produce a reservation", async () => {
   expect(f.logger.warn).toHaveBeenCalledTimes(5);
   clock.mockRestore();
   await f.scheduler.stop();
+});
+
+// ---- Issue #108: 60-second wait slices (F1) and past/current recheckAt (F2) ----
+const iso = (ms: number) => new Date(ms).toISOString();
+const deferredWarns = (f: ReturnType<typeof fixture>) =>
+  f.logger.warn.mock.calls.filter(
+    ([fields]) =>
+      (fields as { event?: string }).event === "scheduler_recheck_deferred",
+  );
+/** A Coordinator stand-in that, like the real one, only "acquires" once the
+ * wall clock reaches nextAttemptAt and otherwise returns it as recheckAt.
+ */
+function untilDue(nextAttemptAt: number, periodMs = 600_000) {
+  const acquiredAt: number[] = [];
+  let next = nextAttemptAt;
+  const f = fixture(async (key) => {
+    if (key !== "weeklyWeather") return scheduled(10 * 60_000);
+    const now = Date.now();
+    if (now < next) return { kind: "scheduled", recheckAt: iso(next) };
+    acquiredAt.push(now);
+    next = now + periodMs;
+    return { kind: "scheduled", recheckAt: iso(next) };
+  });
+  const evaluations = () => callsFor(f, "weeklyWeather");
+  return { ...f, acquiredAt, evaluations };
+}
+
+describe("Issue #108 F1: a single wait is at most 60 seconds", () => {
+  test("a recheckAt within 60 seconds is reserved as is", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const f = fixture(async () => scheduled(30_000));
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(spy.mock.calls.slice(-5).map(([, delay]) => delay)).toEqual(
+      Array(5).fill(30_000),
+    );
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(f.runOnce).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.runOnce).toHaveBeenCalledTimes(10);
+    await f.scheduler.stop();
+  });
+
+  test("a longer wait starts with 60 seconds and repeats until due without clock change", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const f = untilDue(epoch + 5 * 60_000);
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(spy.mock.calls.at(-1)![1]).toBe(RECHECK_INTERVAL_MS);
+    for (let i = 1; i <= 4; i++) {
+      await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS);
+      expect(f.evaluations()).toBe(i + 1);
+      expect(f.acquiredAt).toEqual([]);
+    }
+    await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS);
+    expect(f.acquiredAt).toEqual([epoch + 5 * 60_000]);
+    await f.scheduler.stop();
+  });
+
+  test("a forward clock jump during a long wait is re-evaluated within 60 seconds", async () => {
+    // Booted with a clock one day behind; the saved nextAttemptAt is 6 hours ahead.
+    const f = untilDue(epoch + 6 * 3_600_000);
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    vi.setSystemTime(Date.now() + 86_400_000); // NTP correction
+    await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS - 10_001);
+    expect(f.acquiredAt).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.acquiredAt).toHaveLength(1);
+    expect(deferredWarns(f)).toEqual([]);
+    await f.scheduler.stop();
+  });
+
+  test("a backward clock jump does not acquire before nextAttemptAt", async () => {
+    const f = untilDue(epoch + 2 * 60_000);
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(30_000);
+    vi.setSystemTime(Date.now() - 3_600_000);
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(f.acquiredAt).toEqual([]); // the wall clock is still before it
+    expect(f.evaluations()).toBeGreaterThan(60);
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(f.acquiredAt).toEqual([epoch + 2 * 60_000]);
+    await f.scheduler.stop();
+  });
+
+  test("States keep independent 60-second slices", async () => {
+    const f = fixture(async (key) =>
+      key === "schedule" ? scheduled(20_000) : scheduled(3_600_000),
+    );
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS);
+    expect(callsFor(f, "schedule")).toBe(4); // 0, 20, 40, 60 s
+    expect(callsFor(f, "weeklyWeather")).toBe(2); // 0, 60 s
+    expect(vi.getTimerCount()).toBe(5);
+    await f.scheduler.stop();
+  });
+
+  test("an old slice callback after requestRecheck cannot run a second Task", async () => {
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const f = fixture(async () => scheduled(3_600_000));
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const last = STATE_KEYS.at(-1)!; // the last reservation belongs to it
+    const old = spy.mock.calls.at(-1)![0] as () => void;
+    f.scheduler.requestRecheck(last);
+    await vi.advanceTimersByTimeAsync(0);
+    old();
+    await Promise.resolve();
+    expect(callsFor(f, last)).toBe(2);
+    expect(vi.getTimerCount()).toBe(5);
+    await f.scheduler.stop();
+  });
+});
+
+describe("Issue #108 F2: a valid past/current recheckAt is deferred, not held", () => {
+  test.each([
+    ["current", 0],
+    ["past", -1000],
+    ["far past", -86_400_000],
+  ])(
+    "%s recheckAt is re-evaluated after 60 seconds, not at once",
+    async (_, offset) => {
+      const f = fixture(async (key) =>
+        key === "schedule"
+          ? { kind: "scheduled", recheckAt: iso(Date.now() + offset) }
+          : scheduled(3_600_000),
+      );
+      f.scheduler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(5);
+      await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS - 1);
+      expect(callsFor(f, "schedule")).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(callsFor(f, "schedule")).toBe(2);
+      expect(f.logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "scheduler_held" }),
+        expect.any(String),
+      );
+      await f.scheduler.stop();
+    },
+  );
+
+  test("clock moving forward between the Coordinator result and reservation (race)", async () => {
+    const f = fixture(async (key) => {
+      if (key !== "schedule") return scheduled(3_600_000);
+      const result = scheduled(1000); // Coordinator: now + 1 s
+      // NTP steps the clock after the result is built, before validation.
+      queueMicrotask(() => vi.setSystemTime(Date.now() + 480_000));
+      return result;
+    });
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(5); // the State keeps a timer
+    expect(deferredWarns(f)).toHaveLength(1);
+    f.runOnce.mockImplementation(async () => scheduled(3_600_000));
+    await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS);
+    expect(callsFor(f, "schedule")).toBe(2);
+    await f.scheduler.stop();
+  });
+
+  test("the warning is logged once while repeated, again after a future recheckAt, without values", async () => {
+    let past = true;
+    const values: string[] = [];
+    const f = fixture(async (key) => {
+      if (key !== "schedule") return scheduled(3_600_000);
+      const recheckAt = past ? iso(Date.now() - 5000) : iso(Date.now() + 1000);
+      values.push(recheckAt);
+      return { kind: "scheduled", recheckAt };
+    });
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(3 * RECHECK_INTERVAL_MS);
+    expect(callsFor(f, "schedule")).toBe(4);
+    expect(deferredWarns(f)).toEqual([
+      [
+        {
+          event: "scheduler_recheck_deferred",
+          stateKey: "schedule",
+          reason: "recheck_at_not_future",
+        },
+        expect.any(String),
+      ],
+    ]);
+    past = false;
+    await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS); // future accepted
+    past = true;
+    await vi.advanceTimersByTimeAsync(1000); // past again
+    expect(deferredWarns(f)).toHaveLength(2);
+    const logged = JSON.stringify(f.logger.warn.mock.calls);
+    for (const value of values) expect(logged).not.toContain(value);
+    await f.scheduler.stop();
+  });
+
+  test("one State's deferral does not affect another State", async () => {
+    const f = fixture(async (key) =>
+      key === "schedule"
+        ? { kind: "scheduled", recheckAt: iso(Date.now() - 1) }
+        : scheduled(10_000),
+    );
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS);
+    expect(callsFor(f, "schedule")).toBe(2);
+    expect(callsFor(f, "currentWeather")).toBe(7); // 0, 10 … 60 s
+    expect(vi.getTimerCount()).toBe(5);
+    await f.scheduler.stop();
+  });
+
+  test("a broken logger does not stop the deferred re-evaluation", async () => {
+    const f = fixture(async (key) =>
+      key === "schedule"
+        ? { kind: "scheduled", recheckAt: iso(Date.now()) }
+        : scheduled(3_600_000),
+    );
+    f.logger.warn.mockImplementation(() => {
+      throw new Error("broken logger");
+    });
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(5);
+    await vi.advanceTimersByTimeAsync(RECHECK_INTERVAL_MS);
+    expect(callsFor(f, "schedule")).toBe(2);
+    await f.scheduler.stop();
+  });
+
+  test("a deferred re-evaluation is not rearmed after stop", async () => {
+    const f = fixture(async () => ({
+      kind: "scheduled",
+      recheckAt: iso(Date.now()),
+    }));
+    f.scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await f.scheduler.stop();
+    await vi.advanceTimersByTimeAsync(3 * RECHECK_INTERVAL_MS);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(f.runOnce).toHaveBeenCalledTimes(5);
+  });
 });
