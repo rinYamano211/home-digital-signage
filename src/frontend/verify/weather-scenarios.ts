@@ -22,6 +22,11 @@ type Options = {
    * 最高 -10°台・最低 -15°台。
    */
   readonly cold?: boolean;
+  /**
+   * 上段の横幅が一番厳しい値（Issue #98、PR #129）。`cold`に加えて、現在 -38°、
+   * 今日の最高 -28°・最低 -40°。数字の幅はフォントで異なり、`-38°`は`-10°`より広い。
+   */
+  readonly wide?: boolean;
 };
 
 function meta(now: number, ttl: number): PublishedState["meta"] {
@@ -37,13 +42,14 @@ function meta(now: number, ttl: number): PublishedState["meta"] {
 
 /** 合成の3State。時間別は次の正時から、週間は今日から。 */
 function weather(now: number, options: Options = {}): WeatherStates {
-  const { hours = 36, days = 9, code, isDay = true, cold = false } = options;
+  const { hours = 36, days = 9, code, isDay = true, wide = false } = options;
+  const cold = options.cold === true || wide;
   const first = nextHour(now);
   const today = dayStart(tokyoDate(now));
   return {
     currentWeather: {
       data: {
-        temperatureC: cold ? -10.4 : 17.6,
+        temperatureC: wide ? -38.4 : cold ? -10.4 : 17.6,
         weatherCode: code ?? 3,
         isDay,
         validAt: iso(Math.floor(now / (15 * MIN)) * 15 * MIN),
@@ -75,8 +81,10 @@ function weather(now: number, options: Options = {}): WeatherStates {
         days: Array.from({ length: days }, (_, i) => ({
           date: tokyoDate(today + i * DAY + 12 * HOUR),
           weatherCode: code ?? [61, 2, 3, 0, 71, 95, 45, 1, 3][i % 9]!,
-          temperatureMaxC: cold ? -10 - (i % 4) : 19 + (i % 4),
-          temperatureMinC: cold ? -15 - (i % 3) : 9 + (i % 3),
+          temperatureMaxC:
+            wide && i === 0 ? -28 : cold ? -10 - (i % 4) : 19 + (i % 4),
+          temperatureMinC:
+            wide && i === 0 ? -40 : cold ? -15 - (i % 3) : 9 + (i % 3),
           precipitationProbability: [70, 30, 20, 0, 60, 90, 40, 10, 20][i % 9]!,
         })),
       },
@@ -461,6 +469,23 @@ export const WEATHER_SCENARIOS: readonly Scenario[] = [
   {
     label: "#98 負の気温・100%・12枠未満（5枠）",
     states: (now) => weather(now, { cold: true, hours: 5 }),
+  },
+  // Issue #98（PR #129）：上段の横幅が一番厳しい値。-38°・天気不明・最高 -28°・最低 -40°。
+  {
+    label: "#98 上段の幅広（-38°・天気不明・最高 -28°・最低 -40°）",
+    states: (now) => weather(now, { wide: true, code: 100 }),
+  },
+  {
+    label: "#98 上段の幅広＋日付付きの更新待ち",
+    states: (now) => {
+      const states = weather(now, { wide: true, code: 100 });
+      const stale = staleFromYesterday(now);
+      return {
+        ...states,
+        currentWeather: stale(states.currentWeather!),
+        hourlyWeather: stale(states.hourlyWeather!),
+      };
+    },
   },
   // Issue #98：収まりが一番厳しい組合せ×降雨帯の各状態。
   ...TIGHTEST_RAINS.map(([name, rain]) => ({
