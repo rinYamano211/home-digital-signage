@@ -2325,7 +2325,7 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 - 影響を受けるのは降雨（Tomorrow.io）だけである。Schedule・Open-Meteoの3つはQuota対象外で影響しない。降雨帯は、取得できなくなってから10分で更新待ち、30分で「取得できません」になる。
 - 当初は方針A（確認した制限として受け入れる。2026-11-14）としていた。
 - 2026-11-21のユーザー判断で、家庭用MVPとして過剰な設計とし、[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)で窓別の待機を廃止した。
-- 新しい規則は[Q-01](#quota-simplification-issue-117)に従う。Clock TRUSTEDの下で、全Consumptionを`reserved_at_ms`と暫定2秒マージンで評価する。未来の時刻の行は、現在時刻として数える。
+- 新しい規則は[Q-01](#quota-simplification-issue-117)に従う。Clock TRUSTEDの下で、全Consumptionを`reserved_at_ms`と暫定2秒マージンで評価する。未来の時刻の行は、対称の窓（`|now − t| ≤ 窓幅 + 2秒`）で数える。
 - 再起動後の降雨は、各窓の上限に達していなければ、Clock Trust・Gate・Recoveryの再開条件の成立後すぐに取得できる。**未実装**で、実装と実機確認は#117で行う。
 - 残るリスク（確認した制限）：時計が遅れていた時期の行を少なく数え、Provider側のQuota制限に抵触する可能性がある。429を受信した場合は既存のBackoffで扱うが、Provider側の拒否の動作や利用制限の詳細は保証しない（[Q-01](#quota-simplification-issue-117)）。
 - 旧記録の「案C（未採用）」は、Q-01の検討で、より簡素な規則に置き換えた。
@@ -3833,12 +3833,14 @@ Lifecycle / Startup / Rangeの各RepositoryはBackendStoreの単一Connectionを
 |---|---|
 | 評価の前提 | 現在の時計がClock TRUSTED（既存の送信条件）。TRUSTEDでなければ、今と同じく新規Tx-Q・HTTPを行わない |
 | 対象の行 | Providerの全Consumption。H_old・H_new_valid・H_new_uncertain（Range内）を区別しない |
-| 窓の評価 | 各行の`reserved_at_ms`と暫定2秒マージンで、既存の包含規則（`now − t ≤ 窓幅 + 2秒`）により評価する |
-| 未来の時刻の行 | `reserved_at_ms > now`の行は、`t = now`（今予約した）として数える。BLOCKEDにしない |
+| 窓の評価 | 各行の`t = reserved_at_ms`と暫定2秒マージンで、対称の包含規則（`now`と`t`の差の絶対値が`窓幅 + 2秒`以下）により評価する。過去の行（`t ≤ now`）では、既存の規則（`now − t ≤ 窓幅 + 2秒`）と同じになる |
+| 未来の時刻の行 | `t > now`の行は、`t − 窓幅 − 2秒`から`t + 窓幅 + 2秒`までの間だけ数える（1行が数えられる期間は、最長で窓幅の約2倍）。BLOCKEDにしない。窓幅より先の未来の行は、その時点では数えない |
 | 時刻の値の検証 | Timestampの順序の逆転・未来・`initializedAtMs`以前を理由にBLOCKEDにしない。行ごとに評価する |
 | 上限・マージン | 1秒1件・60分20件・24時間400件、暫定2秒は変更しない |
 
-`C_w = |{ c ∈ 全Consumption : now − min(c.reserved_at_ms, now) ≤ w + 2秒 }|`
+`C_w = |{ c ∈ 全Consumption : |now − c.reserved_at_ms| ≤ w + 2秒 }|`
+
+未来の行の扱いは、ユーザー判断（2026-11-21、PR #118のレビュー）で対称の窓を採用した。不採用の`t = min(reserved_at_ms, now)`では、未来の行が時刻を過ぎるまで数え続ける。時計が進んでいた量をXとすると、1秒窓（上限1件）が約Xの間ふさがり、長時間待たないという#117の目的に合わない。
 
 **廃止するもの**
 
@@ -3862,6 +3864,7 @@ Lifecycle / Startup / Rangeの各RepositoryはBackendStoreの単一Connectionを
 **残るリスク（確認した制限）**
 
 - 時計が遅れていた時期の行は、実際より古く見えるため、実際の消費量を少なく数えるおそれがある。この過少計上の可能性を受け入れる。
+- 窓幅より先の未来の時刻の行（時計が大きく進んでいた時期の行）は、その時点では数えないため、同じく過少計上になりうる。
 - 過少計上により、Provider側のQuota制限に抵触する可能性がある。HTTP 429を受信した場合は、既存のBackoff・Retry-Afterの処理で扱う。Provider側の拒否の動作や、利用制限・アカウントへの影響の詳細は保証しない。
 - Tomorrow.ioの窓定義には厳密に追従しない（21.9の簡略化No.6）。
 
@@ -3887,10 +3890,6 @@ Q-01が廃止するのは、Quotaの計数に使う窓別待機だけである�
 | 再評価の契機 | 全Consumptionが時刻で評価されるので、Quota抑止の解除時刻は契機A（`recheckAtMs`）で算出する。算出できない場合は契機C（5分の周期）を使う |
 | 計数規則の一致 | Gateの事前評価・Startup後の評価・Tx-Q内の再評価は、同じQ-01の規則で数える。事前評価だけで予約しない（U02-04）ことは維持する |
 
-**未決定事項（実装PRの前に決める）**
-
-- 未来の時刻の行の数え方：上の規則（`t = min(reserved_at_ms, now)`）では、未来の行は時刻が過ぎるまで「今予約した」と数え続け、その後さらに窓幅の間だけ数える。未来へのずれがXのとき、その行は約X＋窓幅の間残る。1秒窓（上限1件）では、未来の行が1件あるだけで約Xの間、送信できない。どんな条件でも長時間待たないという#117の目的と合わない可能性があるため、扱いを決める必要がある。
-
 **受入条件（実装PR）**
 
 既存の受入条件（D-03の手順、4B-3、[検証文書](verification/c-impl-5b4-history-trust-restart-recovery.md)）と重なるものは、回帰の確認として扱う。
@@ -3903,7 +3902,7 @@ Q-01が廃止するのは、Quotaの計数に使う窓別待機だけである�
 - Clock TRUSTEDからUNTRUSTEDへの遷移で、新規Tx-Q・HTTPが停止する（D-03の手順1〜3の回帰確認）
 - Clock回復の後、Quota窓をQ-01の規則で再評価し、上限に達していなければ再開候補になる（Wait完了を待たない）
 - Gateの事前評価・Startup後の評価・Tx-Q内の再評価で、同じ履歴に対する窓の件数が一致する
-- 未来の時刻の行があっても、上限を超える予約を許可しない（未決定事項の扱いが決まった後の規則で確認する）
+- 未来の時刻の行があっても、対称の窓で数えた件数が上限に達していれば予約を許可しない。未来の行1件で、1秒窓が約6秒（2 ×（1秒 + 2秒））を超えて止まらない（境界値を含む）
 - Recovery未完了（Drain・Range Commit・History再評価・RuntimeHistory再開のいずれかが未完了）の状態では、Quotaに余裕があっても、Send Gateを開かない（4B-3「Recovery停止理由の保持とGate開放」の回帰確認）
 - Raspberry Piで、長時間稼働後の再起動から降雨の取得が再開することを確認し、`docs/verification/`へ記録する
 
@@ -4269,7 +4268,7 @@ Recovery完了判定とClock回復通知は別処理とし、RuntimeHistory再�
 
 **History・Quotaの認証済み評価とTx-Q再検証**
 
-TRUSTED / CONSERVATIVE / BLOCKEDを維持し、各Windowの計数は[Q-01](#quota-simplification-issue-117)に従う（#117で改訂）。全Consumptionを`reserved_at_ms`と既存暫定2秒マージンで評価し、未来の時刻の行は現在時刻として数える。窓別待機による除外は行わない。上限1 / 20 / 400は変更しない。
+TRUSTED / CONSERVATIVE / BLOCKEDを維持し、各Windowの計数は[Q-01](#quota-simplification-issue-117)に従う（#117で改訂）。全Consumptionを`reserved_at_ms`と既存暫定2秒マージンで評価し、未来の時刻の行は対称の窓（`|now − t| ≤ 窓幅 + 2秒`）で数える。窓別待機による除外は行わない。上限1 / 20 / 400は変更しない。
 
 不確実Timestampの逆行だけで保守的分類全体を拒否しない。整数型・安全範囲・Timestamp表現等の構造検証と、Timestampによる信頼性 / 窓評価を分離する。Sequence欠落、二重分類、境界・証拠不一致、DB構造不整合は引き続きBLOCKED。履歴を書換え・削除・自動修復して整合させない。
 
