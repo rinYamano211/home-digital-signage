@@ -1146,12 +1146,17 @@ UX、CPU・Network・External API負荷とのバランスを見て調整する�
 | Display Service Crash | CrashからBasic Screen再表示まで30秒以内 |
 | Backend Service Crash | CrashからServiceが処理可能になるまで30秒以内 |
 | Backend Functional Recovery | 必要なConfig / Cache / External Dependency等が利用可能な場合、Restart後1分以内 |
-| Network Temporary Failure | Networkが再び利用可能になってから1分以内に再取得処理を開始 |
+| Network Temporary Failure | Networkが再び利用可能になってから、各Stateの次の試行まで最大でBackoff上限（5分、16.3）待つ。復旧から取得成功までの時間は実測で評価する |
 | External API Temporary Failure | APIが再び利用可能になってから5分以内に正常なデータ取得へ収束 |
 | Shared State Temporary Failure | Shared Stateが再び利用可能になってから1分以内にPublish / Readを再開 |
 | Config / Secret Correction | Validな変更が利用可能になってから1分以内にRecovery処理を開始・反映 |
 | OS Hang | Hang検知からBasic Screen再表示まで3分以内。Watchdog timeoutは60秒程度を検討値とする |
 | Power Loss | 停電中はRecovery Time保証対象外。電源復旧後は自動Bootし、通常のStartup / Recovery Flowへ入る |
+
+Network Temporary Failureの当初の初期目標（Networkが再び利用可能になってから1分以内に再取得処理を開始）は、Issue #113で見直した。
+MVPはNetwork復旧の検知を行わず、Backoffの上限を30分から5分に短縮することで遅れを抑える。
+5分は保証値ではない（HTTP 429のRetry-After・Tomorrow.ioのQuota抑止・HTTP Timeout等で延びる）。
+Network復旧の検知による再取得の前倒しはFuture候補とする。
 
 Crash Loop判定は「5分以内に3回程度」、Restart抑制後の再試行は「5〜15分程度」を検討値とし、確定しない。
 外部依存自体が利用不能な期間はDevice側で復旧時間を保証できないため、
@@ -1452,7 +1457,7 @@ type AcquisitionControlState = {
 };
 ```
 
-5 State共通Backoffは1分開始・係数2・上限30分、Jitterなし、即時Retryなし。HTTP 429は失敗とし、BackoffとRetry-After（秒数 / HTTP Date）の遅い方まで待機する。有効Retry-Afterは30分超でも尊重し、不正・欠損は通常Backoffとする。
+5 State共通Backoffは1分開始・係数2・上限5分（Issue #113で30分から変更）、Jitterなし、即時Retryなし。HTTP 429は失敗とし、BackoffとRetry-After（秒数 / HTTP Date）の遅い方まで待機する。有効Retry-AfterはBackoff上限を超えても尊重し、不正・欠損は通常Backoffとする。
 全Provider外部HTTP Timeoutは10秒、標準fetch + AbortSignal.timeout()を使用する方針。Task全体Timeoutは導入せず、長時間Taskでも同一Stateを重複起動しない。TimeoutはProvider処理・Quota消費取消しを意味しない。
 
 State SchedulerとProvider Quotaは分離し、Tomorrow.ioは送信前Tx-Q Commit、同時最大1件、永続履歴を確認不能ならFail Closedとする。Quota解除見込みは各ローリング窓の最早解除時刻の最大値を使い、次回発火時に再評価する。安全上限はローリング24時間400回・60分20回・1秒1回をMVP正式運用設計値とする。利用アカウントのダッシュボード確認値500 / 25 / 3やProvider契約保証とは区別する。
