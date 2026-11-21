@@ -72,7 +72,7 @@ CI（GitHub Actions「CI」、`pull_request`）。各PRの最終HEAD Commitで�
 - 旧履歴が20件以上あると60分窓が上限（20件）に達し、約65〜70分取得できない。400件以上（約33時間の稼働）では、24時間窓が上限に達し、約25時間取得できないと、コードからは読み取れる。**25時間の影響は推定で、実機では観測していない。**
 - 旧履歴が20件未満のとき（約100分未満の稼働後）は、60分窓は止まらない。13:30ごろの再起動では、再開まで約10分（Gate・Clock Trustの再開待ち）だった。
 - 影響を受けるのは降雨（Tomorrow.io）だけである。Schedule・Open-Meteoの3つは、Quotaの対象外で影響しない。降雨帯は、取得できなくなってから10分で更新待ち、30分で「取得できません」になる。
-- この制限は仕様として受け入れた（方針A）。#13の72時間試験では、予期しない再起動（クラッシュ・更新・設定変更）で降雨が欠測する可能性がある。時刻ベースで旧履歴を評価する案（案C）は採用しておらず、Issueも作成していない。（2026-11-21追記：[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)で窓別の待機を廃止し、全Consumptionを時刻で評価する方針へ改めた。[正本 Q-01](../technology-stack.md#quota-simplification-issue-117)）
+- この制限は仕様として受け入れた（方針A）。#13の72時間試験では、予期しない再起動（クラッシュ・更新・設定変更）で降雨が欠測する可能性がある。時刻ベースで旧履歴を評価する案（案C）は採用しておらず、Issueも作成していない。（2026-11-21追記：[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)で窓別の待機を廃止し、全Consumptionを時刻で評価する方針へ改めた。[正本 Q-01](../technology-stack.md#quota-simplification-issue-117)）（実機の確認：[Issue #117の記録](issue-117-quota-restart.md)）
 
 ## C：画面（Pi・合成データ・実データ）
 
