@@ -2787,13 +2787,14 @@ recheckAtはSchedulerの次回判定時刻であり、永続Control Stateのnext
 - 過去・現在の有効なrecheckAtは、Coordinatorが返した後、Schedulerが検証するまでの間に時計が進んだ場合に生じうる（Coordinatorは現在＋1秒以上に切り上げて返す。18.7）。従来はこれを契約違反として保留したが、保留したStateは再起動まで再開できず（再開契約はPR-E）、時計の補正だけで取得が止まり続けるため、保留しない。
 - **トレードオフ**：Coordinatorの不具合で過去・現在のrecheckAtが返る場合も、保留（永久停止）ではなく、警告ログを残して60秒ごとに再評価する方式になる。契約違反の検出は保留ではなく警告ログに頼る。60秒の間隔により、State単位の再評価は1分に1回までに限られ、短時間の連続実行・無限Loopにならない。取得の可否はCoordinatorが毎回、取得制約に従って判断する。
 - 警告ログはState Keyと理由だけを含め、recheckAtの値は出さない。同じStateで過去・現在のrecheckAtが続く間は、最初の1回だけ警告し、未来のrecheckAtを受け付けたら解除する（同じ異常の繰り返しでログを増やさない）。イベント名等の具体形は実装PRで決める。
+- 60秒の対象は**通常待機中のState**（Schedulerが動作中で、Shutdown中でなく、suspended・blockedで保留されておらず、inFlightでもなく、通常Timerで次回判定を待っているState）に限る。suspended・blockedのStateは通常Timerを持たず、再開は既存のRecovery契約（PR-E）に従う。inFlight中のTaskは終了後に次回判定を予約し、Taskの完了時刻は保証しない。60秒はTimer待機の分割上限であり、取得成功・データ更新完了の期限ではない。
 - 60秒は、取得抑止中の再評価間隔（Quota・送信Gate・Request未終了時の60秒）と、[Architecture 11.3](architecture.md#113-recovery-escalationと初期目標)の1分目標にそろえたコードの固定値とし、Configにしない。
 - Schedulerは独自に時刻を加算してrecheckAtを補正しない。60秒は「次に判断し直すまでの間隔」であり、nextAttemptAt・Backoff・Quotaの待機を短縮しない。
 - StateごとのTimerは最大1個とし、inFlightでTask重複を防ぐ。発火時にはCoordinatorが保存状態と実際の現在時刻を再評価し、Timer予定時刻を現在時刻の代用にしない。
 - Task終了後にinFlightを解除し、scheduledなら検証した次回判定を予約する。suspended・blockedでは通常Timerを予約しない。
 - requestRecheck()は既存Timerの前倒し判定を要求できるが、取得制約を迂回する要求ではない。inFlight中は要求を集約して重複Taskを起動せず、終了後の判定に反映する。suspended・blockedの安全確認やRecovery再開契約を迂回しない。
 - 取消し・再予約前の古いCallbackは世代識別子等で無効化する。60秒を超える待機は分割して途中で再評価する。これは取得制約の無視やHTTP送信許可を意味しない。途中の再評価では、取得条件を満たさなければCoordinatorはscheduledを返すだけで、Provider送信・Control State / Published Stateの書込み・失敗回数の変更を行わない（SQLiteの読取りとValidationだけ）。
-- 時計が進んだ場合、待機中のStateは**最長約60秒で**現在時刻による取得条件の再評価を受ける（Issue #108）。即時の前倒しは保証しない。再評価で取得周期・Backoff・Quota・送信Gateを維持し、取得の完了時刻は保証しない。
+- 時計が進んだ場合、通常待機中のStateは**最長約60秒で**現在時刻による取得条件の再評価を受ける（Issue #108）。即時の前倒しは保証しない。再評価で取得周期・Backoff・Quota・送信Gateを維持し、取得の完了時刻は保証しない。
 - 時計が戻りnextAttemptAt未到達なら取得せず、Quota履歴を消去しない。現在時刻に基づき次回判定を予約する。MVPでは時計変更専用の監視機構を追加しない。この方針はSchedulerの時計変更イベント発行・専用再スケジュール機構に適用する。60秒ごとの再評価は時計の変化を検知するものではなく、時計の状態にかかわらず一定間隔で判断し直すものであり、この方針に反しない。Quota Guardの送信安全性確認用時計監視は23.11の別責務であり、Scheduler全体の再設計とはしない。
 - 再評価時のSQLite読取りエラーは、既存どおりsuspended / blockedとして扱う（再開はPR-E）。60秒ごとの再評価で読取りの回数は増えるが、扱いは変えない。
 
@@ -2845,7 +2846,7 @@ C1-01〜C1-29は設計上の受入条件であり、実装・テストは未実�
 | C1-20 | 不正な時刻文字列を厳密検証で拒否し、ログを残してTimerを作らない | SCH-22に関連するInterface追加観点 |
 | C1-21 | 不正recheckAt等のState固有異常で他Stateの正常取得・Timerを止めない | SCH-12・33 |
 | C1-22 | 共有DB障害時は全Stateを保留し、安全確認まで再実行しない | SCH-07・09・13・28 |
-| C1-23 | 時計進行後、待機中のStateは最長約60秒で現在時刻と取得制約を再評価する。即時前倒しは仮定しない（Issue #108） | SCH-20・23、QuotaはSCH-14〜19 |
+| C1-23 | 時計進行後、通常待機中のState（suspended・blocked・inFlightを除く）は最長約60秒で現在時刻と取得制約を再評価する。即時前倒しは仮定しない（Issue #108） | SCH-20・23、QuotaはSCH-14〜19 |
 | C1-24 | 時計巻戻り後もnextAttemptAt・Backoff・Quota履歴を尊重し、消去・強制取得なし | SCH-23・29の時計変更時具体化 |
 | C1-25 | runOnce Rejectを捕捉し、inFlightを必ず解除 | SCH-22 |
 | C1-26 | 想定外例外で即時Retryせず、範囲不明なら全体保留 | SCH-22・28 |
@@ -4772,7 +4773,7 @@ FrontendのPolling（10秒、Timeout 3秒）、最初の応答の前・取得失
 
 ### 25.5 Backendの時刻依存処理とTime Availability（Issue #108）
 
-状態：設計確定（2026-11-21）。Schedulerの変更（下記の対策）は未実装・Pi実機で未確認。[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)で検討した。[Architecture 11.5](architecture.md#115-system-time-recovery)の「誤った現在時刻を使用しない」を、Backendでどう満たすかを定める。
+状態：設計確定（2026-11-21）。Schedulerの変更（下記の対策）は未実装・Pi実機で未確認。[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)で検討した。[Architecture 11.5](architecture.md#115-system-time-recovery)の「誤った現在時刻を使用しない」の適用範囲（利用者に何を表示するかの判断。Backendの取得・保存の内部は対象外）を受けて、Backendの時刻依存処理の扱いを定める。
 
 #### 方針
 
@@ -4784,7 +4785,7 @@ FrontendのPolling（10秒、Timeout 3秒）、最初の応答の前・取得失
   3. 天気のデータは絶対時刻・日付つきで、Frontendは現在時刻から表示する枠・日を選び直す（20.5・22.5）。
   4. 取得時の検証（現在の天気の鮮度、時間別・週間の2段階Validation、予定の日付の破棄・失敗。18.7・19.3・20.2・22.4）。
   5. Tomorrow.ioはClock Trust（NTP同期が必須）が成立するまで送信しない（23.11）。
-- 時刻の復旧後、Backendは特別な処理をせず、Schedulerの再評価（23.9：待機中のStateは最長約60秒で取得条件を再評価）と通常の取得周期で正常状態へ戻る。
+- 時刻の復旧後、Backendは特別な処理をせず、Schedulerの再評価（23.9：通常待機中のStateは最長約60秒で取得条件を再評価）と通常の取得周期で正常状態へ戻る。
 
 #### 評価の範囲
 
@@ -4809,7 +4810,8 @@ S1〜S3について、上記の仕組みのもとで、誤った内容の予定�
 | F1 | 起動時、Schedulerは「保存済みの`nextAttemptAt` − 遅れた現在時刻」を`setTimeout`（経過時間で数える）で予約する。NTPで時計が進んでも予約は短くならない。1回の待機の上限は約24.8日だった | 時刻の復旧後も、最大で1取得周期、取得を判断し直さない（予定10分、現在の天気15分、時間別30分、週間6時間） | 1回の待機を最長60秒に分割し、発火時に現在時刻で再評価する |
 | F2 | Coordinatorが返したrecheckAt（現在＋1秒以上）を、Schedulerが受け取るまでの間に時計が1秒以上進むと、過去・現在のrecheckAtとして該当Stateを保留していた | そのStateは再起動まで取得しない（保留は`requestRecheck()`でも再開できない） | 過去・現在の有効なrecheckAtは保留せず、警告ログを残して60秒後に再評価する。形式が不正なrecheckAtは従来どおり保留する |
 
-- 保証するのは「待機中のStateについて、最長約60秒で取得条件を再評価すること」である。時刻の復旧後、一定時間内に取得が完了することは保証しない（Backoff・Quota・送信Gate・外部APIの状態による）。
+- 保証するのは「Schedulerが動作中で、通常Timerにより待機中のStateについて、最長約60秒で取得条件を再評価すること」である（23.9の通常待機中のState）。60秒はTimer待機の分割上限であり、取得成功・データ更新完了の期限ではない。
+- 時刻の復旧後、一定時間内に取得が完了することは保証しない（Backoff・Quota・送信Gate・外部APIの状態による）。suspended・blockedのStateは対象外で、再開は既存のRecovery契約（PR-E）に従う。inFlight中のTaskの完了時刻も保証しない。
 - `nextAttemptAt`・Backoff・Quota・Clock Trust・Time Availabilityの契約は変えない。再評価は、取得条件を満たさなければProvider送信・DB書込み・失敗回数の変更を行わない。
 
 #### 既知の限界
