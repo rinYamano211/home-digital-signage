@@ -1671,7 +1671,7 @@ API Response生成時もdata.dateとJSTの今日を照合し、不一致ならTT
 
 取得試行は開始時に確定したtargetDateを保持する。23:59開始・00:01完了の旧日取得結果を、新日のPublished Stateとして採用しない。
 同一対象日の競合でも古い取得結果が新しい結果を上書きしないようにする。防止の具体的実装は[18.7](#schedule-issue-10-design)で定めた。
-Frontendもdata.dateと今日のJST日付を照合する。Piのシステム時刻が信頼できない場合、Scheduleを公開不可とする。時刻信頼性の具体判定・復旧手順は既存Time原則に従って後続で具体化する。
+Frontendもdata.dateと今日のJST日付を照合する。Piのシステム時刻を表示に使えない間（表示用時刻の利用可否が`unavailable`。第25章）は、FrontendがScheduleを表示しない（#65）。Backendの取得・保存・Cache採用は利用可否で判定せず、時刻の復旧後は表示の時点の期限・日付の判定とSchedulerの再評価で正常状態へ戻る（[25.5](#backend-time-dependency)）。
 
 ### 18.4 Cache・取得失敗・Frontend表示
 
@@ -1680,7 +1680,7 @@ Frontendもdata.dateと今日のJST日付を照合する。Piのシステム時�
 - data.dateが今日のJST日付に一致。
 - TTL内。
 - 保存DataのSchema・Semantic Validationに合格。
-- システム時刻が信頼できる。
+- 表示の時点で、表示用時刻の利用可否が`available`である。Frontendが判定し、Backendの取得・保存・Cache採用では判定しない（[25.5](#backend-time-dependency)）。
 
 取得失敗時は同日の有効Cacheを公開し、有効Cacheがなければdata:null、dataSource:nullとする。前日のCacheを今日へ流用しない。
 失敗でdataUpdatedAt・expiresAtを延長しない。lastAttemptAt・lastAttemptResultは試行完了時に更新し、publishedAtはSnapshot生成時刻とする。
@@ -1830,7 +1830,7 @@ Frontendの「更新待ち」は`data !== null && lastAttemptResult === "failure
 #### 残存リスク・保証範囲
 
 - 設定不備でProviderが未登録になっても、当日分の有効なSnapshotは、最大6時間（TTL）または0時まで、「更新待ち」なしで通常表示される。最後の`lastAttemptResult`が`success`のままのため。ログで検知する（UI設計 6.6）。
-- OS時刻が誤っている場合の「今日」・対象日・有効期限・進行中等の判定は保証しない。18.3・18.4の「システム時刻が信頼できる」の判定は#65で扱い、#10では実装しない。RTCだけで誤った時刻のまま起動すると、別の日の予定を今日の予定として表示しうる。
+- OS時刻が誤っている場合の「今日」・対象日・有効期限・進行中等の判定は保証しない。18.3・18.4の時刻の条件は#65（Frontendの非表示）と[25.5](#backend-time-dependency)（#108）で扱い、#10では実装しない。RTCだけで誤った時刻のまま起動すると、別の日の予定を今日の予定として表示しうる。
 - Commit結果不明（`unknown`）後に`suspended`になったStateは、PR-E（再開）までBackend再起動が必要。Pending（Tx-A成功・Tx-P失敗）は次の取得で回復する。PR-D・PR-Eは#10の前提にしない。
 
 #### 実装PRと完了条件
@@ -2760,7 +2760,7 @@ StateKeyは既存の型を使う。型名・具体的なエラー表現は実装
 
 | 結果 | 意味 | Schedulerの動作 |
 |---|---|---|
-| scheduled | 通常Schedulerを継続可能 | recheckAtを予約時に検証し、Timerを予約 |
+| scheduled | 通常Schedulerを継続可能 | recheckAtを予約時に検証し、Timerを予約（1回の待機は最長60秒。過去・現在のrecheckAtは60秒後に再評価。下記「recheckAt・Timer・時計変更」） |
 | suspended / state | State単位の一時保留 | 該当Stateの通常Timerを停止 |
 | suspended / global | 共有基盤の一時障害 | 全Stateの通常Timerを停止 |
 | blocked / state | State固有の安全性・契約違反 | 該当Stateを停止 |
@@ -2768,7 +2768,7 @@ StateKeyは既存の型を使う。型名・具体的なエラー表現は実装
 
 scheduledはHTTP成功を意味せず、取得周期未到達、Quota不足、HTTP失敗後のBackoffも含む。suspendedはRecovery等による安全な再開の可能性がある状態、blockedは安全確認なしに自動再開しない状態である。単なるTimer停止と既存Database Healthの分類を同一視せず、障害原因・scope・Transaction状態に従う。
 
-scopeとreasonの組み合わせは任意ではない。共有SQLite Connection利用不能はglobal / database_unavailable、DB全体のSchema非互換はglobal / schema_incompatibleとする。storage_unresolvedは既存照合契約で対象Stateだけの未解決と確認できる場合にstate、ConnectionのTransaction状態も未解決ならglobalとする。integrity_errorはState固有と確認できる場合だけstateとし、DB全体の破損等はglobalで停止する。不正recheckAtは原則state / invalid_recheck_atとして扱う。予期しない例外の影響範囲を特定できない場合はglobal / unexpected_error相当で安全側に保留し、State固有と推測して継続しない。
+scopeとreasonの組み合わせは任意ではない。共有SQLite Connection利用不能はglobal / database_unavailable、DB全体のSchema非互換はglobal / schema_incompatibleとする。storage_unresolvedは既存照合契約で対象Stateだけの未解決と確認できる場合にstate、ConnectionのTransaction状態も未解決ならglobalとする。integrity_errorはState固有と確認できる場合だけstateとし、DB全体の破損等はglobalで停止する。形式が不正なrecheckAtは原則state / invalid_recheck_atとして扱う（過去・現在の有効な日時は保留しない。下記「recheckAt・Timer・時計変更」）。予期しない例外の影響範囲を特定できない場合はglobal / unexpected_error相当で安全側に保留し、State固有と推測して継続しない。
 
 想定済みHTTP失敗・Quota不足はCoordinatorが分類して返す。SchedulerはrunOnce()のRejectも捕捉し、inFlightを必ず解除する。即時Retryせず、影響範囲不明なら通常Scheduler全体を保留する。Commit結果不明は既存の照合・Fail Closedに従い、安全性が確認できるまで再実行しない。
 
@@ -2776,14 +2776,26 @@ global停止時はTimer取消しに加え、実行中の別Stateも新たなProv
 
 #### recheckAt・Timer・時計変更
 
-recheckAtはSchedulerの次回判定時刻であり、永続Control StateのnextAttemptAt（HTTP開始可能な最早時刻）とは別である。UTCを明示したRFC3339形式の実在する日時として厳密に検証し、Timer予約判断時点の実際の現在時刻より未来であることを要求する。不正文字列・過去・現在の時刻は契約違反として予約せず、原則該当Stateのみblocked相当で保留して調査可能なログを残す。Promise解決が遅れて予約時には過去になった場合も拒否する。Schedulerが独自に1秒・5秒を加算して救済したり、無条件に即時Retryしたりしない。
+recheckAtはSchedulerの次回判定時刻であり、永続Control StateのnextAttemptAt（HTTP開始可能な最早時刻）とは別である。UTCを明示したRFC3339形式の実在する日時として厳密に検証する。Timer予約判断時点の実際の現在時刻と比べた扱いは次のとおりとする（Issue #108で、過去・現在の扱いを「保留」から「60秒後の再評価」へ変更した）。
 
+| recheckAt | Schedulerの動作 |
+|---|---|
+| 形式が不正（不正文字列・実在しない日時等） | 契約違反として予約せず、原則該当Stateのみblocked相当（state / invalid_recheck_at）で保留し、調査可能なログを残す（従来どおり） |
+| 有効な日時で、過去・現在 | 保留しない。警告ログを残し、**60秒後**に再評価（runOnce()）を予約する。即時Retryではない |
+| 有効な日時で、未来 | 待機時間（recheckAt − 現在）でTimerを予約する。ただし1回の待機は**最長60秒**とし、それより長い待機は分割する |
+
+- 過去・現在の有効なrecheckAtは、Coordinatorが返した後、Schedulerが検証するまでの間に時計が進んだ場合に生じうる（Coordinatorは現在＋1秒以上に切り上げて返す。18.7）。従来はこれを契約違反として保留したが、保留したStateは再起動まで再開できず（再開契約はPR-E）、時計の補正だけで取得が止まり続けるため、保留しない。
+- **トレードオフ**：Coordinatorの不具合で過去・現在のrecheckAtが返る場合も、保留（永久停止）ではなく、警告ログを残して60秒ごとに再評価する方式になる。契約違反の検出は保留ではなく警告ログに頼る。60秒の間隔により、State単位の再評価は1分に1回までに限られ、短時間の連続実行・無限Loopにならない。取得の可否はCoordinatorが毎回、取得制約に従って判断する。
+- 警告ログはState Keyと理由だけを含め、recheckAtの値は出さない。同じStateで過去・現在のrecheckAtが続く間は、最初の1回だけ警告し、未来のrecheckAtを受け付けたら解除する（同じ異常の繰り返しでログを増やさない）。イベント名等の具体形は実装PRで決める。
+- 60秒は、取得抑止中の再評価間隔（Quota・送信Gate・Request未終了時の60秒）と、[Architecture 11.3](architecture.md#113-recovery-escalationと初期目標)の1分目標にそろえたコードの固定値とし、Configにしない。
+- Schedulerは独自に時刻を加算してrecheckAtを補正しない。60秒は「次に判断し直すまでの間隔」であり、nextAttemptAt・Backoff・Quotaの待機を短縮しない。
 - StateごとのTimerは最大1個とし、inFlightでTask重複を防ぐ。発火時にはCoordinatorが保存状態と実際の現在時刻を再評価し、Timer予定時刻を現在時刻の代用にしない。
 - Task終了後にinFlightを解除し、scheduledなら検証した次回判定を予約する。suspended・blockedでは通常Timerを予約しない。
 - requestRecheck()は既存Timerの前倒し判定を要求できるが、取得制約を迂回する要求ではない。inFlight中は要求を集約して重複Taskを起動せず、終了後の判定に反映する。suspended・blockedの安全確認やRecovery再開契約を迂回しない。
-- 取消し・再予約前の古いCallbackは世代識別子等で無効化する。Timerの安全な待機範囲を超える長時間待機は分割して途中で再評価する。これは取得制約の無視やHTTP送信許可を意味しない。
-- 時計が進んでもTimerの即時前倒しは保証しない。発火時に現在時刻で再評価し、取得周期・Backoff・Quotaを維持する。
-- 時計が戻りnextAttemptAt未到達なら取得せず、Quota履歴を消去しない。現在時刻に基づき次回判定を予約する。MVPでは時計変更専用の監視機構を追加しない。この方針はSchedulerの時計変更イベント発行・専用再スケジュール機構に適用する。Quota Guardの送信安全性確認用時計監視は23.11の別責務であり、Scheduler全体の再設計とはしない。
+- 取消し・再予約前の古いCallbackは世代識別子等で無効化する。60秒を超える待機は分割して途中で再評価する。これは取得制約の無視やHTTP送信許可を意味しない。途中の再評価では、取得条件を満たさなければCoordinatorはscheduledを返すだけで、Provider送信・Control State / Published Stateの書込み・失敗回数の変更を行わない（SQLiteの読取りとValidationだけ）。
+- 時計が進んだ場合、待機中のStateは**最長約60秒で**現在時刻による取得条件の再評価を受ける（Issue #108）。即時の前倒しは保証しない。再評価で取得周期・Backoff・Quota・送信Gateを維持し、取得の完了時刻は保証しない。
+- 時計が戻りnextAttemptAt未到達なら取得せず、Quota履歴を消去しない。現在時刻に基づき次回判定を予約する。MVPでは時計変更専用の監視機構を追加しない。この方針はSchedulerの時計変更イベント発行・専用再スケジュール機構に適用する。60秒ごとの再評価は時計の変化を検知するものではなく、時計の状態にかかわらず一定間隔で判断し直すものであり、この方針に反しない。Quota Guardの送信安全性確認用時計監視は23.11の別責務であり、Scheduler全体の再設計とはしない。
+- 再評価時のSQLite読取りエラーは、既存どおりsuspended / blockedとして扱う（再開はPR-E）。60秒ごとの再評価で読取りの回数は増えるが、扱いは変えない。
 
 #### Shutdown・Lifecycle
 
@@ -2829,16 +2841,16 @@ C1-01〜C1-29は設計上の受入条件であり、実装・テストは未実�
 | C1-16 | HTTP Timeout 10秒とTask全体Timeoutなしを区別し、長時間Taskも重複しない | SCH-01・05 |
 | C1-17 | installShutdown()・Fastify Lifecycleを利用し、専用Signal Handlerを増設しない | Architecture 16.8の追加具体化 |
 | C1-18 | suspended / blockedで通常Timerを作らず、Recoveryの安全な再開を迂回しない | SCH-09・10・30。再開InterfaceはPR-E |
-| C1-19 | 過去・現在のrecheckAtを拒否し、時刻加算救済・即時Retryなし | SCH-20・22の具体化 |
+| C1-19 | 過去・現在の有効なrecheckAtで該当Stateを保留せず、警告ログ（連続中は最初の1回だけ。値は出さない）を残して60秒後に再評価する。時刻加算救済・即時Retryなし（Issue #108で変更。従来は拒否して保留） | SCH-20・22の具体化 |
 | C1-20 | 不正な時刻文字列を厳密検証で拒否し、ログを残してTimerを作らない | SCH-22に関連するInterface追加観点 |
 | C1-21 | 不正recheckAt等のState固有異常で他Stateの正常取得・Timerを止めない | SCH-12・33 |
 | C1-22 | 共有DB障害時は全Stateを保留し、安全確認まで再実行しない | SCH-07・09・13・28 |
-| C1-23 | 時計進行後も即時前倒しを仮定せず、発火時に現在時刻と取得制約を再評価 | SCH-20・23、QuotaはSCH-14〜19 |
+| C1-23 | 時計進行後、待機中のStateは最長約60秒で現在時刻と取得制約を再評価する。即時前倒しは仮定しない（Issue #108） | SCH-20・23、QuotaはSCH-14〜19 |
 | C1-24 | 時計巻戻り後もnextAttemptAt・Backoff・Quota履歴を尊重し、消去・強制取得なし | SCH-23・29の時計変更時具体化 |
 | C1-25 | runOnce Rejectを捕捉し、inFlightを必ず解除 | SCH-22 |
 | C1-26 | 想定外例外で即時Retryせず、範囲不明なら全体保留 | SCH-22・28 |
 | C1-27 | 取消し・再予約後の古いTimer Callbackを無効化 | SCH-20・21の具体化 |
-| C1-28 | 長時間Timerを安全な範囲で分割し、途中で状態・時刻を再評価 | SCH-03・15・20に関連 |
+| C1-28 | 1回の待機を最長60秒に分割し、途中で状態・時刻を再評価する。途中の再評価で取得条件を満たさなければ、Provider送信・DB書込み・失敗回数の変更をしない（Issue #108で上限を変更） | SCH-03・15・20に関連 |
 | C1-29 | global停止後、実行中の別Stateも新たなProvider送信へ進まない | SCH-09・13・16・17。Tx-A可否は23.10、送信PermitはC-3 |
 
 SCH-04・06〜08・11・17・18・24〜32等のValidation・Transaction・復元・Pending・Quotaの詳細は既存正本と後続工程で検証し、Schedulerへ責務を移さない。C1の対応表はSCHの観点を削除・置換せず、C1の受入条件確定をテスト成功とは扱わない。
@@ -4687,7 +4699,7 @@ better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確�
 
 ## 25. 表示用時刻の利用可否（Issue #65）
 
-状態：設計確定（2026-11-14）。実装済み（Backend：PR #110、Frontend：PR #111）・Pi実機で確認済み（2026-11-15、[検証記録](verification/issue-65-time-availability.md)）。RTCのバックアップ電池を付けた後の確認は未実施。[Issue #65](https://github.com/rinYamano211/home-digital-signage/issues/65)で検討し、方針を[Issueのコメント](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877050839)と[T2の確定](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877480085)に記録した。原則は[Architecture 10.2](architecture.md#102-時刻同期rtcと利用可否)、表示は[UI設計 6.3](ui-design.md#63-時刻未同期)、Frontendの扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。本章は判定方式と表示用APIの契約を定める。
+状態：設計確定（2026-11-14）。実装済み（Backend：PR #110、Frontend：PR #111）・Pi実機で確認済み（2026-11-15、[検証記録](verification/issue-65-time-availability.md)）。RTCのバックアップ電池を付けた後の確認は未実施。[Issue #65](https://github.com/rinYamano211/home-digital-signage/issues/65)で検討し、方針を[Issueのコメント](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877050839)と[T2の確定](https://github.com/rinYamano211/home-digital-signage/issues/65#issuecomment-6877480085)に記録した。原則は[Architecture 10.2](architecture.md#102-時刻同期rtcと利用可否)、表示は[UI設計 6.3](ui-design.md#63-時刻未同期)、Frontendの扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。本章は判定方式と表示用APIの契約を定める。Backendの時刻依存処理との関係（Issue #108）は25.5に定める。
 
 ### 25.1 Piでの事前確認（2026-11-14）
 
@@ -4735,7 +4747,7 @@ better-sqlite3 ARM64互換性・Native Build負荷・Deploy Script・Health確�
 - ログは、判定が変わったとき（理由を含む）と、各根拠の取得失敗が始まったとき・回復したときに出す。取得失敗が続いている間に毎回は出さない。Secret・個人情報は含めない。
 - 判定は`src/backend/time/`のModule（Common Time Moduleの一部。Architecture 10.1）で行う。OSの読み取りと判定（純粋関数）を分け、テストではOSの読み取りを差し替える。新しい独立Process・常駐Serviceは追加しない。
 - 送信用Clock Trust（23.11、[C-Impl-5B-1](#pr-c-c-impl-5b1-os-sync)）とは互いに参照しない。同じ`NTPSynchronized`を読むが、送信用の`OsSyncReader`は変更せず、別に読む。Time Availabilityが`available`でも、Providerへの送信は許可しない。
-- BackendのScheduler・期限判定・日付判定（Architecture 11.5）へのTime Availabilityの反映は、本章の範囲外とする。[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)で扱う。
+- BackendのScheduler・取得・保存・期限判定・日付判定（Architecture 11.5）には、Time Availabilityを反映しない。Backendの取得をTime Availabilityで止めない（[25.5](#backend-time-dependency)、Issue #108）。
 
 ### 25.4 表示用API：`GET /api/time-availability`
 
@@ -4755,6 +4767,69 @@ Published State API（第10章）とは別のEndpointとする。Published State
 - `schemaVersion`は持たない。互換性のない変更が必要になったら、Endpointを分ける。
 
 FrontendのPolling（10秒、Timeout 3秒）、最初の応答の前・取得失敗時の扱いは[Frontend開発手順 第13章](frontend-development.md#13-表示用時刻の利用可否issue-65)に従う。
+
+<a id="backend-time-dependency"></a>
+
+### 25.5 Backendの時刻依存処理とTime Availability（Issue #108）
+
+状態：設計確定（2026-11-21）。Schedulerの変更（下記の対策）は未実装・Pi実機で未確認。[Issue #108](https://github.com/rinYamano211/home-digital-signage/issues/108)で検討した。[Architecture 11.5](architecture.md#115-system-time-recovery)の「誤った現在時刻を使用しない」を、Backendでどう満たすかを定める。
+
+#### 方針
+
+- Time Availabilityは表示用の判定であり、時刻の正確性そのものを保証しない（25.2の既知の限界）。
+- BackendのScheduler・取得・保存・Cache採用・表示用APIの期限判定は、Time Availabilityを参照しない。Backendの取得をTime Availabilityで止めない（Gateしない）。送信用Clock Trust（23.11）も変更しない。
+- 誤った時刻の間に取得・保存したデータは、次の仕組みで表示しないようにする。
+  1. `unavailable`の間、Frontendは時計・予定・天気を表示しない（#65）。
+  2. 表示用API（10.8）とFrontend（[Frontend開発手順 13.4](frontend-development.md#13-表示用時刻の利用可否issue-65)）は、表示の時点の時刻で`expiresAt`と予定の`data.date`を判定し直す。Frontendは`available`へ変わった時点でも判定し直す。
+  3. 天気のデータは絶対時刻・日付つきで、Frontendは現在時刻から表示する枠・日を選び直す（20.5・22.5）。
+  4. 取得時の検証（現在の天気の鮮度、時間別・週間の2段階Validation、予定の日付の破棄・失敗。18.7・19.3・20.2・22.4）。
+  5. Tomorrow.ioはClock Trust（NTP同期が必須）が成立するまで送信しない（23.11）。
+- 時刻の復旧後、Backendは特別な処理をせず、Schedulerの再評価（23.9：待機中のStateは最長約60秒で取得条件を再評価）と通常の取得周期で正常状態へ戻る。
+
+#### 評価の範囲
+
+想定する故障は、RTCのバックアップ電池がない状態で電源を完全に切った後、時計が前回終了時付近（遅れた時刻）で起動し、NTPの同期で進んで復旧する場合とする（25.1）。
+
+| ケース | 内容 | 扱い |
+|---|---|---|
+| S1 | 約8分遅れて起動し、NTPで復旧 | 評価対象 |
+| S2 | 約1日遅れて起動し、NTPで復旧 | 評価対象 |
+| S3 | Backoffの待機中にNTPの同期で時刻が大きく進む | 評価対象 |
+| S4 | 稼働中にSystem Timeが後退する | 対象外（既知の限界） |
+| S5 | RTCは有効と判定されるが、実際の時刻がずれている | 対象外（25.2の既知の限界） |
+
+S1〜S3について、上記の仕組みのもとで、誤った内容の予定・天気を表示する経路はコードの追跡では見つからなかった（Piでは未確認）。これは誤表示が起きないことの保証ではない。時計が遅れた状態から進む場合、`expiresAt`は実際より早めになり（安全側）、前日の予定は日付の照合で隠れ、天気は検証で失敗するか、絶対時刻で選び直される。
+
+#### Schedulerの対策（F1・F2）
+
+コードの追跡で、表示とは別に、取得が遅れる・止まる経路が2つ見つかったため、Schedulerを変更する（契約は23.9）。
+
+| | 原因 | 影響（変更前） | 対策 |
+|---|---|---|---|
+| F1 | 起動時、Schedulerは「保存済みの`nextAttemptAt` − 遅れた現在時刻」を`setTimeout`（経過時間で数える）で予約する。NTPで時計が進んでも予約は短くならない。1回の待機の上限は約24.8日だった | 時刻の復旧後も、最大で1取得周期、取得を判断し直さない（予定10分、現在の天気15分、時間別30分、週間6時間） | 1回の待機を最長60秒に分割し、発火時に現在時刻で再評価する |
+| F2 | Coordinatorが返したrecheckAt（現在＋1秒以上）を、Schedulerが受け取るまでの間に時計が1秒以上進むと、過去・現在のrecheckAtとして該当Stateを保留していた | そのStateは再起動まで取得しない（保留は`requestRecheck()`でも再開できない） | 過去・現在の有効なrecheckAtは保留せず、警告ログを残して60秒後に再評価する。形式が不正なrecheckAtは従来どおり保留する |
+
+- 保証するのは「待機中のStateについて、最長約60秒で取得条件を再評価すること」である。時刻の復旧後、一定時間内に取得が完了することは保証しない（Backoff・Quota・送信Gate・外部APIの状態による）。
+- `nextAttemptAt`・Backoff・Quota・Clock Trust・Time Availabilityの契約は変えない。再評価は、取得条件を満たさなければProvider送信・DB書込み・失敗回数の変更を行わない。
+
+#### 既知の限界
+
+- 失敗中にCacheを表示する場合の「更新待ち・HH:MM時点」は、誤った時刻で記録した`dataUpdatedAt`を使うため、最大でずれの分だけ古く見えうる（TTL内に限る）。
+- 前日の日付で保存した予定は、時刻の復旧後に隠れ、次の取得まで「予定を取得できません」になる。
+- 時刻が誤っている間も、Google Calendar・Open-Meteoへ送信する（取得の失敗や、後で隠れるデータを含む）。
+- 時刻の復旧後の取得は、再評価の後もBackoff・Quota・送信Gate・外部APIの障害で遅れうる。
+- 再評価時のSQLite読取りエラーによるStateの保留と、その再開（PR-E）は本節の範囲外とする。
+- Clock Trust・History Trustの内部契約は変更しない。Tomorrow.ioの送信の再開条件は23.11に従う。
+
+#### 対象外（S4・S5）
+
+- **S4（時計の後退）**：判定は`now < expiresAt`なので、期限切れのデータが再び有効と判定され、表示されうる。また`nextAttemptAt`に達するまで取得しない（C1-24）。
+- **S5（RTCは有効だが時刻がずれている）**：Time Availabilityは`available`になる。Backend・Frontendとも誤った時刻で動き、ずれた日の予定を、その日の日付とともに表示しうる。
+
+#### 確認
+
+- Schedulerの変更は、実装PRでUnit Test（Fake Timerと壁時計の変更）によって確認する。F2の競合はPiでの再現が難しいため、Unit Testで確認する。
+- Piでは、電池なしで電源を完全に切った後のNTPの復旧（各Stateが戻るまでの時間）と、72時間の連続稼働（定期的な再評価による負荷・ログ量）を確認する（[#13](https://github.com/rinYamano211/home-digital-signage/issues/13)へ追加する方針）。
 
 <a id="startup-recovery-operations"></a>
 
