@@ -2559,7 +2559,7 @@ nextAttemptAtは**次のHTTP取得を開始してよい最も早い時刻**と�
 | Tx-A成功後のTx-P失敗 | 取得成功として記録したnextAttemptAtを維持 |
 
 未取得・期限切れ・周期到達等で取得対象を判定したうえ、Backoff・Quota・Provider制約・inFlightも確認する。
-5 State共通Backoffは初回1分、係数2、上限5分（1、2、4、5、5分……）。MVPはJitterなし・即時Retryなし。上限はIssue #113で30分から変更した（Architecture 11.3。実装は未完了）。上限5分はRainForecastの取得周期と同じで、障害が続いてもTomorrow.ioへの試行は通常時の頻度を超えない。
+5 State共通Backoffは初回1分、係数2、上限5分（1、2、4、5、5分……）。MVPはJitterなし・即時Retryなし。上限はIssue #113で30分から変更した（Architecture 11.3。実装済み：#123。Piでの復旧時間の実測は#13）。上限5分はRainForecastの取得周期と同じで、障害が続いてもTomorrow.ioへの試行は通常時の頻度を超えない。
 HTTP 429は失敗とし、通常BackoffとRetry-Afterの遅い方まで待つ。Retry-Afterは秒数・HTTP Date形式に対応し、有効値がBackoff上限を超えても尊重する。不正・欠損なら通常Backoffを適用する。
 
 全Providerの外部HTTP Timeoutは10秒とし、Node.js標準fetchとAbortSignal.timeout()を使用する方針。Frontend Pollingの5秒Timeoutとは別である。
