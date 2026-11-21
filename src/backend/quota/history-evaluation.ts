@@ -86,9 +86,8 @@ const sameScope = (a: HistoryScope, b: HistoryScope): boolean =>
 /** Pure classification-model assessment: even TRUSTED authenticates no Runtime
  * evidence or History Trust and grants no send permission.
  * Never call Monitor.confirm(), QuotaGuard or
- * Tx-Q here. CONSERVATIVE requires full counting of old/uncertain contributions
- * in every Window until independently verified wait evidence permits exclusion;
- * no waiting/exclusion/Quota/HTTP authorization is implemented by this function.
+ * Tx-Q here. Quota counting follows Q-01 (Issue #117): every class is counted
+ * by its Timestamp. No Quota/HTTP authorization is implemented by this function.
  */
 export function evaluateHistoryFacts(
   facts: HistoryEvaluationFacts,
@@ -227,14 +226,8 @@ export function evaluateHistoryFacts(
       else if (!uncertain.has(row.sequence))
         return blocked("classification_gap");
     }
-    // Trusted runtime rows still require ordered timestamps for the existing
-    // Window algorithm. No comparison crosses an old/uncertain clock interval.
-    if (
-      newValid.some(
-        (r, i) => i > 0 && r.reservedAtMs < newValid[i - 1].reservedAtMs,
-      )
-    )
-      return blocked("invalid_history_timestamp");
+    // Q-01 (Issue #117): Timestamp order is not a structural requirement; the
+    // Window math orders rows by Timestamp itself.
     const classification: HistoryClassification = Object.freeze({
       old: Object.freeze(old),
       newValid: Object.freeze(newValid),

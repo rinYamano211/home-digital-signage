@@ -459,7 +459,7 @@ test("B43-07 old Timestamp before Metadata initialization is conservatively clas
   expect(result.evaluation).toBe("CONSERVATIVE");
 });
 for (const cutoff of [0, 2, 4])
-  test(`B43-07 reversal is rejected for Valid, conservatively counted for old/uncertain (cutoff ${cutoff})`, () => {
+  test(`B43-07 / Q-01 Timestamp reversal is not BLOCKED for any class (cutoff ${cutoff})`, () => {
     const f = model(cutoff);
     const result = evaluateHistoryFacts({
       ...f,
@@ -473,12 +473,7 @@ for (const cutoff of [0, 2, 4])
         r.sequence === 4 ? { ...r, reservedAtMs: 25 } : r,
       ),
     });
-    if (cutoff === 0)
-      expect(result).toEqual({
-        evaluation: "BLOCKED",
-        reason: "invalid_history_timestamp",
-      });
-    else expect(result.evaluation).toBe("CONSERVATIVE");
+    expect(result.evaluation).not.toBe("BLOCKED");
   });
 test("Timestamp equal to initialization or preceding Consumption is accepted", () => {
   const f = model();

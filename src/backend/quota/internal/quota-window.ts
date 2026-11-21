@@ -5,24 +5,24 @@ export const QUOTA_WINDOWS = Object.freeze([
   Object.freeze({ widthMs: 1000, limit: 1 }),
 ]);
 export const QUOTA_MARGIN_MS = 2000; // Provisional design margin; not a measured guarantee.
-/** Shared inclusive Window math; caller validates timestamps and ordering. */
+/** Shared inclusive Window math (technology-stack Q-01, Issue #117): a row
+ * counts while |now - reservedAtMs| <= width + margin, so a future row counts
+ * for at most about twice the reach. Caller validates the timestamps.
+ * releaseAtMs is the earliest exit of enough counted rows, ordered by
+ * Timestamp rather than Sequence. Rows entering later are ignored, so it is a
+ * lower bound of the real release and never a send permission.
+ */
 export function quotaWindow(
   rows: readonly QuotaConsumption[],
   now: number,
   w: (typeof QUOTA_WINDOWS)[number],
-  fullCount = 0,
 ): { count: number; releaseAtMs?: number } {
-  const recent = rows.filter(
-    (c) => now - c.reservedAtMs <= w.widthMs + QUOTA_MARGIN_MS,
-  );
-  const count = fullCount + recent.length;
-  if (count < w.limit || fullCount >= w.limit) return { count };
-  return {
-    count,
-    releaseAtMs:
-      recent[recent.length - (w.limit - fullCount)].reservedAtMs +
-      w.widthMs +
-      QUOTA_MARGIN_MS +
-      1,
-  };
+  const reachMs = w.widthMs + QUOTA_MARGIN_MS;
+  const counted = rows
+    .map((c) => c.reservedAtMs)
+    .filter((t) => Math.abs(now - t) <= reachMs)
+    .sort((a, b) => a - b);
+  const count = counted.length;
+  if (count < w.limit) return { count };
+  return { count, releaseAtMs: counted[count - w.limit] + reachMs + 1 };
 }

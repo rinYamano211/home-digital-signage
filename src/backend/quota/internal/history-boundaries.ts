@@ -29,7 +29,7 @@ import {
   evaluateConservativeQuota,
   HISTORY_WAIT_MS,
 } from "../conservative-quota.js";
-import { QUOTA_WINDOWS, quotaWindow } from "./quota-window.js";
+import { QUOTA_WINDOWS } from "./quota-window.js";
 import { verifiedWaitReading } from "./wait-clock.js";
 import type { HistoryScope } from "../history-evaluation.js";
 declare const drainBrand: unique symbol;
@@ -637,11 +637,8 @@ export class HistoryRecovery {
     return snapshot ? this.waitTokens(snapshot) : [];
   }
   private assessment(snapshot: Snapshot, now: number) {
-    return evaluateConservativeQuota(
-      snapshot.facts,
-      now,
-      this.drained ? this.waitTokens(snapshot) : [],
-    );
+    // Q-01 (Issue #117): counting needs no Wait evidence.
+    return evaluateConservativeQuota(snapshot.facts, now);
   }
   assessForGate(
     reservation?: QuotaReservation,
@@ -717,27 +714,16 @@ export class HistoryRecovery {
       return this.reservationReady()
         ? { allowed: true, reason: "authenticated_history_available" }
         : { allowed: false, reason: "history_or_recovery_unverified" };
-    // A uses only trusted Valid expiry while retaining the full conservative
-    // contribution. If that contribution alone exhausts a Window, use B/C.
-    const model = evaluateHistoryFacts(snapshot.facts);
-    if (model.evaluation === "BLOCKED")
-      return { allowed: false, reason: model.reason };
+    // Q-01 (Issue #117): the max over exhausted Windows is a lower bound of
+    // the real release (future rows may still enter). It is a recheck hint,
+    // never a send permission; Tx-Q re-evaluates with the latest time.
     let recheckAtMs = 0;
-    for (const w of QUOTA_WINDOWS) {
-      const count = result.windows.find((x) => x.widthMs === w.widthMs)!.count;
-      const valid = quotaWindow(model.classification.newValid, now, w);
-      if (count >= w.limit) {
-        const usage = quotaWindow(
-          model.classification.newValid,
-          now,
-          w,
-          count - valid.count,
-        );
-        if (usage.releaseAtMs === undefined)
-          return { allowed: false, reason: "conservative_quota_exhausted" };
-        recheckAtMs = Math.max(recheckAtMs, usage.releaseAtMs);
+    for (const w of result.windows)
+      if (w.count >= w.limit) {
+        if (w.releaseAtMs === undefined)
+          return { allowed: false, reason: "quota_boundary_unavailable" };
+        recheckAtMs = Math.max(recheckAtMs, w.releaseAtMs);
       }
-    }
     return {
       allowed: false,
       reason: "quota_exhausted",
