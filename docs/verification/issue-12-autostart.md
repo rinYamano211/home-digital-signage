@@ -145,8 +145,8 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 - `--schema-checked`の根拠：Release A・Bは同じCommit（`b82ff45`）の複製で、DB Schemaが同じ。
 - 確認の引数なし（`activate-release.sh rollback`）：`activate-release: confirm DB schema compatibility, then pass --schema-checked`、終了コード1。`current`はB、`previous`はAのまま変わらなかった。
 - B→A（`rollback --schema-checked`）：`activate-release: rolled back to 20261117-222638-b82ff45`、終了コード0。`current`はA、`previous`はB。Backendは`active`、nginx経由のAPIは200。その後にKioskを再起動した。
-- A→B（もう一度`rollback --schema-checked`。元の状態へ戻すため）：`activate-release: rolled back to 20261118-010000-b82ff45`、終了コード0。`current`はB、`previous`はA。
-- Kioskの画面の目視の結果は、この記録の時点で報告を受けていない。
+- A→B（もう一度`rollback --schema-checked`。元の状態へ戻すため。14:15ごろ）：`activate-release: rolled back to 20261118-010000-b82ff45`、終了コード0。`current`はB、`previous`はA。
+- B→A・A→Bのどちらの後も、Kioskを再起動した後の画面の表示に問題はなかった（目視）。
 
 **今回は確かめていないこと**：
 
@@ -299,6 +299,6 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
 
 ## 未実施の項目
 
-1. P12の残り（Backendの起動の失敗による切戻しの実機での確認、手動の切戻しの後のKioskの目視）
+1. P12の残り（Backendの起動の失敗による切戻しの実機での確認）
 2. Network復旧の後の、降雨・週間の天気の再取得（Issue #12の完了条件の残り。回復までの時間の目標は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)）
 3. `backend.env.save`の扱いの判断
