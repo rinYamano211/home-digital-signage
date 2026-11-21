@@ -7,7 +7,7 @@
 - 確認日：2026-11-16〜2026-11-21
 - 対象：`main`のMerge Commit `b82ff45`（PR #115）。Release `20261117-222638-b82ff45`
 - 環境：Raspberry Pi 5、Debian 13（trixie）・ARM64、systemd 257、LightDM + labwc（Wayland）、Chromium、nginx 1.26.3、Node.js v24.22.1。RTCのバックアップ電池なし
-- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P14・P17まで確認し、P16は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
+- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P15・P17まで確認し、P16とNetwork復旧後の自動回復は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
 - Secret・地点・カレンダーID・Quota履歴の値は記録しない
 
 ## 方法
@@ -186,6 +186,51 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 - マウスの接続時・操作時のカーソルの挙動は、今回は確かめていない。2026-11-17には、マウスをつないだ状態で、再起動の後もカーソルが残ることを観察している。本運用はマウスをつながない前提である。
 - 手順書2.8の1.（raspi-configでScreen Blankingを無効にする）を行ったかどうかは、この確認には含まれていない。
 
+### P15：Network未接続で電源を入れても基本画面が出る：PASS
+
+確認日：2026-11-21。Piの本体にディスプレイとキーボードをつなぎ、本体のターミナル（`signage`）で操作した。
+
+- 事前の確認：Networkは`wlan0`（Wi-Fi、自動接続が有効）だけで、`eth0`は未接続。通常の起動では、ログインの操作なしでChromiumが自動で表示される。
+- `sudo nmcli radio wifi off`でWi-Fiを切った。切った後も、サイネージの基本画面は表示され続けた。
+- Wi-Fiを切ったまま`sudo reboot`した。
+
+| 項目                                           | 結果 |
+| ---------------------------------------------- | ---- |
+| ログインの操作なしでChromiumが自動で表示される | PASS |
+| Networkなしで基本画面が表示される              | PASS |
+| エラー画面や、読み込みのままの停止にならない   | PASS |
+
+Backendのログ（2026-11-21、JST）：
+
+| 時刻                                     | 事象                                                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 12:38:27                                 | `startup_complete`、`database_status`（`HEALTHY`）、`time_availability_changed`（`reason: rtc`。NTPは未同期） |
+| 12:40:00・12:41:00・12:43:00             | `schedule_acquisition_failed`（`network_error`）                                                              |
+| 12:40:25〜26・12:41:25〜26・12:43:25〜26 | `weather_acquisition_failed`（`network_error`）                                                               |
+
+- Network未接続の間も、Backendは起動して動き続け、DBは正常だった。時計は、RTCを根拠に表示できる状態だった（第25章）。
+
+### Network復旧後の自動回復：一部確認
+
+Issue #12の完了条件「Network復旧後に外部データ取得が自動的に回復する」の確認。P15の続きで行った。
+
+- `sudo nmcli radio wifi on`でWi-Fiを戻した。Wi-Fiの再接続を確認し、Backendは`active`だった。ChromiumとBackendの再起動、手動での取得はしていない。
+- 12:43:57に`time_availability_changed`（`reason: ntp`、NTPは同期済み）。NTPの同期と、外部APIからの取得の成功は、別の事象である。
+- 取得の成功のEventはjournalctlでは見ていない（成功はINFOのログに出ない）。`GET http://127.0.0.1:3000/api/published-states`の`states.*.meta`で、復旧の後の取得の成功を確認した。
+
+| State            | `dataUpdatedAt`（JST） | `lastAttemptResult` | `dataSource`  |
+| ---------------- | ---------------------- | ------------------- | ------------- |
+| `hourlyWeather`  | 11/21 12:47:26         | `success`           | `externalApi` |
+| `schedule`       | 11/21 12:57:01         | `success`           | `externalApi` |
+| `currentWeather` | 11/21 13:02:27         | `success`           | `externalApi` |
+
+- 画面に、現在の天気・時間ごとの天気・予定が表示されていることを目視で確認した。表示の値がAPIの最新の値と一致することまでは確かめていない。
+- `schedule`は、取得は`success`だったが、`events`は空だった。予定があったことや、予定の内容が更新されたことは確かめていない。
+- **確認していないこと**：
+  - `rainForecast`（最後の取得の成功は11/21 12:35:46）と`weeklyWeather`（同10:36:24）の、復旧の後の再取得。どちらもAPIにデータはあったが、Network復旧の前に取得したもの。取得の周期とAPIの利用の制限を考え、確認のための手動の取得はしていない。
+  - すべての外部APIが同じ時間内に回復すること、Networkの復旧をすぐに検知すること（回復までの時間は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)の範囲）。
+- 判定：予定・現在の天気・時間ごとの天気は、操作なしで回復した（PASS）。降雨と週間の天気の回復は未確認のため、この完了条件の全体はまだPASSにしない。
+
 ### P16：管理コマンドの実行方法：一部確認
 
 手順書3.5の方法（`systemd-run --uid=hds --pty -p EnvironmentFile=…`）の実行の経路を確かめた。DB・Quotaを変える操作はしていない。
@@ -224,7 +269,7 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 | P12 | Releaseの切替と失敗時の切戻し                    | 確認済み（正常な切替と、静的ファイルの不整合による自動の切戻し。手動の`rollback`は未実施）                               |
 | P13 | Secretの正常な読み込みと、権限が不正なときの拒否 | 確認済み（読み込みは本番のSecret、拒否は隔離した偽のSecretで確認）                                                       |
 | P14 | 画面が消えない・カーソルが見えない               | 確認済み（現在の運用の条件。約3日の連続表示で消灯なし、カーソルの表示なし。マウスの接続時は未検証）                      |
-| P15 | Network未接続で電源を入れても基本画面が出る      | 未実施                                                                                                                   |
+| P15 | Network未接続で電源を入れても基本画面が出る      | 確認済み                                                                                                                 |
 | P16 | 管理コマンドの実行方法                           | 一部確認（`hds`・対話端末・`EnvironmentFile`での実行、不正なコマンドの拒否。管理コマンドの実行の成功と排他制御は未確認） |
 | P17 | 既存DBの移行                                     | 確認済み（上記「P17：既存DBの移行の完了」）                                                                              |
 
@@ -233,7 +278,8 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 ### A：起動直後の天気の取得のTimeout
 
 - 最初の起動（2026-11-17 22:33ごろ）の直後、Open-Meteoの3つ（currentWeather・hourlyWeather・weeklyWeather）が、同時に`weather_acquisition_failed`（`reason: timeout`）になった。開始から約10秒（HTTPのTimeout）で失敗した。
-- 同じHTTPの仕組みを使う予定の取得は成功し、`hds`からの一般的なHTTPSの通信もできた。原因は確定していない（Open-Meteoへの経路、またはOpen-Meteo側の一時的な遅れの可能性）。**その後の試行で回復したかは未確認**。
+- 同じHTTPの仕組みを使う予定の取得は成功し、`hds`からの一般的なHTTPSの通信もできた。原因は確定していない（Open-Meteoへの経路、またはOpen-Meteo側の一時的な遅れの可能性）。
+- その後、Open-Meteoからの取得は成功している（2026-11-21の公開状態で、`weeklyWeather`は10:36:24、`hourlyWeather`・`currentWeather`はNetwork復旧の後に`success`・`externalApi`）。Timeoutが続く状態ではない。
 
 ### B：降雨が表示されない（再起動後の待機）
 
@@ -242,7 +288,6 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 
 ## 未実施の項目
 
-1. P2の採否、P12の残り（手動の`rollback --schema-checked`、Backendの起動の失敗による切戻し）、P15、P16の残り（管理コマンドの実行の成功と排他制御）
-2. Open-Meteoの天気の回復（A）
-3. Network復旧の後、操作なしで取得が回復すること（Issue #12の完了条件。回復までの時間の目標は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)）
-4. `backend.env.save`の扱いの判断
+1. P2の採否、P12の残り（手動の`rollback --schema-checked`、Backendの起動の失敗による切戻し）、P16の残り（管理コマンドの実行の成功と排他制御）
+2. Network復旧の後の、降雨・週間の天気の再取得（Issue #12の完了条件の残り。回復までの時間の目標は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)）
+3. `backend.env.save`の扱いの判断
