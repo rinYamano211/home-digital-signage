@@ -68,7 +68,7 @@ async function advance(ms: number) {
   }
 }
 /** Provisioned real v3 DB with `old` consumptions from a previous Process. */
-function committed(old = 0) {
+function committed(old = 0, ageMs = 0) {
   const dir = mkdtempSync(join(tmpdir(), "signage-runtime-send-"));
   dirs.push(dir);
   const seed = new Database(join(dir, "signage.db"));
@@ -84,7 +84,7 @@ function committed(old = 0) {
   for (let i = 1; i <= old; i++)
     seed
       .prepare("INSERT INTO provider_quota_consumptions VALUES (?,?,?)")
-      .run(TOMORROW_IO, i, wall - 1000 * i);
+      .run(TOMORROW_IO, i, wall - ageMs - 1000 * i);
   seed.pragma("user_version=3");
   seed.close();
   const lock = {
@@ -201,20 +201,25 @@ test("5B fresh history: closed until OS sync, Clock stability and Recovery; stil
   expect(vi.getTimerCount()).toBe(0);
   send.stopMonitoring(); // idempotent
 });
-test("5B restart with old history waits conservatively, then reopens via the production Wait clock", async () => {
-  const h = committed(1);
-  commit(h);
-  const send = createRuntimeSend(h)!;
-  send.startMonitoring();
-  // First C (5m) drains and starts Waits; the old row fills the 1s window.
-  // HistoryRecheck plans before notifying, so the next opportunity is C (10m).
-  await advance(10 * 60_000 - 30_000);
-  expect(send.reservationStatus(TOMORROW_IO).allowed).toBe(false);
-  expect(send.beginAttempt(TOMORROW_IO)).toBeNull();
-  await advance(30_000);
-  expect(send.reservationStatus(TOMORROW_IO).allowed).toBe(true);
-  send.stopMonitoring();
-});
+test.each([
+  ["recent", 1, 0],
+  // Issue #117: 400 old rows older than 24h no longer block for 25h.
+  ["400 rows older than 24h", 400, 86_402_001],
+])(
+  "Q-01 restart with %s old history reopens at the first Recovery without a Wait",
+  async (_, old, ageMs) => {
+    const h = committed(old, ageMs);
+    commit(h);
+    const send = createRuntimeSend(h)!;
+    send.startMonitoring();
+    await advance(4 * 60_000); // Clock is TRUSTED after 60s; C has not fired yet
+    expect(send.reservationStatus(TOMORROW_IO).allowed).toBe(false);
+    expect(send.beginAttempt(TOMORROW_IO)).toBeNull();
+    await advance(61_000); // C (5 minutes) runs recover()
+    expect(send.reservationStatus(TOMORROW_IO).allowed).toBe(true);
+    send.stopMonitoring();
+  },
+);
 test.each([
   ["no", "no\n"],
   ["failing", Error("timedatectl unavailable")],

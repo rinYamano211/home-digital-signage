@@ -4,10 +4,9 @@ import {
 } from "./history-evaluation.js";
 import { quotaTimestamp } from "./quota-guard.js";
 import { QUOTA_WINDOWS, quotaWindow } from "./internal/quota-window.js";
-import {
-  inspectWaitEvidence,
-  type WindowWaitEvidence,
-} from "./internal/history-boundaries.js";
+/** Per-window waits of the retired Plan D. Q-01 (Issue #117) no longer uses
+ * them for Quota counting; only the internal Wait bookkeeping refers to them.
+ */
 export const HISTORY_WAIT_MS = Object.freeze({
   1000: 60000,
   3600000: 3900000,
@@ -17,15 +16,22 @@ export type ConservativeQuotaResult =
   | { evaluation: "BLOCKED"; reason: string }
   | {
       evaluation: "WITHIN_LIMIT" | "QUOTA_BLOCKED";
-      windows: readonly { widthMs: number; count: number; limit: number }[];
+      windows: readonly {
+        widthMs: number;
+        count: number;
+        limit: number;
+        releaseAtMs?: number;
+      }[];
     };
-/** Assessment only, never a send/QuotaTrust permission. Missing, forged or
- * expired Wait evidence always retains full contributions.
+/** Assessment only, never a send/QuotaTrust permission. Q-01 (Issue #117):
+ * every Consumption (old, current-process Valid and confirmed uncertain
+ * Ranges alike) is counted by its Timestamp with the symmetric Window. No
+ * per-window wait is required, and Timestamp order or future values do not
+ * block. Structural problems still fail closed through evaluateHistoryFacts.
  */
 export function evaluateConservativeQuota(
   facts: HistoryEvaluationFacts,
   now: number,
-  waits: readonly WindowWaitEvidence[] = [],
 ): ConservativeQuotaResult {
   try {
     const model = evaluateHistoryFacts(facts);
@@ -33,55 +39,26 @@ export function evaluateConservativeQuota(
     if (
       !quotaTimestamp(now) ||
       !facts.history.metadata ||
-      facts.history.metadata.historyStatus !== "ACTIVE" ||
-      model.classification.newValid.some((r) => r.reservedAtMs > now) ||
-      !Array.isArray(waits)
+      facts.history.metadata.historyStatus !== "ACTIVE"
     )
       return { evaluation: "BLOCKED", reason: "invalid_quota_history" };
-    const completed = (
-      rangeId: number | null,
-      endSequence: number,
-      widthMs: number,
-    ): boolean =>
-      waits.some((token) => {
-        const p = inspectWaitEvidence(token);
-        const s = facts.scope;
-        return (
-          !!p &&
-          p.providerKey === s.providerKey &&
-          p.generation === s.generation &&
-          p.processInstanceId === s.processInstanceId &&
-          p.cutoffSequence === s.cutoffSequence &&
-          p.rangeId === rangeId &&
-          p.endSequence === endSequence &&
-          p.windowMs === widthMs &&
-          typeof p.elapsedNs === "bigint" &&
-          p.elapsedNs >=
-            BigInt(HISTORY_WAIT_MS[widthMs as keyof typeof HISTORY_WAIT_MS]) *
-              1000000n
-        );
-      });
+    const rows = [
+      ...model.classification.old,
+      ...model.classification.newValid,
+      ...model.classification.newUncertain.flatMap((r) => r.consumptions),
+    ];
     const windows = QUOTA_WINDOWS.map((w) => {
-      let full = completed(
-        null,
-        model.classification.old.at(-1)?.sequence ?? 0,
-        w.widthMs,
-      )
-        ? 0
-        : model.classification.old.length;
-      for (const range of model.classification.newUncertain)
-        if (
-          !completed(
-            range.rangeId,
-            range.consumptions.at(-1)!.sequence,
-            w.widthMs,
-          )
-        )
-          full += range.consumptions.length;
+      const usage = quotaWindow(rows, now, w);
       return Object.freeze({
         widthMs: w.widthMs,
-        count: quotaWindow(model.classification.newValid, now, w, full).count,
+        count: usage.count,
         limit: w.limit,
+        // A release beyond the valid Timestamp range gives no recheck hint;
+        // the caller fails closed (quota_boundary_unavailable).
+        ...(usage.releaseAtMs === undefined ||
+        !quotaTimestamp(usage.releaseAtMs)
+          ? {}
+          : { releaseAtMs: usage.releaseAtMs }),
       });
     });
     return Object.freeze({

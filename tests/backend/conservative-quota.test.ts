@@ -1,26 +1,21 @@
-import { expect, test, vi } from "vitest";
-import {
-  evaluateConservativeQuota,
-  HISTORY_WAIT_MS,
-} from "../../src/backend/quota/conservative-quota.js";
+import { expect, test } from "vitest";
+import { evaluateConservativeQuota } from "../../src/backend/quota/conservative-quota.js";
 import {
   QUOTA_WINDOWS,
   QUOTA_MARGIN_MS,
   TOMORROW_IO,
   QuotaGuard,
 } from "../../src/backend/quota/quota-guard.js";
+import { quotaWindow } from "../../src/backend/quota/internal/quota-window.js";
 import type { HistoryEvaluationFacts } from "../../src/backend/quota/history-evaluation.js";
-import type { WindowWaitEvidence } from "../../src/backend/quota/internal/history-boundaries.js";
-const authority = vi.hoisted(() => new WeakMap<object, unknown>());
-// Internal test-only wait authority. No production wait issuance or timer exists.
-vi.mock("../../src/backend/quota/internal/history-boundaries.js", () => ({
-  inspectWaitEvidence: (p: object) => authority.get(p) ?? null,
-}));
+// Q-01 (technology-stack, Issue #117): every Consumption is counted by its
+// Timestamp with the symmetric Window |now - t| <= width + 2s. No Wait.
 const now = 200000000;
 function model(
-  n = 1,
+  times: readonly number[],
   kind: "old" | "valid" | "uncertain" = "old",
 ): HistoryEvaluationFacts {
+  const n = times.length;
   const scope = {
     providerKey: TOMORROW_IO,
     generation: 2,
@@ -42,23 +37,20 @@ function model(
         initializedAtMs: 0,
         lastSequence: n,
       },
-      consumptions: Array.from({ length: n }, (_, i) => ({
-        sequence: i + 1,
-        reservedAtMs: 1,
-      })),
+      consumptions: times.map((t, i) => ({ sequence: i + 1, reservedAtMs: t })),
     },
     valid:
       kind === "valid"
-        ? Array.from({ length: n }, (_, i) => ({
+        ? times.map((t, i) => ({
             ...scope,
             sequence: i + 1,
-            reservedAtMs: 1,
+            reservedAtMs: t,
             reservationOutcome: "saved",
             clockTrustedAtReservation: true,
           }))
         : [],
     ranges:
-      kind === "uncertain"
+      kind === "uncertain" && n
         ? [
             {
               ...scope,
@@ -71,145 +63,38 @@ function model(
         : [],
   };
 }
-function wait(
-  f: HistoryEvaluationFacts,
-  widthMs: number,
-  rangeId: number | null = null,
-  elapsedNs = BigInt(HISTORY_WAIT_MS[widthMs as keyof typeof HISTORY_WAIT_MS]) *
-    1000000n,
-): WindowWaitEvidence {
-  const token = Object.freeze({});
-  authority.set(token, {
-    ...f.scope,
-    windowMs: widthMs,
-    rangeId,
-    endSequence: f.history.metadata!.lastSequence,
-    elapsedNs,
-  });
-  return token as WindowWaitEvidence;
-}
-test("Old history is fully counted in all Windows without wait proof, despite ancient Timestamp", () => {
-  const r = evaluateConservativeQuota(model(), now);
+const counts = (f: HistoryEvaluationFacts, at = now) => {
+  const r = evaluateConservativeQuota(f, at);
+  if (r.evaluation === "BLOCKED") throw Error(r.reason);
+  return r.windows.map((w) => w.count);
+};
+const repeat = (n: number, t: number) => Array.from({ length: n }, () => t);
+
+test("Issue #117: 400+ old rows older than 24h do not block (no 25h wait)", () => {
+  const f = model(repeat(450, now - 86400000 - QUOTA_MARGIN_MS - 1));
+  const r = evaluateConservativeQuota(f, now);
   expect(r).toMatchObject({
-    evaluation: "QUOTA_BLOCKED",
+    evaluation: "WITHIN_LIMIT",
     windows: QUOTA_WINDOWS.map((w) => ({
       widthMs: w.widthMs,
-      count: 1,
+      count: 0,
       limit: w.limit,
     })),
   });
   expect(r).not.toHaveProperty("allowed");
 });
-test("Confirmed uncertain Range is fully counted independently of Timestamp", () => {
-  const r = evaluateConservativeQuota(model(2, "uncertain"), now);
-  expect(r).toMatchObject({
-    windows: QUOTA_WINDOWS.map((w) => ({
-      count: 2,
-      widthMs: w.widthMs,
-      limit: w.limit,
-    })),
+for (const kind of ["old", "valid", "uncertain"] as const)
+  test(`${kind} rows are counted by Timestamp in every Window`, () => {
+    const f = model([now - 5000, now - 500, 1], kind);
+    // 24h: 2, 60min: 2, 1s: 1 (the ancient row is outside every Window).
+    expect(counts(f)).toEqual([2, 2, 1]);
   });
-});
-test("Missing/forged wait evidence never removes history", () => {
-  const f = model();
-  expect(
-    evaluateConservativeQuota(f, now, [{ complete: true } as never]),
-  ).toEqual(evaluateConservativeQuota(f, now));
-});
-for (const w of QUOTA_WINDOWS)
-  test(`Authenticated ${w.widthMs} wait affects only its Window at exact threshold`, () => {
-    const f = model();
-    const r = evaluateConservativeQuota(f, now, [wait(f, w.widthMs)]);
-    if (r.evaluation === "BLOCKED") throw Error();
-    expect(r.windows.find((v) => v.widthMs === w.widthMs)?.count).toBe(0);
-    expect(
-      r.windows
-        .filter((v) => v.widthMs !== w.widthMs)
-        .every((v) => v.count === 1),
-    ).toBe(true);
-    const before = evaluateConservativeQuota(f, now, [
-      wait(
-        f,
-        w.widthMs,
-        null,
-        BigInt(HISTORY_WAIT_MS[w.widthMs as keyof typeof HISTORY_WAIT_MS]) *
-          1000000n -
-          1n,
-      ),
-    ]);
-    expect(before).toEqual(evaluateConservativeQuota(f, now));
-  });
-test("Wait for old history does not remove uncertain range and vice versa", () => {
-  const f = model(2, "uncertain");
-  expect(evaluateConservativeQuota(f, now, [wait(f, 1000, null)])).toEqual(
-    evaluateConservativeQuota(f, now),
-  );
-  const r = evaluateConservativeQuota(f, now, [wait(f, 1000, 1)]);
-  if (r.evaluation === "BLOCKED") throw Error();
-  expect(r.windows.find((w) => w.widthMs === 1000)?.count).toBe(0);
-});
-for (const change of [
-  { generation: 3 },
-  { processInstanceId: "old" },
-  { cutoffSequence: 0 },
-  { providerKey: "other" },
-  { endSequence: 2 },
-])
-  test(`Mismatched wait binding ${JSON.stringify(change)} cannot exclude`, () => {
-    const f = model();
-    const token = wait(f, 1000);
-    authority.set(token, {
-      ...f.scope,
-      windowMs: 1000,
-      rangeId: null,
-      endSequence: 1,
-      elapsedNs: 60000000000n,
-      ...change,
-    });
-    expect(evaluateConservativeQuota(f, now, [token])).toEqual(
-      evaluateConservativeQuota(f, now),
-    );
-  });
-for (const w of QUOTA_WINDOWS)
-  test(`Valid timestamps preserve ${w.widthMs} inclusive margin and existing Guard limit`, () => {
-    const f = model(w.limit, "valid");
-    const at = now - w.widthMs - QUOTA_MARGIN_MS;
-    const history = {
-      ...f.history,
-      consumptions: f.history.consumptions.map((r) => ({
-        ...r,
-        reservedAtMs: at,
-      })),
-    };
-    const valid = f.valid.map((r) => ({ ...r, reservedAtMs: at }));
-    const input = { ...f, history, valid };
-    const r = evaluateConservativeQuota(input, now);
-    expect(r.evaluation).toBe("QUOTA_BLOCKED");
-    if (r.evaluation === "BLOCKED") return;
-    expect(r.windows.find((v) => v.widthMs === w.widthMs)?.count).toBe(w.limit);
-    const after = evaluateConservativeQuota(input, now + 1);
-    if (after.evaluation === "BLOCKED") throw Error();
-    expect(after.windows.find((v) => v.widthMs === w.widthMs)?.count).toBe(0);
-    const guard = new QuotaGuard().evaluate(TOMORROW_IO, history, now, {
-      clockTrusted: true,
-      historyTimestampsTrusted: true,
-      historyComplete: true,
-    });
-    expect(guard.allowed).toBe(false);
-  });
-test("Three Windows combine old + recent Valid + each uncertain Range without double counting", () => {
-  const base = model(4);
+test("Three classes are combined without double counting", () => {
+  const base = model([1, now - 5000, now, now]);
   const f: HistoryEvaluationFacts = {
     ...base,
     scope: { ...base.scope, cutoffSequence: 1 },
     boundary: { ...base.boundary, cutoffSequence: 1 },
-    history: {
-      ...base.history,
-      consumptions: base.history.consumptions.map((r, i) => ({
-        ...r,
-        reservedAtMs: i === 1 ? now - 5000 : i > 1 ? now : 1,
-      })),
-    },
     valid: [
       {
         ...base.scope,
@@ -220,65 +105,139 @@ test("Three Windows combine old + recent Valid + each uncertain Range without do
         clockTrustedAtReservation: true,
       },
     ],
-    ranges: [
-      {
-        ...base.scope,
-        cutoffSequence: 1,
-        rangeId: 1,
-        startSequence: 3,
-        endSequence: 3,
-        committed: true,
-      },
-      {
-        ...base.scope,
-        cutoffSequence: 1,
-        rangeId: 2,
-        startSequence: 4,
-        endSequence: 4,
-        committed: true,
-      },
-    ],
+    ranges: [3, 4].map((seq, i) => ({
+      ...base.scope,
+      cutoffSequence: 1,
+      rangeId: i + 1,
+      startSequence: seq,
+      endSequence: seq,
+      committed: true,
+    })),
   };
-  const r = evaluateConservativeQuota(f, now);
-  expect(r).toMatchObject({
-    windows: [{ count: 4 }, { count: 4 }, { count: 3 }],
+  expect(counts(f)).toEqual([3, 3, 2]);
+});
+for (const w of QUOTA_WINDOWS) {
+  const reach = w.widthMs + QUOTA_MARGIN_MS;
+  test(`${w.widthMs} Window: symmetric inclusive bounds for past and future rows`, () => {
+    const index = QUOTA_WINDOWS.indexOf(w);
+    for (const [t, counted] of [
+      [now - reach, 1],
+      [now - reach - 1, 0],
+      [now + reach, 1],
+      [now + reach + 1, 0],
+    ] as const)
+      expect(counts(model([t]))[index]).toBe(counted);
   });
+  test(`${w.widthMs} Window at the limit is QUOTA_BLOCKED and the legacy Guard agrees for past rows`, () => {
+    const f = model(repeat(w.limit, now - reach), "valid");
+    const r = evaluateConservativeQuota(f, now);
+    expect(r.evaluation).toBe("QUOTA_BLOCKED");
+    if (r.evaluation === "BLOCKED") return;
+    const window = r.windows.find((v) => v.widthMs === w.widthMs)!;
+    expect(window.count).toBe(w.limit);
+    expect(window.releaseAtMs).toBe(now + 1);
+    expect(counts(f, now + 1)[QUOTA_WINDOWS.indexOf(w)]).toBe(0);
+    const guard = new QuotaGuard().evaluate(TOMORROW_IO, f.history, now, {
+      clockTrusted: true,
+      historyTimestampsTrusted: true,
+      historyComplete: true,
+    });
+    expect(guard.allowed).toBe(false);
+  });
+}
+test("One future row blocks the 1s Window only for about 2 x (1s + 2s)", () => {
+  const t = now + 10000;
+  const f = model([t]);
+  const oneSecond = (at: number) => counts(f, at)[2];
+  expect(oneSecond(now)).toBe(0);
+  expect(oneSecond(t - 3001)).toBe(0);
+  expect(oneSecond(t - 3000)).toBe(1);
+  expect(oneSecond(t + 3000)).toBe(1);
+  expect(oneSecond(t + 3001)).toBe(0);
+});
+test("Future and reversed Timestamps are not BLOCKED for any class", () => {
+  for (const kind of ["old", "valid", "uncertain"] as const) {
+    expect(
+      evaluateConservativeQuota(model([now + 1, now + 2], kind), now)
+        .evaluation,
+    ).toBe("QUOTA_BLOCKED");
+    expect(
+      evaluateConservativeQuota(model([now - 2, now - 1500], kind), now)
+        .evaluation,
+    ).toBe("QUOTA_BLOCKED");
+  }
+});
+test("releaseAtMs orders by Timestamp, not Sequence", () => {
+  const w = QUOTA_WINDOWS[2]; // 1s, limit 1
+  const rows = [
+    { sequence: 1, reservedAtMs: now - 500 },
+    { sequence: 2, reservedAtMs: now - 1500 },
+  ];
+  // Two counted rows: the later (now - 500) must leave for the count to drop.
+  expect(quotaWindow(rows, now, w)).toEqual({
+    count: 2,
+    releaseAtMs: now - 500 + 1000 + QUOTA_MARGIN_MS + 1,
+  });
+});
+test("releaseAtMs is a lower bound when a future row enters afterwards", () => {
+  const w = QUOTA_WINDOWS[1]; // 60min, limit 20
+  const reach = w.widthMs + QUOTA_MARGIN_MS;
+  const rows = [
+    ...repeat(20, now - reach + 10000).map((t, i) => ({
+      sequence: i + 1,
+      reservedAtMs: t,
+    })),
+    { sequence: 21, reservedAtMs: now + reach + 5000 }, // enters at now + 5s
+  ];
+  const first = quotaWindow(rows, now, w);
+  expect(first.count).toBe(20);
+  expect(first.releaseAtMs).toBe(now + 10001);
+  // At the hint the old rows have left but the future row has entered.
+  expect(quotaWindow(rows, first.releaseAtMs!, w).count).toBe(1);
+  // A Window that refills only moves the next hint later, never earlier.
+  const refill = [
+    ...rows,
+    ...repeat(19, now + reach + 5000).map((t, i) => ({
+      sequence: 22 + i,
+      reservedAtMs: t,
+    })),
+  ];
+  const later = quotaWindow(refill, first.releaseAtMs!, w);
+  expect(later.count).toBe(20);
+  expect(later.releaseAtMs!).toBeGreaterThan(first.releaseAtMs!);
+});
+test("releaseAtMs beyond the valid Timestamp range is omitted (caller fails closed)", () => {
+  const max = 8_640_000_000_000_000; // largest valid Date and Quota Timestamp
+  const r = evaluateConservativeQuota(model([max]), max);
+  expect(r.evaluation).toBe("QUOTA_BLOCKED");
+  if (r.evaluation === "BLOCKED") return;
+  expect(r.windows.map((w) => w.count)).toEqual([1, 1, 1]);
+  for (const w of r.windows) expect(w).not.toHaveProperty("releaseAtMs");
+  // In range the same row still yields a valid hint.
+  const ok = evaluateConservativeQuota(model([now]), now);
+  if (ok.evaluation === "BLOCKED") throw Error();
+  expect(ok.windows[2].releaseAtMs).toBe(now + 1000 + QUOTA_MARGIN_MS + 1);
 });
 for (const value of [NaN, -1, Number.MAX_SAFE_INTEGER])
   test(`Invalid now ${value} fails closed`, () =>
-    expect(evaluateConservativeQuota(model(), value).evaluation).toBe(
+    expect(evaluateConservativeQuota(model([1]), value).evaluation).toBe(
       "BLOCKED",
     ));
-test("B43-07 uncertain future/reversed timestamps retain full Window counts", () => {
-  const f = model(2, "uncertain");
+test("Structural problems still fail closed", () => {
+  const f = model([now]);
   expect(
     evaluateConservativeQuota(
       {
         ...f,
         history: {
           ...f.history,
-          consumptions: [
-            { sequence: 1, reservedAtMs: now + 1 },
-            { sequence: 2, reservedAtMs: now + 2 },
-          ],
+          consumptions: [{ sequence: 2, reservedAtMs: now }],
         },
       },
       now,
     ).evaluation,
-  ).toBe("QUOTA_BLOCKED");
+  ).toBe("BLOCKED");
   expect(
-    evaluateConservativeQuota(
-      {
-        ...f,
-        history: {
-          ...f.history,
-          consumptions: [
-            { sequence: 1, reservedAtMs: 2 },
-            { sequence: 2, reservedAtMs: 1 },
-          ],
-        },
-      },
-      now,
-    ).evaluation,
-  ).toBe("QUOTA_BLOCKED");
+    evaluateConservativeQuota({ ...f, historyComplete: false }, now).evaluation,
+  ).toBe("BLOCKED");
 });

@@ -41,7 +41,11 @@ vi.mock("../../src/backend/time/boot-id.js", async (original) => ({
 const boot = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const dbs: Database.Database[] = [],
   dirs: string[] = [];
-function fixture(old = 0, provisioned = true) {
+function fixture(
+  old = 0,
+  provisioned = true,
+  at: (i: number) => number = (i) => (i % 2 ? 200000001 : 10),
+) {
   const dir = mkdtempSync(join(tmpdir(), "history-recovery-"));
   dirs.push(dir);
   const db = new Database(join(dir, "signage.db"));
@@ -57,12 +61,13 @@ function fixture(old = 0, provisioned = true) {
     db.prepare(
       "INSERT INTO provider_quota_metadata VALUES (?,'ACTIVE',0,?)",
     ).run(provider, old);
-    for (let i = 1; i <= old; i++)
-      db.prepare("INSERT INTO provider_quota_consumptions VALUES (?,?,?)").run(
-        provider,
-        i,
-        i % 2 ? 200000001 : 10,
-      );
+    const insert = db.prepare(
+      "INSERT INTO provider_quota_consumptions VALUES (?,?,?)",
+    );
+    // One Transaction: large histories stay fast under a parallel test run.
+    db.transaction(() => {
+      for (let i = 1; i <= old; i++) insert.run(provider, i, at(i));
+    })();
   }
   const lock = {
     directory: dir,
@@ -461,15 +466,39 @@ test.each(["backwards", "throws", "malformed", "continuity"])(
     expect(proofs.every((p) => inspectWaitEvidence(p) === null)).toBe(true);
   },
 );
-test("B43-11 production assurance unavailable never excludes old history", () => {
+test("Q-01 counts old history by Timestamp without any Wait clock", () => {
   const f = fixture(1);
   fakeWait.read = () => null;
-  expect(f.recovery.recover()).toBe(false);
-  f.advance(90000000, false);
-  f.stabilize();
-  expect(f.recovery.waitEvidence()).toEqual([]);
+  // The old row (1ms ahead) is inside the 1s Window: blocked by Quota.
   expect(f.recovery.recover()).toBe(false);
   expect(f.gate.beginAttempt(provider)).toBeNull();
+  f.stabilize();
+  expect(f.recovery.waitEvidence()).toEqual([]);
+  expect(f.recovery.recover()).toBe(true);
+  expect(f.gate.beginAttempt(provider)).not.toBeNull();
+});
+test("Q-01 a future row entering the 1s Window after the Gate check blocks the Tx-Q reservation", () => {
+  // After stabilize() now is 200070000; the row is just outside the 1s reach.
+  const future = 200070000 + 1000 + 2000 + 1001;
+  const f = fixture(1, true, () => future);
+  f.stabilize();
+  expect(f.recovery.recover()).toBe(true);
+  const q = f.gate.beginAttempt(provider);
+  expect(q).not.toBeNull();
+  f.advance(1001); // now = future - 3000: the row enters the 1s Window
+  const r = f.runtime.reserve({
+    providerKey: provider,
+    attempt: q!.quotaAttempt,
+    trust: () => f.gate.quotaTrust(provider),
+  });
+  expect(r.reservation).toEqual({
+    outcome: "quota_blocked",
+    reason: "quota_exhausted",
+    recheckAtMs: future + 3001,
+  });
+  expect(r.registered).toBe(false);
+  expect(f.rows()).toHaveLength(1);
+  f.gate.endAttempt(q!.attempt);
 });
 test("B43-12 F-01 actual Commit receipt, not empty Startup, authorizes runtime cutoff 0", () => {
   const f = fixture(0, false);
@@ -497,19 +526,24 @@ test("B43-12 empty copied Metadata cannot forge F-01 receipt", () => {
   expect(f.recovery.recover()).toBe(false);
 });
 test.each([
-  [20, 60000],
-  [400, 3900000],
+  [20, 3600000],
+  [400, 86400000],
 ])(
-  "B43-14 limiting history %i blocks new quota and never changes Control State",
-  (count, waited) => {
-    const f = fixture(count);
+  "Q-01 old history with %i rows inside the Window blocks until the rows leave it, without changing Control State",
+  (limit, width) => {
+    // Half of the rows are recent (fixture), so the Window holds exactly the limit.
+    const f = fixture(limit * 2);
     f.recovery.drainAndClassify();
-    f.advance(waited, false);
     f.stabilize();
     expect(f.recovery.recover()).toBe(false);
     expect(f.gate.beginAttempt(provider)).toBeNull();
+    // Recent rows (200000001) leave at t + width + 2s; exact bounds are unit-tested.
+    f.advance(width, false);
+    f.stabilize();
+    expect(f.recovery.recover()).toBe(true);
+    expect(f.gate.beginAttempt(provider)).not.toBeNull();
     expect(f.db.prepare("SELECT * FROM acquisition_control").all()).toEqual([]);
-    expect(f.rows()).toHaveLength(count);
+    expect(f.rows()).toHaveLength(limit * 2);
   },
 );
 test("B43-15 Clock recovery never releases Recovery or independent management stop", () => {
@@ -774,22 +808,16 @@ const rangeRows = (f: ReturnType<typeof fixture>) =>
       "SELECT range_id,start_sequence,end_sequence FROM history_uncertain_ranges ORDER BY range_id",
     )
     .all();
-test("B43-04/05/09 second in-process Clock failure waits per Range and revokes the interval's Trial", () => {
+test("B43-04/05/09 second in-process Clock failure records each Range, needs no Range Wait and revokes the interval's Trial", () => {
   const f = secondFailure();
   f.setOs(true);
   f.stabilize();
-  // Range 1 has completed its 1m Wait; Range 2 starts its own Wait only now.
+  // Q-01: Ranges are still recorded, but counted by Timestamp (no Range Wait).
   expect(f.recovery.drainAndClassify()).toBe(true);
   expect(rangeRows(f)).toEqual([
     { range_id: 1, start_sequence: 1, end_sequence: 1 },
     { range_id: 2, start_sequence: 2, end_sequence: 2 },
   ]);
-  expect(f.recovery.recover()).toBe(false);
-  for (let i = 0; i < 11; i++) f.advance(5000);
-  f.advance(4999);
-  expect(f.recovery.recover()).toBe(false);
-  expect(f.gate.beginAttempt(provider)).toBeNull();
-  f.advance(1);
   expect(f.recovery.recover()).toBe(true);
   expect(
     inspectAuthenticatedHistory(f.recovery.source, f.repo)?.evaluation,
