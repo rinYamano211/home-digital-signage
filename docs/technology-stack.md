@@ -2312,25 +2312,28 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 | 未確認のまま | `startTime: "now"`の丸め、`intervals[].startTime`の整列の細部、実降雨時の`values`の値と表示（実降雨がなかった。#13）、同一APIキーを他のSenderが使っていないこと、Backoffの1分・2分の実測（単体テストでは確認済み）、障害中の画面の実時間変化（10分・30分の境界）、取得中のShutdown Abortの実機（CIの結合テストで確認済み） |
 | 記録していない | `requestStartedAt`が分境界の直前にあるときの`invalid_response`（起点スロットの欠損）の発生頻度。実機の取得失敗の理由の内訳。`requestStartedAt`とHTTP開始との差（実機での計測は未実施） |
 
-##### 再起動後の保守的な待機（確認した制限）
+##### 再起動後のQuota待機（#117で廃止）
 
-再起動後のQuotaは、技術スタックD-03の「旧履歴の保守的な計上」に従い、旧履歴（`cutoffSequence`以前の消費履歴）を全件その窓へ計上し、窓ごとの待機（1秒窓=1分、60分窓=65分、24時間窓=25時間）が終わるまで取得を抑止する。待機は再起動をまたいで引き継がず、CLEAN Lifecycleでも短縮しない（実装は将来）。
+2026-11-14の実機検証時点では、再起動後のQuotaはD-03の「旧履歴の保守的な計上」に従っていた。旧履歴（`cutoffSequence`以前の消費履歴）を全件その窓へ計上し、窓ごとの待機（1秒窓=1分、60分窓=65分、24時間窓=25時間）が終わるまで取得を抑止した。
 
-| 旧履歴 | 再起動後の降雨 |
+| 旧履歴 | 再起動後の降雨（廃止前の動作） |
 |---|---|
 | 20件未満（約100分未満の稼働） | 60分窓は止まらない。Gate・Clock Trustの再開待ち（最大約10分）だけ。2026-11-14 13:30ごろの再起動で観測 |
-| 20件以上 | 約65〜70分、取得できない（5分周期のRecoveryの再確認が加わる）。**実機で2回確認**（15:06→16:16、18:07→19:17。ともに約70分） |
-| 400件以上（約33時間の稼働） | 約25時間、取得できない。**コードからの推定で、実機は未観測** |
+| 20件以上 | 約65〜70分、取得できない。**実機で2回確認**（15:06→16:16、18:07→19:17） |
+| 400件以上（約33時間の稼働） | 約25時間、取得できない。2026-11-21の#12の実機検証で、再起動（14:13:38）の後90分以上取得しないことを観察した |
 
 - 影響を受けるのは降雨（Tomorrow.io）だけである。Schedule・Open-Meteoの3つはQuota対象外で影響しない。降雨帯は、取得できなくなってから10分で更新待ち、30分で「取得できません」になる。
-- **方針A（確認した制限として、現行の保守的な動作を受け入れる）**：ユーザー判断（2026-11-14）。Quota超過を起こさない安全側の動作であり、MVPでは変更しない。
-- **案C（未採用）**：信頼できる旧履歴を時刻（`reserved_at_ms`）で評価し、窓の外の行を除外する。D-03の改訂と、予約時のClock Trustの証跡（Schema v4）または全行を信頼する簡略化が必要になる設計変更であり、**採用していない。Issueも作成していない。** #13の72時間試験の前に、再検討するか判断する。
-- #13の72時間試験の途中で、クラッシュ・更新・設定変更による再起動が起きると、上の影響が出る。
+- 当初は方針A（確認した制限として受け入れる。2026-11-14）としていた。
+- 2026-11-21のユーザー判断で、家庭用MVPとして過剰な設計とし、[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)で窓別の待機を廃止した。
+- 新しい規則は[Q-01](#quota-simplification-issue-117)に従う。Clock TRUSTEDの下で、全Consumptionを`reserved_at_ms`と暫定2秒マージンで評価する。未来の時刻の行は、対称の窓（`|now − t| ≤ 窓幅 + 2秒`）で数える。
+- 再起動後の降雨は、各窓の上限に達していなければ、Clock Trust・Gate・Recoveryの再開条件の成立後すぐに取得できる。**未実装**で、実装と実機確認は#117で行う。
+- 残るリスク（確認した制限）：時計が遅れていた時期の行を少なく数え、Provider側のQuota制限に抵触する可能性がある。429を受信した場合は既存のBackoffで扱うが、Provider側の拒否の動作や利用制限の詳細は保証しない（[Q-01](#quota-simplification-issue-117)）。
+- 旧記録の「案C（未採用）」は、Q-01の検討で、より簡素な規則に置き換えた。
 
 ##### 運用上の注意
 
 - `npm run start:backend`は、`backend.env`を自動では読み込まない。本番は、systemdの`EnvironmentFile`で渡す（#12）。手動起動では、`set -a; . <backend.envのパス>; set +a`で読み込んでから起動する。`backend.env`・`weather.json`の内容は、表示・記録しない（AGENTS.md 6）。
-- 再起動後の降雨取得の待機時間は、旧Quota履歴の件数によって異なる。旧履歴20件未満では約10分で再開した実測例があり、20件以上では約65〜70分の待機を実機で2回確認した。400件以上では約25時間の待機が発生する可能性があるが、これはコードからの推定であり実機未観測である。不要な再起動（設定の再読み込み・動作確認）を避ける。
+- 再起動後の降雨取得の窓別の待機は、#117で廃止した（[Q-01](#quota-simplification-issue-117)。未実装）。実装までは、上の表の待機（最大約25時間）が起こる。不要な再起動（設定の再読み込み・動作確認）を避ける。
 
 #### MVPで許容する簡略化
 
@@ -2344,7 +2347,7 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 | 6 | Tomorrow.ioの窓定義へ厳密には追従しない | 16.4 |
 | 7 | DBを再作成したら再Provisioning | 上記 |
 | 8 | Process再起動でCooldown（5秒）を復元しない | F-02 |
-| 9 | 再起動後の保守的なQuota待機（約65〜70分。400件以上で約25時間）を許容する（方針A） | 案Cの検討。#13の72時間試験の前に判断（上記「実機検証の結果（PR 6）」） |
+| 9 | 再起動後のQuotaは、窓別の待機なしで全Consumptionを時刻で評価する（[Q-01](#quota-simplification-issue-117)）。時計が遅れていた時期の行を少なく数えるリスクを受け入れる | #117で実装・実機確認。Tomorrow.ioの429が頻発する場合に再検討 |
 
 簡略化しても、Quota履歴、Clock・History Trust、Fail Closed、送信前のTx-Q記録は維持する。
 
@@ -3463,7 +3466,7 @@ Provider送信用Clock TrustのOS同期確認入力として、MVPでは次を�
 - Adapterは確認結果の取得・保持だけを担い、既存`ClockTrustMonitor`の同期Callbackへ結果を渡す。Clock Trust・History Trust・Quota Guardの判定、Trust Epoch、状態遷移は変更しない。
 - `no`・取得失敗では以前の成功結果を破棄する。成功を生成するFallbackは設けない。確認できない場合はFail Closedとする。
 - `NTPSynchronized=yes`は、直近のNTP通信成功や絶対時刻誤差の上限を保証しない。MVPはこの残余リスクを受け入れ、暫定値と同様に実機検証の対象とする。
-- RTC-only送信は禁止する（RTCだけで同期確認成功としない）。Window Waitの本番無効と保守的Quota計上は、4B-3のまま維持する。
+- RTC-only送信は禁止する（RTCだけで同期確認成功としない）。Quotaの計数は[Q-01](#quota-simplification-issue-117)に従う（#117）。
 - Adapterの実装と、Gate Factory・Startup等への本番配線は別工程とする。本節の採用だけでは本番送信を有効にしない。
 
 <a id="pr-c-c-impl-5b4-history-restart"></a>
@@ -3477,7 +3480,7 @@ Provider送信用Clock TrustのOS同期確認入力として、MVPでは次を�
 - Tomorrow.ioの内部Rolling Window上限400回 / 24時間、20回 / 60分、1回 / 1秒と各窓の暫定2秒マージンを維持する。U-12のダッシュボード確認値とは区別する。
 - Provider計上遅延の上限は不明であり、以下の待機はProvider側の計上完了を保証しない。この残余リスクは**レベルBとして受容**する。計上遅延上限を推測した安全証明にはしない。
 - HTTP未送信・Timeout・AbortでもCommit済みQuota消費は保持する。DB・Clock・Quota・Historyの必要条件が不確実ならFail Closed。待機だけでは欠損履歴や管理外Restoreを修復できない。
-- Quota予約証拠、窓別待機証拠、管理者承認・隔離証拠、History Trustの確認事実は別物とし、単なるBooleanやSequence番号を送信許可にしない。
+- Quota予約証拠、窓別待機証拠（#117で廃止。[Q-01](#quota-simplification-issue-117)）、管理者承認・隔離証拠、History Trustの確認事実は別物とし、単なるBooleanやSequence番号を送信許可にしない。
 
 <a id="pr-c-c-impl-5b4-mvp-policy"></a>
 
@@ -3491,7 +3494,7 @@ Provider送信用Clock TrustのOS同期確認入力として、MVPでは次を�
 - Clock Trustが送信条件を満たし、SUSPENDED等の独立停止理由がない。
 - 新規Quota予約Transaction内でも既存Quota Guardが成立する。
 
-Startup成功と送信許可は別であり、上記が成立しても通常Scheduler・Tx-Q・Send Gateの判定を省略しない。再起動前の単調時計証拠は引き継がず、Plan Dの各Window待機未完了では旧履歴を全件計上し、Quotaを満たす範囲でのみ送信候補とする。通常クラッシュには独立管理者隔離を追加しない。
+Startup成功と送信許可は別であり、上記が成立しても通常Scheduler・Tx-Q・Send Gateの判定を省略しない。再起動前の単調時計証拠は引き継がず、[Q-01](#quota-simplification-issue-117)の計数でQuotaを満たす範囲でのみ送信候補とする（Plan Dの全件計上は#117で廃止）。通常クラッシュには独立管理者隔離を追加しない。
 
 Fingerprint不一致、履歴欠落・破損・分類不能、DB / Lifecycle / Boundary不整合は停止・診断・手動対応とする。Clock Trust不足やGuard確認不能でも送信は停止するが、Clock単独障害を一律に恒久的な管理者隔離へ昇格させず、既存Clock Recoveryで安全に確認できれば自動回復候補へ戻せる。
 
@@ -3501,6 +3504,8 @@ H54-31は追加承認により本MVP方針へ正式変更した。前回RUNNING�
 
 **P0-1：Startup境界と2系統の待機**
 
+**#117で改訂**：案Dの窓別待機は[Q-01](#quota-simplification-issue-117)で廃止した。以下の案Dの表と、管理者復帰の条件にある案Dの完了は適用しない。Startup境界と管理者承認後の独立25時間隔離（例外的な手動経路）は維持する。
+
 Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有BackendStore Connectionと既存排他規約の下でStartup Transactionにより起動境界を確定する。Providerごとの履歴Snapshot・cutoffSequenceと履歴Fingerprintを今回Process・boot_id・generationに拘束する。Commit未確定の境界は採用しない。Transaction確定後も、固定履歴境界・単調時計連続性・Window別開始時点の証拠を確認して初めて案D待機を開始する（D-04のR55-04）。`sequence <= cutoffSequence`を再起動前Consumptionとし、RowのTimestampだけで新旧を分類しない。
 
 | 対象Quota窓 | 案Dの保守的待機 | 待機前後の計上 |
@@ -3509,13 +3514,15 @@ Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有Backen
 | 60分 | 65分 | 同上。1秒窓の完了を代用しない |
 | 24時間 | 25時間 | 同上。短い窓の完了を代用しない |
 
-各窓の証拠は独立し、Backend Process再起動で全失効する。通常復帰では窓別待機が未完了でも、旧履歴全件を各窓へ計上する保守的Quota評価を許容する。これは通常復帰の他の安全条件を省略する許可ではない。
+（以下は#117で廃止した案Dの記録）各窓の証拠は独立し、Backend Process再起動で全失効する。通常復帰では窓別待機が未完了でも、旧履歴全件を各窓へ計上する保守的Quota評価を許容する。これは通常復帰の他の安全条件を省略する許可ではない。
 
 前回RUNNING・OS Bootの変更だけでは管理者復帰へ進めず、上記MVP条件で独立検証する。重大不整合等で自動復旧できない場合のみ例外的手動対応へ進む。Marker不正・欠損・DB不整合はFail Closedとし、正常なRUNNINGと同一視しない。管理者承認成立後に**別起点の25時間隔離**を開始し、Provider HTTP・新規Tx-Qを禁止する。承認と隔離証拠は今回Processのメモリのみで保持し、再起動で失効する。案D待機の経過を管理者承認として流用せず、管理者隔離の経過を案Dの起動境界証拠として流用しない。
 
-管理者復帰は、有効な承認 AND 管理者隔離25時間完了 AND 案Dの1分・65分・25時間すべて完了 AND 起動境界・単調時計・DB・Clock・History・Providerキー排他利用の再検証成功を要求する。通常Quota Guard・Tx-Q・Send Gate判定は迂回せず、管理停止SUSPENDED等の独立停止も解除しない。
+管理者復帰は、有効な承認 AND 管理者隔離25時間完了 AND ~~案Dの1分・65分・25時間すべて完了~~（#117で削除） AND 起動境界・単調時計・DB・Clock・History・Providerキー排他利用の再検証成功を要求する。通常Quota Guard・Tx-Q・Send Gate判定は迂回せず、管理停止SUSPENDED等の独立停止も解除しない。
 
 **P0-2 / P1-3：Clock回復と履歴の保守的評価（案A）**
+
+**#117で改訂**：以下の表の「各Quota窓での評価」は[Q-01](#quota-simplification-issue-117)で置き換えた。全区分をTimestampで評価する。
 
 壁時計Trustのみの失効では、単調時計の継続性を確認できる限り管理者隔離25時間の待機証拠を保持する。Clock Trust回復とHistory Timestamp Trust回復は別判定であり、時計安定60秒だけで履歴を信頼済みにしない。
 
@@ -3528,6 +3535,8 @@ Startupは閉じたSend Gate・新規Tx-Q禁止の状態で行い、共有Backen
 今回ProcessのTimestamp信頼性が失われた場合は[D-03](#pr-c-c-impl-5b4-d03)のClock失効通知・同期Gate閉鎖・Runtime Valid凍結・Drain・境界検証・Range Commit確定後の待機開始に従う。Abort要求だけでDrain完了とせず、HTTP Adapter所有処理とQuota Transactionの終了を確認する。Drain不能・Commit unknown等でRange確定証拠を発行できなければFail Closed。
 
 **R-02：複数Clock異常範囲（採用確定）**
+
+**#117で改訂**：Rangeの記録は維持し、範囲ごとの窓別待機と、`C_w`の式は[Q-01](#quota-simplification-issue-117)で置き換えた。
 
 H_new_uncertainは範囲ごとにProvider識別子・Process Generation・Range ID・startSequence・endSequenceの永続記録と、待機開始の単調時計証拠・窓別待機状態のRuntime記録を分離する（[D-03](#pr-c-c-impl-5b4-d03)）。具体的な型名は固定しないが、`cutoffSequence < startSequence <= endSequence`、不確実範囲相互の非重複、全Consumptionの一意な区分所属、分類漏れ・二重計数禁止を必須とする。確定した境界を後から都合よく変更せず、異なる範囲の証拠を流用しない。
 
@@ -3589,7 +3598,7 @@ COMMIT;
 | CLEANでもHistory / Quota / Clock等の条件不成立 | 自動復帰禁止 |
 | 今回Startup TransactionがCommit unknown | 今回の起動境界・証拠を採用せずFail Closed |
 
-CLEANだけでHTTPを許可せず、案D・Quota / Clock / History・独立停止の検証を維持する。Startup前Markerの検証と今回RUNNING境界の確定を分離し、今回ProcessのCLEAN結果不明を次回の無条件拒否・無条件許可のどちらにも変換しない。
+CLEANだけでHTTPを許可せず、Quota（[Q-01](#quota-simplification-issue-117)）/ Clock / History・独立停止の検証を維持する。Startup前Markerの検証と今回RUNNING境界の確定を分離し、今回ProcessのCLEAN結果不明を次回の無条件拒否・無条件許可のどちらにも変換しない。
 
 **R-03：Shutdown Deadline Gate（採用確定）**
 
@@ -3724,11 +3733,13 @@ Lifecycle更新・Startup親・全Provider境界はAtomicに確定する。Times
 
 同一ProcessでStartupを無条件再試行しない。次回StartupではLifecycle・Startup親子・Quota履歴を独立検証する。前回RUNNINGや前回CLEANのOS Boot差を理由に毎回管理者隔離せず、MVP自動復旧条件を独立検証する。CLEAN・同一OS BootでもClock / History / Quota等の必要条件は省略しない。DB / Lifecycle不整合はFail Closed。R-01の「前回CLEAN Commit unknownと次回DB検証の独立性」を維持する。
 
-案Dの旧履歴はStartup Commit成功に加え、固定境界・単調時計連続性・各Window開始時点の証拠を確認し、1分・65分・25時間を窓別独立管理する。証拠失効時は該当待機を未完了とする。Process再起動では待機証拠を引き継がない。管理者隔離25時間は別起点・別証拠のまま維持する。
+（#117で廃止した案Dの記録）案Dの旧履歴はStartup Commit成功に加え、固定境界・単調時計連続性・各Window開始時点の証拠を確認し、1分・65分・25時間を窓別独立管理する。証拠失効時は該当待機を未完了とする。Process再起動では待機証拠を引き継がない。現行は[Q-01](#quota-simplification-issue-117)に従う。管理者隔離25時間は別起点・別証拠のまま維持する。
 
 <a id="pr-c-c-impl-5b4-d03"></a>
 
 ##### D-03：Clock異常Range・History分類・保守的Quota評価（確定設計・未実装）
+
+**#117で改訂**：本節のうちQuotaの計数（H_old・Rangeの窓別待機と全件計上、`C_w`の式、各Rangeの待機）は[Q-01](#quota-simplification-issue-117)で置き換えた。Range・Gate閉鎖・Drainの手順は維持する。
 
 ```sql
 CREATE TABLE history_uncertain_ranges (
@@ -3768,7 +3779,7 @@ CREATE TABLE history_uncertain_ranges (
 - 非空区間だけ永続化し、Range境界は確定後不変。通常運用でUPDATE・DELETE・統合しない。Range IDはProvider・Generation内で単調増加し、再利用しない。
 - 非重複・Runtime Valid証拠との非重複・全Consumptionの一意分類はRepository Transaction内で検証する。DDLだけで保証済みとはしない。
 - 登録条件は `cutoffSequence < startSequence <= endSequence <= lastSequence`。Startup時UNPROVISIONEDで後からF-01成功したProviderはD-02のRuntime Cutoff 0を使用する。
-- 待機開始時刻、待機完了状態、Valid区間はDBへ永続化しない。R-02の範囲に紐づく窓別証拠は今回Process内だけで保持する。
+- 待機開始時刻、待機完了状態、Valid区間はDBへ永続化しない。R-02の範囲に紐づく窓別証拠は今回Process内だけで保持する（窓別証拠は#117で廃止）。
 
 **Clock異常Rangeの検証・確定順序**
 
@@ -3780,7 +3791,7 @@ CREATE TABLE history_uncertain_ranges (
 6. 全Consumptionを検証し、不確実Sequence区間を固定する。
 7. 既存Range非重複、Valid証拠非重複、分類漏れなしを確認する。
 8. RangeをTransactionでINSERTし、Commit成功を確認する。
-9. Range別・窓別の単調時計待機証拠を開始する。
+9. ~~Range別・窓別の単調時計待機証拠を開始する。~~（#117で廃止。この手順は行わない）
 10. Clock / History / Quota / Recoveryを再検証し、全条件成立時のみ再開候補とする。
 
 開始境界は最後の信頼確認Sequenceとの対応が保証できる場合のみlastTrustedSequence+1を使用する。保証できなければ影響範囲を保守的に拡大し、安全な分類を構築できなければFail Closed。壁時計Timestampの逆算・検出時lastSequenceだけで境界を推測しない。
@@ -3788,6 +3799,8 @@ CREATE TABLE history_uncertain_ranges (
 Drain失敗はRange確定禁止、Commit unknownはRange確定証拠を発行せずFail Closed。分類漏れ・未解決ConnectionもFail Closed。Range確定前のProcess停止はRUNNING維持とし、次回はStartupで履歴・境界を検証しPlan Dで保守計上する。確認できない不整合は手動対応とし、Clock回復だけで過去の不確実履歴をValidへ昇格させない。
 
 **Runtime Valid証拠とQuota合算**
+
+以下の表・式・待機は、Quotaの計数について[Q-01](#quota-simplification-issue-117)で置き換えた（#117）。
 
 | 区分 | 証拠・窓評価 |
 |---|---|
@@ -3805,6 +3818,109 @@ Clock再異常でも単調時計継続性が保証されれば既存Range待機�
 
 
 Lifecycle / Startup / Rangeの各RepositoryはBackendStoreの単一Connectionを借用し、既存connection-coordination.tsのbusy / connectionUnresolved / blockedに従う。新しい専用DB Connectionや安全性を迂回するWriterを追加しない。
+
+<a id="quota-simplification-issue-117"></a>
+
+##### Q-01：Quota計数の簡素化（窓別の保守的待機の廃止）（[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)。設計確定・未実装）
+
+本節は、D-03・D-04・P0-1・P0-2・R-02・R55-04・4B-3のうち、**Quota窓の計数**に関する規定を置き換える。本書の他の節にある案D（Plan D）の窓別待機・全件計上・`C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w`の記述は、本節が優先する。
+
+**背景**：2026-11-21、#12の実機検証中にBackendを再起動（14:13:38、手動のRollback）した後、90分以上、降雨を取得しなかった。旧履歴（`cutoffSequence`以前）を時刻を見ずに全件計上するため、400件以上（5分周期で約33時間の稼働）あると、24時間窓（上限400件）が埋まったとみなし、再起動のたびに約25時間取得しない。家庭用MVPとして可用性に欠ける過剰な設計と判断した（ユーザー判断、2026-11-21）。
+
+**計数の規則**
+
+| 項目 | 規則 |
+|---|---|
+| 評価の前提 | 現在の時計がClock TRUSTED（既存の送信条件）。TRUSTEDでなければ、今と同じく新規Tx-Q・HTTPを行わない |
+| 対象の行 | Providerの全Consumption。H_old・H_new_valid・H_new_uncertain（Range内）を区別しない |
+| 窓の評価 | 各行の`t = reserved_at_ms`と暫定2秒マージンで、対称の包含規則（`now`と`t`の差の絶対値が`窓幅 + 2秒`以下）により評価する。過去の行（`t ≤ now`）では、既存の規則（`now − t ≤ 窓幅 + 2秒`）と同じになる |
+| 未来の時刻の行 | `t > now`の行は、`t − 窓幅 − 2秒`から`t + 窓幅 + 2秒`までの間だけ数える（1行が数えられる期間は、最長で窓幅の約2倍）。BLOCKEDにしない。窓幅より先の未来の行は、その時点では数えない |
+| 時刻の値の検証 | Timestampの順序の逆転・未来・`initializedAtMs`以前を理由にBLOCKEDにしない。行ごとに評価する |
+| 上限・マージン | 1秒1件・60分20件・24時間400件、暫定2秒は変更しない |
+
+`C_w = |{ c ∈ 全Consumption : |now − c.reserved_at_ms| ≤ w + 2秒 }|`
+
+未来の行の扱いは、ユーザー判断（2026-11-21、PR #118のレビュー）で対称の窓を採用した。不採用の`t = min(reserved_at_ms, now)`では、未来の行が時刻を過ぎるまで数え続ける。時計が進んでいた量をXとすると、1秒窓（上限1件）が約Xの間ふさがり、長時間待たないという#117の目的に合わない。
+
+**廃止するもの**
+
+- 案Dの窓別待機（1秒窓=1分、60分窓=65分、24時間窓=25時間）と、Range別の待機
+- Wait証拠（`HISTORY_WAIT_MS`・`WindowWaitEvidence`）による行の除外と、それに必要な待機開始・失効の規則
+- 管理者復帰の条件にある「案Dの1分・65分・25時間すべて完了」（案Dを廃止するため）
+
+**維持するもの**
+
+- Schema v3（**Schema変更・Migrationなし**）、Startup Boundary・Fingerprint（quota-history-v1）・Lifecycle
+- Clock異常時のGate閉鎖・Drain・Rangeの記録の手順（D-03）。Rangeの記録は残すが、Quotaの計数には使わない
+- 構造の検証（Sequenceの欠落・重複、Metadata・境界・DBの不整合）でのFail Closed
+- Tx-Qでの送信前の記録、Tx-Q内の再評価、F-01（Provisioning）の確認
+- CLEANの条件（R-01）、管理者認可・独立25時間隔離（D-04 U-03。重大不整合の例外的な手動経路で、未実装・Future）
+
+**理由とトレードオフ**
+
+- 取得は5分周期で、1時間12件・1日288件である。上限（20件・400件）に対して約1.4〜1.7倍の余裕がある。再起動しても保存済みの`nextAttemptAt`があるので、すぐには再取得しない。時刻が多少ずれても上限に届きにくい。
+- Schema・Migrationが要らず、変更が最も小さい。待機の仕組み自体を撤去するコードの整理は、必要なら別のIssueとする。
+
+**残るリスク（確認した制限）**
+
+- 時計が遅れていた時期の行は、実際より古く見えるため、実際の消費量を少なく数えるおそれがある。この過少計上の可能性を受け入れる。
+- 窓幅より先の未来の時刻の行（時計が大きく進んでいた時期の行）は、その時点では数えないため、同じく過少計上になりうる。
+- 過少計上により、Provider側のQuota制限に抵触する可能性がある。HTTP 429を受信した場合は、既存のBackoff・Retry-Afterの処理で扱う。Provider側の拒否の動作や、利用制限・アカウントへの影響の詳細は保証しない。
+- Tomorrow.ioの窓定義には厳密に追従しない（21.9の簡略化No.6）。
+
+**検討して採用しなかった案**
+
+| 案 | 内容 | 採用しない理由 |
+|---|---|---|
+| 封印 | 正常停止時に、Valid証拠のある行を永続化する | クラッシュ・電源断の後は25時間待つ |
+| 単調時計＋予約時の証跡 | 同じOS Bootでは単調時計、それ以外は予約時のClock Trustの証跡で評価する | Schema v4・Migration・Fingerprint v2が必要で、MVPには過剰。移行後の1回は25時間待つ |
+| 待機の短縮 | 案Dを残し、待機時間だけ短くする | 待機の仕組みと根拠のない待機時間が残る |
+| 現行の維持（21.9の方針A） | 保守的な待機を受け入れる | 長時間稼働後の再起動で約25時間、降雨が出ない |
+
+**時刻の進行と再評価（未来の時刻の行）**
+
+対称の窓では、時刻が進むと件数が減るだけでなく、未来の時刻の行が`t − 窓幅 − 2秒`に達して窓に入ることで、件数が増える場合もある。この性質は次のように扱い、規則・上限・マージンは変えない。
+
+| 観点 | 扱い |
+|---|---|
+| 上限の判定 | 予約の可否は、Tx-Q内の最新の`now`と全Consumptionで数えた件数で決める（U02-04）。事前評価・通知・`recheckAtMs`は送信許可ではない。各窓の件数が上限に達していれば、未来の行があっても予約しない |
+| `recheckAtMs`の算出 | 上限に達している窓ごとに、数えている行を退出時刻（`t + 窓幅 + 2秒 + 1ms`）の早い順に並べ、件数が上限未満になる最初の退出時刻を求め、窓の間の最大値を使う（既存の`max`の扱いと同じ）。Timestampの順序はSequenceの順序と一致しないことがあるので、Sequenceの順序を時刻の順序とみなさない |
+| 未来の行が後から入る場合 | 上の算出は、その後に窓へ入る行を考えないので、実際の解除時刻の下限になる。通知が早すぎることはあっても、遅すぎることはない。到達時になお上限なら、Tx-Q内で`quota_blocked`となり、その時点の`recheckAtMs`を算出し直す |
+| 長時間の停止 | 未来の行1件が数えられる期間は最長で約`2 ×（窓幅 + 2秒）`なので、停止は有限である。`recheckAtMs`を算出できない場合は、契機C（5分）で再評価する |
+| 予約後に入る未来の行 | 予約の時点で上限未満でも、その後に未来の行が窓へ入り、記録上の件数が一時的に上限を超えることがある。予約の時点の判定は守っているため、既存の過少計上のリスク（時計がずれていた行の扱い）に含めて受け入れ、先読みの判定は追加しない |
+
+**Recovery・Lifecycle・Send Gateとの関係**
+
+Q-01が廃止するのは、Quotaの計数に使う窓別待機だけである。Recovery・CLEAN・Send Gateの安全条件は緩和しない。
+
+| 対象 | Q-01の後の扱い |
+|---|---|
+| Recovery完了・Send Gate開放 | 廃止前から、Wait完了は条件ではなかった（D-03の再開案A、4B-3「Wait全窓完了を一律の必須条件にしない」）。Drain完了、Range Commitの成功、History評価がBLOCKEDでないこと、RuntimeHistoryの再開、Clock TRUSTED、Recovery停止理由の解除、管理停止なしは、すべて維持する。Quotaに余裕があることだけを理由に、Recovery停止理由を解除せず、Gateを開かない |
+| CLEAN適格性（R-01〜R-03） | 変更しない。History TRUSTEDは、旧履歴・不確実範囲がない分類に基づく判定であり、Waitの完了とは無関係である。RecoveryCleanEligibleの「Clock異常履歴の隔離未完了」・「Clock不確実履歴未解決」・「未完了Range」は、Rangeの確定（Drain・境界検証・Commit）が未完了であることを指す。CONSERVATIVEの送信候補とCLEAN適格性は、引き続き別に判定する |
+| 管理者承認後の独立25時間隔離（D-04 U-03） | 維持する。廃止した案Dの24時間窓の待機（25時間）とは別の起点・証拠である。管理者復帰の条件から「案Dの全窓完了」だけを外し、承認・隔離25時間・再検証の条件は維持する |
+| Wait Evidence | 後続の実装で、生成・検証を必須としない。`WindowWaitEvidence`・`HISTORY_WAIT_MS`・`recheckHint()`の待機期限（4B-3の再評価契機B）は、Quotaの計数に使わない。撤去するかどうかは実装PRの判断とし、範囲外の整理はしない |
+| 再評価の契機 | 全Consumptionが時刻で評価されるので、Quota抑止の解除時刻は契機A（`recheckAtMs`）で算出する。算出できない場合は契機C（5分の周期）を使う |
+| 計数規則の一致 | Gateの事前評価・Startup後の評価・Tx-Q内の再評価は、同じQ-01の規則で数える。事前評価だけで予約しない（U02-04）ことは維持する |
+
+**受入条件（実装PR）**
+
+既存の受入条件（D-03の手順、4B-3、[検証文書](verification/c-impl-5b4-history-trust-restart-recovery.md)）と重なるものは、回帰の確認として扱う。
+
+
+- 400件以上の旧履歴がある再起動の後、各窓の上限に達していなければ、Clock TRUSTEDとGate・Recoveryの再開条件の成立後すぐに予約できる（窓別待機がない）
+- 未来の時刻・順序が逆転した行があっても、BLOCKEDにならず、上の規則で数える
+- 上限（1 / 20 / 400）を超える予約が起きないことを単体テストで確認する
+- 構造の不整合では、今と同じくFail Closedになる
+- Clock TRUSTEDからUNTRUSTEDへの遷移で、新規Tx-Q・HTTPが停止する（D-03の手順1〜3の回帰確認）
+- Clock回復の後、Quota窓をQ-01の規則で再評価し、上限に達していなければ再開候補になる（Wait完了を待たない）
+- Gateの事前評価・Startup後の評価・Tx-Q内の再評価で、同じ履歴に対する窓の件数が一致する
+- 未来の時刻の行が`t − 窓幅 − 2秒`ちょうど・その1ms前・`t + 窓幅 + 2秒`ちょうど・その1ms後で、数える・数えないが規則どおりになる（1秒窓・60分窓・24時間窓）
+- 事前評価の後、Tx-Qまでの間に未来の行が窓へ入って上限に達した場合、Tx-Q内の再評価で予約しない
+- 上限に達している窓の`recheckAtMs`が、Timestampの順序がSequenceの順序と異なる履歴でも、退出時刻の順で正しく算出され、実際の解除時刻より遅くならない
+- `recheckAtMs`の到達時に、未来の行が入って上限のままなら、送信せず次の`recheckAtMs`を算出する
+- 未来の時刻の行があっても、対称の窓で数えた件数が上限に達していれば予約を許可しない。未来の行1件で、1秒窓が約6秒（2 ×（1秒 + 2秒））を超えて止まらない（境界値を含む）
+- Recovery未完了（Drain・Range Commit・History再評価・RuntimeHistory再開のいずれかが未完了）の状態では、Quotaに余裕があっても、Send Gateを開かない（4B-3「Recovery停止理由の保持とGate開放」の回帰確認）
+- Raspberry Piで、長時間稼働後の再起動から降雨の取得が再開することを確認し、`docs/verification/`へ記録する
 
 <a id="pr-c-c-impl-5b4-d04"></a>
 
@@ -3834,7 +3950,7 @@ Startupは前回Lifecycleだけでなく過去Startup Boundaryと対応履歴を
 4. cutoff_sequence以下のConsumptionをsequence昇順で読み取り、quota-history-v1の確定バイト列でSHA-256を再計算する。UNPROVISIONEDは既定のMetadata不在・COUNT 0を使用し、PROVISIONED / 0と区別する。
 5. 保存済みhistory_fingerprintと照合し、不一致・欠落・再現不能はFail Closedとする。
 6. cutoff後を含むConsumption全件の構造・Sequence連続性・履歴完全性・Metadata整合性をD-02のStartup Transaction内で検証する。
-7. 直前cutoff後のConsumptionも含め、Plan Dと既存Quota Guardで保守的に計上する。新規Quota予約Transaction内の全条件再評価を省略しない。
+7. 直前cutoff後のConsumptionも含め、[Q-01](#quota-simplification-issue-117)の規則と既存Quota Guardで計上する。新規Quota予約Transaction内の全条件再評価を省略しない。
 
 直前cutoff以前のConsumptionと保存Fingerprintの整合性を検証する一方、より古いBoundary Snapshot / Digest自体の改変を網羅的に検出するものではなく、古いBoundaryごとのFingerprint再計算は必須としない。直前cutoff後のConsumptionは当該Fingerprintの対象外であり、構造・Sequence検証と保守的Quota計上で扱う。形式を保った対象外履歴の改変までHashで検出できるとはしない。外部Sender不在・実HTTP送信回数も証明しない。個人利用MVPとしてこの保証上の限界を理解して案Aを採用し、新Table・カラム・キャッシュ・Versionを追加しない。
 
@@ -3989,8 +4105,8 @@ FingerprintはDB内の履歴整合性確認に用いる。外部Senderの不存�
 | ID | 契約 |
 |---|---|
 | U02-01 | History判定をTRUSTED / CONSERVATIVE / BLOCKEDの3状態で表す。既存Clock Trust型・DBのhistory_status・Recovery状態とは区別する |
-| U02-02 | H_old / H_new_valid / H_new_uncertainを排他的に分類し、Rangeごと・Windowごとに保守的に計上する |
-| U02-03 | 単調時計の待機証拠はProcessメモリのみ。永続Rangeがあっても再起動前の待機完了を復元しない |
+| U02-02 | H_old / H_new_valid / H_new_uncertainを排他的に分類する。Quotaの計数は[Q-01](#quota-simplification-issue-117)に従う（Rangeごと・Windowごとの保守的計上は#117で廃止） |
+| U02-03 | ~~単調時計の待機証拠はProcessメモリのみ。永続Rangeがあっても再起動前の待機完了を復元しない~~（#117で待機証拠を廃止） |
 | U02-04 | Quota予約Transaction内でもTrustを再評価する。事前評価のみを送信根拠にしない |
 | U02-05 | Clock / Recovery / Historyは独立判定。一つの回復で他の条件・停止理由を解除しない |
 | U02-06 | 履歴不整合・必要証拠不足・分類不能ではFail Closed。固定historyComplete=trueでGuardを通過させない |
@@ -4002,7 +4118,7 @@ FingerprintはDB内の履歴整合性確認に用いる。外部Senderの不存�
 | CONSERVATIVE | 履歴完全性、確定Range境界、排他的分類、Window別保守的計上が成立する場合だけ使用。不明履歴を便宜的に許可する状態ではない |
 | BLOCKED | 上記の評価に必要な構造・完全性・境界・証拠を確認できない。新規Tx-Q・HTTPを許可しない |
 
-CONSERVATIVEでもD-03の未完了範囲を各Windowへ全件計上し、二重計上・過少計上を防ぐ（D04-R02）。各Windowの待機完了はTimestampのValid昇格・履歴完全性の回復ではない。Clock回復だけで過去不確実Rangeを正常履歴へ再分類しない。Clock・Recovery・管理停止等が送信を禁止していれば、Historyが評価可能でも送信不可。TRUSTED / CONSERVATIVEの判定を従来のBooleanへ固定値で置換せず、既存Quota Guardとの結合を実装・検証対象とする。
+CONSERVATIVEでのQuota計数は[Q-01](#quota-simplification-issue-117)に従い、全Consumptionを時刻で評価する（D04-R02は#117で改訂）。二重計上・過少計上を防ぐ。Clock回復だけで過去不確実Rangeを正常履歴へ再分類しない。Clock・Recovery・管理停止等が送信を禁止していれば、Historyが評価可能でも送信不可。TRUSTED / CONSERVATIVEの判定を従来のBooleanへ固定値で置換せず、既存Quota Guardとの結合を実装・検証対象とする。
 
 **U-03：管理者操作・認可（採用済み8項目）**
 
@@ -4013,7 +4129,7 @@ CONSERVATIVEでもD-03の未完了範囲を各Windowへ全件計上し、二重�
 | U03-03 | inspectで暗号学的乱数32バイトの一回限りTokenを発行。初期有効期間5分を単調時計で判定し、再発行時は旧Token失効。approveの検証試行時に消費し、失敗後も再利用禁止 |
 | U03-04 | TokenをProcess Instance ID、OS Boot ID、Startup Generation、Provider Key、cutoffSequence、History Fingerprint、diagnosisRevisionに拘束し、期限・境界を再確認する |
 | U03-05 | ローカルUDSで管理者を認可。CLIのToken入力はコマンドライン引数に含めずstdinを優先。Token・APIキー等のSecretを監査ログへ記録しない |
-| U03-06 | 管理者承認後の独立25時間隔離、Plan Dの窓別待機、再検証を要求する |
+| U03-06 | 管理者承認後の独立25時間隔離と再検証を要求する（Plan Dの窓別待機は#117で廃止） |
 | U03-07 | cancelのRecovery承認に関する責務と、Provider永続管理停止SUSPENDEDを分離する。取消しをResume・SUSPENDED解除として扱わない |
 | U03-08 | Token・承認はProcessメモリのみ。再起動・異常で失効し、確認不能ならFail Closed |
 
@@ -4041,6 +4157,8 @@ cancelとRECOVERED確定処理を直列化し、競合しても誤って送信�
 
 **R55-04：Plan Dの待機開始証拠**
 
+**#117で改訂**：Plan Dの待機は[Q-01](#quota-simplification-issue-117)で廃止した。以下のうち、管理者隔離25時間の規定だけを維持する。
+
 Plan DはStartup境界Commit成功だけでは開始しない。対象履歴の固定境界確定、単調時計の連続性確認、対象Windowの待機開始時点確定の証拠を要求する。証拠が失効したWindowの待機は未完了として扱い、経過時間を推測・復活させない。管理者隔離25時間は正当なapprove成立後に開始し、Plan Dと起点・証拠を独立保持する（D04-R03）。承認だけで送信しない。cancel・失効・再承認時にも独立SUSPENDEDを維持し、他責務の停止理由を解除しない。再起動で承認・Tokenを引き継がず、StartupとRecoveryを再評価する。
 
 UDSの接続成功・ローカル接続という事実だけで管理者と認めない。Peer Credentials取得とOS権限設定の実装可能性・失敗時動作を確認し、未確認・取得不能・認可不成立なら管理操作を許可しない（D04-R06）。Peer Credentialsの具体API、Socket配置・所有権、権限値は今回推測で固定せず、実装・実機検証事項とする。
@@ -4065,7 +4183,7 @@ CanMarkClean = OperationallyDrained AND RecoveryCleanEligibleを維持する。D
 
 | 実装区分 | 対象 |
 |---|---|
-| MVP必須 | 明示Migration、v3保存・Startup Atomicity、履歴・Boundary整合、Fingerprint、Plan D保守計上、Clock / History / Quota判定、通常クラッシュの条件付き自動復旧、Gate・CLEAN・Deadline保護 |
+| MVP必須 | 明示Migration、v3保存・Startup Atomicity、履歴・Boundary整合、Fingerprint、[Q-01](#quota-simplification-issue-117)の計数（Plan D保守計上は#117で廃止）、Clock / History / Quota判定、通常クラッシュの条件付き自動復旧、Gate・CLEAN・Deadline保護 |
 | 重大不整合時の例外経路 | RecoveryAdminService / UDS / Token、復旧4状態、独立管理者25時間隔離と再検証、SUSPENDED管理停止。通常クラッシュの毎回の必須経路にしない |
 | 後続実機・運用確認 | Sleep抑止・単調時計、B_clean、SQLite耐久、UDS認可、独立Fingerprintベクトル・既存Guard結合、長期運用の妥当性 |
 
@@ -4107,7 +4225,7 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 | 対象 | 4B-3での役割・現在との差 |
 |---|---|
 | RuntimeHistory / Runtime Valid | 4B-2の同一Connection・Startup Scope・予約証拠・Clock Epoch検証を再利用。同一インスタンス内の影響証拠失効、局所登録世代、Recovery限定再開を追加する設計。現行freezeは不可逆で再開機能なし |
-| history-boundaries.ts | Drain Boundary / Window Wait / Runtime Provisioningの内部発行・認証・失効を実装する設計。現在のinspect関数はnullを返す閉じた発行境界で、本番証拠は未発行 |
+| history-boundaries.ts | Drain Boundary / Window Wait（#117で廃止）/ Runtime Provisioningの内部発行・認証・失効を実装する設計。現在のinspect関数はnullを返す閉じた発行境界で、本番証拠は未発行 |
 | HistoryRangeRepository | 共有Connection・BEGIN IMMEDIATE・全履歴再読込・Range非重複検証・Commit確認を再利用。Drain発行元と接続し、不確実Timestampの扱いを構造検証から分離する |
 | History評価・Quota Guard / Repository | 既存の分類・保守計数・予約・Read-only Reconcileを再利用。認証済み評価を既存History評価経路へ集約し、既存Guard / Tx-Q内へ接続する。別Repository・別Guardは追加しない |
 | Recovery内部制御 | Clock失効・同期停止・Freeze・Drain・Range・Wait・再判定を調整する。History再開、Gate開放、CLEAN適格性は別操作・別判定 |
@@ -4125,7 +4243,7 @@ F-01では管理者がキー排他利用・過去利用状況・Clock Trust・�
 7. 影響した可能性のあるSequenceのRuntime Valid証拠を失効させる。開始境界を証明できなければ保守的に拡大し、安全な分類不能なら停止する。
 8. 全ConsumptionのH_old / H_new_valid / H_new_uncertainへの排他的所属、既存Range・残存Validとの非重複、分類漏れなしを検証する。
 9. 不確実Rangeを既存Repository Transactionで確定し、Commit成功を確認する。空Rangeは作らず、既存Rangeの変更・統合で重複を解消しない。
-10. Commit成功後、固定境界・単調時計連続性・対象Windowの開始時点を確認してWaitを開始する。
+10. ~~Commit成功後、固定境界・単調時計連続性・対象Windowの開始時点を確認してWaitを開始する。~~（#117で廃止。この手順は行わない）
 11. Clock・History・Quota・Recovery・Send Gateの独立条件を再評価する。
 
 RuntimeHistoryは原則同一インスタンスを維持する。内部に局所的な登録世代を設けFreeze時に更新し、Freeze前Trialを再開後に再利用させない。TrialのClock Epochと登録世代を双方検証する。再開権限はRecovery内部に限り、再開しても影響Validを復活させず、Gate開放と同義にしない。汎用Epoch機構・新永続Tableは追加しない。Freeze中にsavedが確定したConsumptionは保持し、Valid登録できなければ保守的分類・Recoveryへ進む。未分類のまま次の送信を許可しない。
@@ -4143,10 +4261,10 @@ Commit unknownは既存Quota RepositoryのRead-only Reconcileで保存前・予�
 | 証拠 | 発行条件・拘束 | 失効・拒否 |
 |---|---|---|
 | Drain Boundary | 同期Gate閉鎖、新規予約禁止、実Drain終了と最終Sequence検証後のみ。Provider / Generation / Process / Startup Scope・cutoff・start / end / lastSequenceへ拘束 | 未終了HTTP、未解決Tx / unknown、Connection / Startup Scope変更、境界不一致では発行・採用しない |
-| Window Wait | 確定Startup境界、またはRange Commit成功後の固定境界・開始時点・連続単調時計を確認。H_oldと各Rangeを独立に識別し、Scope / 対象Range・終端Sequence / Windowへ拘束 | 単調時計逆行・取得失敗・連続性不明・Process再起動で該当証拠失効。別Window / Range / Scopeへの流用不可 |
+| Window Wait（#117で廃止。発行・検証しない） | 確定Startup境界、またはRange Commit成功後の固定境界・開始時点・連続単調時計を確認。H_oldと各Rangeを独立に識別し、Scope / 対象Range・終端Sequence / Windowへ拘束 | 単調時計逆行・取得失敗・連続性不明・Process再起動で該当証拠失効。別Window / Range / Scopeへの流用不可 |
 | Runtime Provisioning | F-01明示Provisioning成功確定と現行Startup Scope確認後のみ。Provider / Generation / ProcessとRuntime Cutoff 0へ拘束 | 通常Startup・空履歴だけから発行しない。F-01 unknown、Scope / Connection変更、再起動では不採用。永続NULLを0へ書換えない |
 
-Range Waitは**Clock Trust回復完了前でも**Range Commit成功と単調時計の連続性を確認できれば開始可能。壁時計Trust失効と単調時計不連続は別であり、Clock Epoch変更だけで連続性を確認できる既存Waitを失効させない。一方、Clock回復だけで失効Waitや不確実TimestampをValidへ戻さない。Sleep / Suspend抑止・常時稼働はMVP運用前提で、複雑な専用監視は追加しない。Piでの単調時計連続性保証は未検証で、抑止だけを証明にしない。
+（以下の3段落は#117で廃止したWaitの記録。現行の実装仕様ではない）Range Waitは**Clock Trust回復完了前でも**Range Commit成功と単調時計の連続性を確認できれば開始可能。壁時計Trust失効と単調時計不連続は別であり、Clock Epoch変更だけで連続性を確認できる既存Waitを失効させない。一方、Clock回復だけで失効Waitや不確実TimestampをValidへ戻さない。Sleep / Suspend抑止・常時稼働はMVP運用前提で、複雑な専用監視は追加しない。Piでの単調時計連続性保証は未検証で、抑止だけを証明にしない。
 
 単調時計健全性・連続性の判定は、Wait Evidenceの発行・失効を管理する内部責務が所有する。既存TimeSourceとClockTrustMonitorを再利用し、利用可能な観測情報を用いる。Clock Monitorの5秒周期・15秒鮮度は送信時のClock Trust条件であり変更しないが、長時間Waitの失効しきい値へ転用しない。GC停止・同期I/O等による観測間隔超過だけではWaitを失効させず、壁時計Trust失効・Clock Epoch変更だけでも失効させない。観測間隔超過と実際の単調時計連続性不明は同義ではない。単調時計逆行・取得失敗・不正値、その他実際に健全性・連続性を保証できない異常では該当証拠を失効させFail Closedとする。Trust状態・Epochだけでこの区別を推測せず、新しい汎用Clock監視Serviceや専用Suspend監視は追加しない。
 
@@ -4156,7 +4274,7 @@ Range Waitは**Clock Trust回復完了前でも**Range Commit成功と単調時�
 
 TimeSourceの単調時計はprocess.hrtime.bigint()を使う。[Node.js 24のAPI説明](https://nodejs.org/docs/latest-v24.x/api/process.html#processhrtimebigint)は任意起点の高精度経過時間であり、壁時計日時として使わない。[Linux CLOCK_MONOTONIC](https://docs.kernel.org/core-api/timekeeping.html)は一般にSuspend中を計上せず、NTP等の周波数補正を受ける。Suspend中の非計上は待機完了を遅らせる側だが、Sleep抑止や単調非減少だけで実時間に対する速度精度まで証明できない。補正で時計が速く進む場合には、必要な実経過時間を満たす前に完了判定するリスクを評価する必要がある。
 
-既存の1分・65分・25時間を維持し、各Windowで必要な実経過時間より早い完了判定・履歴除外が生じない前提・制約を独立に検証する。特に1秒Quota窓に対する1分Waitも個別対象で、65分・25時間の余裕から全窓の安全性を推論しない。PiのNode.js / libuv / Linux clocksource対応、NTP補正・ドリフト、Sleep抑止と単調時計挙動・誤差の評価は後続PR-C統合・実機検証へ残す。MVPの本番Wait入力は[PR-C完成方針](#pr-c-completion-mvp)の方式を採用し、実機での評価結果によって見直す。NTP補正上限やPi保証値を確定しない。必要な健全性前提を確認できない場合はWait完了による履歴除外を許可しない。これは観測間隔の長さだけを異常証拠とすることではない。
+（#117で案Dの待機を廃止したため、本段落はQuotaの計数には適用しない。[Q-01](#quota-simplification-issue-117)）既存の1分・65分・25時間を維持し、各Windowで必要な実経過時間より早い完了判定・履歴除外が生じない前提・制約を独立に検証する。特に1秒Quota窓に対する1分Waitも個別対象で、65分・25時間の余裕から全窓の安全性を推論しない。PiのNode.js / libuv / Linux clocksource対応、NTP補正・ドリフト、Sleep抑止と単調時計挙動・誤差の評価は後続PR-C統合・実機検証へ残す。MVPの本番Wait入力は[PR-C完成方針](#pr-c-completion-mvp)の方式を採用し、実機での評価結果によって見直す。NTP補正上限やPi保証値を確定しない。必要な健全性前提を確認できない場合はWait完了による履歴除外を許可しない。これは観測間隔の長さだけを異常証拠とすることではない。
 
 **Recovery停止理由の保持とGate開放**
 
@@ -4166,7 +4284,7 @@ Recovery完了判定とClock回復通知は別処理とし、RuntimeHistory再�
 
 **History・Quotaの認証済み評価とTx-Q再検証**
 
-TRUSTED / CONSERVATIVE / BLOCKEDを維持し、各Windowの計数はD-03の `C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w` に従う。H_oldと各Rangeは1秒窓の1分、60分窓の65分、24時間窓の25時間を独立に待ち、未完了窓では全件計上、認証された完了窓だけ除外可能とする。H_new_validだけが信頼できるTimestamp・既存暫定2秒マージンによる窓内評価を受ける。上限1 / 20 / 400は変更しない。
+TRUSTED / CONSERVATIVE / BLOCKEDを維持し、各Windowの計数は[Q-01](#quota-simplification-issue-117)に従う（#117で改訂）。全Consumptionを`reserved_at_ms`と既存暫定2秒マージンで評価し、未来の時刻の行は対称の窓（`|now − t| ≤ 窓幅 + 2秒`）で数える。窓別待機による除外は行わない。上限1 / 20 / 400は変更しない。
 
 不確実Timestampの逆行だけで保守的分類全体を拒否しない。整数型・安全範囲・Timestamp表現等の構造検証と、Timestampによる信頼性 / 窓評価を分離する。Sequence欠落、二重分類、境界・証拠不一致、DB構造不整合は引き続きBLOCKED。履歴を書換え・削除・自動修復して整合させない。
 
@@ -4179,18 +4297,18 @@ Commit済みConsumptionはHTTP未開始・中止でも取り消さない。保�
 | 契機 | 安全な扱い |
 |---|---|
 | A：信頼できるTimestampの解除見込み | 既存Quota Repositoryが安全に算出できるrecheckAtMsを利用し、到達時に全条件を再評価する |
-| B：認証済みWaitの単調時計期限 | H_oldまたは各Range・Windowの有効な待機期限で再評価を通知する。信頼できない壁時計で無条件にrecheckAtMsへ変換しない。Wait完了だけで送信しない |
+| B：認証済みWaitの単調時計期限（#117で廃止） | Q-01で全Consumptionに解除時刻（A）を算出できるため不要。以下は記録：H_oldまたは各Range・Windowの有効な待機期限で再評価を通知する。信頼できない壁時計で無条件にrecheckAtMsへ変換しない。Wait完了だけで送信しない |
 | C：解除時刻不明 | 実行可能なStateの既存再評価経路を利用する。A/Bで次の機会を確保できない場合はMVPの最小限の周期的再評価を実装要件とし、通知欠落後も再評価機会を残す。周期は[PR-C完成方針](#pr-c-completion-mvp)で5分（暫定）とする |
 
 現行StateSchedulerはStateごとのsetTimeoutとCoordinatorが返すscheduled.recheckAtで再予約し、requestRecheck()は実行可能Stateの前倒し・inFlight中の要求集約を行う。固定の通常ポーリング周期はなく、held / globalHeld / stoppingではrequestRecheck()も実行しない。AcquisitionCoordinatorはInterfaceだけで、本番のQuota / Wait期限通知・周期再評価・Recovery接続は未実装。既存機構が全て揃っているとは扱わない。
 
-4B-3では内部Recovery・Wait期限とCの周期再評価をテスト可能にし、本番Scheduler / Coordinatorへの通知配線は後続PR-C統合に残す。held Schedulerの解除をrequestRecheck()で代用したり、既存の安全な再開境界を変更したりしない。Scheduler停止中は送信停止を維持し、内部評価の実行を新規予約・HTTP開始へ直結させない。通知欠落・停止があっても安全性を下げず、稼働・安全再開後に再評価する。
+4B-3では内部Recovery・Wait期限（#117で廃止）とCの周期再評価をテスト可能にし、本番Scheduler / Coordinatorへの通知配線は後続PR-C統合に残す。held Schedulerの解除をrequestRecheck()で代用したり、既存の安全な再開境界を変更したりしない。Scheduler停止中は送信停止を維持し、内部評価の実行を新規予約・HTTP開始へ直結させない。通知欠落・停止があっても安全性を下げず、稼働・安全再開後に再評価する。
 
 A〜Cのすべてで認証済みHistory評価とTx-Q内最新再検証・Send Gate最終判定を維持し、Clock / Recovery / 管理停止を迂回しない。不確実Timestampから解除時刻を捏造しない。正常回復時は必要な条件が成立すれば新規Attemptで再開候補となり、Wait全窓完了を一律の必須条件にしない。
 
 **Restart Recovery・本番統合境界**
 
-Process再起動で旧Runtime Evidenceはすべて失効し、成功確定した新Startup Cutoff以前をH_oldとして案Dの窓別待機・保守計上へ進む。旧Rangeの永続記録は保持しても前ProcessのWait完了を復元しない。通常クラッシュにはH54-31の条件付き自動復旧を使い、毎回管理者25時間隔離を課さない。重大不整合は例外的管理者復旧とし、その独立25時間隔離と案Dは別証拠で管理する。
+Process再起動で旧Runtime Evidenceはすべて失効し、成功確定した新Startup Cutoff以前をH_oldとし、Quotaは[Q-01](#quota-simplification-issue-117)で計数する（窓別待機なし）。旧Rangeの永続記録は保持する。通常クラッシュにはH54-31の条件付き自動復旧を使い、毎回管理者25時間隔離を課さない。重大不整合は例外的管理者復旧とし、その独立25時間隔離は維持する。
 
 Startup成功はHistory Trust・Gate許可ではない。CONSERVATIVEの再開候補とCLEANを分け、OperationallyDrained AND RecoveryCleanEligible、History TRUSTED・未完了Rangeなし等のD-04 / R-01〜R-03を維持する。
 
@@ -4205,14 +4323,14 @@ PR-Cは既存のScheduler・Acquisition Control・Quota Repository / Guard・Sen
 | 項目 | 採用 |
 |---|---|
 | Quota・Trustの対象 | Send Gate・Quota・Clock / History TrustはTomorrow.ioだけに適用する（既存Allowlist）。Open-Meteo・Google CalendarはGateを経由せず、既存のBackoff・429方針で取得する |
-| Wait用の単調時計（MVP） | 本番の`verifiedWaitReading()`は`process.hrtime.bigint()`と、Processごとの継続性IDを返す。Suspend中は計上されず、待機完了を遅らせる側である。NTPの周波数補正による誤差は残余リスクとして受け入れ、実機検証の対象とする。Process再起動ではWaitを引き継がない。逆行・取得失敗では既存の失効規則に従う |
+| Wait用の単調時計（MVP。#117で廃止。Quotaの計数には使わない） | 本番の`verifiedWaitReading()`は`process.hrtime.bigint()`と、Processごとの継続性IDを返す。Suspend中は計上されず、待機完了を遅らせる側である。NTPの周波数補正による誤差は残余リスクとして受け入れ、実機検証の対象とする。Process再起動ではWaitを引き継がない。逆行・取得失敗では既存の失効規則に従う |
 | 再評価C（解除時刻不明）の周期 | 5分（暫定）。通知は評価の契機であり、送信許可ではない |
 | C-Impl-5C | 既存`AcquisitionCoordinator.runOnce()`を実装する。Control State読取 → 周期・Backoff判定 → Tomorrow.ioだけGate・Tx-Q → HTTP Adapter → 結果分類（429はBackoff）→ Tx-A → 正常系のTx-PによるPublished State保存・公開。Schedulerを`main.ts`に配線する。既存Repositoryの整合性確認・Commit照合は削除・迂回しない。Mock Providerで検証する |
 | C-Impl-6 | PR-C統合受入。正常起動・再起動・取得成功 / 失敗・Quota不足・Backoff・Shutdown・DB異常・重複取得防止を検証し、SCHの該当ケースとの対応を記録する |
 | PR-D・PR-Eへの引継ぎ | Pending Publicationの本格的な処理、Tx-Cとの連携、Commit結果不明時の照合・復旧処理の本格化はPR-D。継続DB Recovery・Backup・RECOVERINGはPR-E |
 | Future | 重大な履歴不整合等に対する例外的な管理者Recovery操作と、管理者承認後に開始する独立した25時間隔離の実装（延期は重大不整合時の自動送信再開を許可しない。C-Impl-5B-4の安全条件を維持）、CLEAN Lifecycle、F-03の永続化、NTP品質の詳細監視、D-Bus、Process再起動をまたぐWait、RTC-only送信（禁止のまま） |
 
-MVPは、通常の停電・クラッシュ後に既存条件を満たした場合の自動復旧、H_old等を用いた保守的Quota評価、案Dの窓別Wait（1分・65分・25時間）、履歴不整合・Trust不足時のFail Closedを維持する。不確実な履歴を安全に扱えない場合は送信を停止して待機する。保守的待機でもQuota遵守を保証できない場合は、自動で送信を再開しない。
+MVPは、通常の停電・クラッシュ後に既存条件を満たした場合の自動復旧、[Q-01](#quota-simplification-issue-117)による全Consumptionの時刻評価（窓別Waitなし。#117）、履歴の構造不整合・Clock Trust不足時のFail Closedを維持する。
 
 Domain Providerの本番登録に先立つProvider Interfaceの拡張（Quotaなしの複数HTTP型・POST・失敗時のHTTPステータス伝搬）と、Shutdown時のHTTP Abort・停止期限の検証は、Issue #10で行った（[18.7](#schedule-issue-10-design)、PR #88で実装済み）。上表のTomorrow.io向けGate・Tx-Qの契約は変更しない。
 
