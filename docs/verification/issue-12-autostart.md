@@ -298,7 +298,7 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
 - Git：リポジトリの管理対象に、Secret・`backend.env`・`.env`のファイルはない（`git ls-files`。`.gitignore`で除外）。
 - journald：Backendのログの全行（211行）を、`secrets/`の2つのJSONの各値（8文字以上の文字列。複数行の値は行ごと）と照らし合わせた。照合は1つのScriptの中で行い、項目の名前と一致した行の数だけを出した。
   - 秘密鍵・鍵のID・`client_email`・APIキーを含むほかの項目は、すべて0件。`PRIVATE KEY`という文字を含む行も0件。
-  - `project_id`だけが51行に一致した。値がアプリの名前（`home-digital-signage`）と同じで、systemdのUnit名などに一致したもの。ログにSecretが出たのではない。
+  - `project_id`だけが51行に一致した。値が、systemdのUnit名などに含まれる文字列と同じだったため（Piで確認。値は記録しない）。ログにSecretが出たのではない。
 
 ### `backend.env.save`の削除
 
