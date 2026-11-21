@@ -7,7 +7,7 @@
 - 確認日：2026-11-16〜2026-11-21
 - 対象：`main`のMerge Commit `b82ff45`（PR #115）。Release `20261117-222638-b82ff45`
 - 環境：Raspberry Pi 5、Debian 13（trixie）・ARM64、systemd 257、LightDM + labwc（Wayland）、Chromium、nginx 1.26.3、Node.js v24.22.1。RTCのバックアップ電池なし
-- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P15・P17まで確認し、P16とNetwork復旧後の自動回復は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
+- **状態：途中経過**。設置・初回Release・Kioskの自動起動・P8〜P17まで確認し（P2は不採用）、Network復旧後の自動回復は一部を確認した。R-06の2つの時間（電源投入から2分以内、異常終了から1分以内）は確認した。残りは「未実施の項目」。確認が進んだら本記録に追記する
 - Secret・地点・カレンダーID・Quota履歴の値は記録しない
 
 ## 方法
@@ -140,14 +140,21 @@ Release B・Cは、既存のReleaseを複製して作った確認用のRelease�
 - `current`はB、`previous`はAのまま。Backendは`active`、APIは200。
 - `releases/`にはA・B・Cの3つがある。Cは稼働せずに残っている（失敗したときは古いReleaseの整理をしないため）。
 
+**4. 手動の切戻し（`rollback --schema-checked`）：PASS**（2026-11-21に追加で確認）
+
+- `--schema-checked`の根拠：Release A・Bは同じCommit（`b82ff45`）の複製で、DB Schemaが同じ。
+- 確認の引数なし（`activate-release.sh rollback`）：`activate-release: confirm DB schema compatibility, then pass --schema-checked`、終了コード1。`current`はB、`previous`はAのまま変わらなかった。
+- B→A（`rollback --schema-checked`）：`activate-release: rolled back to 20261117-222638-b82ff45`、終了コード0。`current`はA、`previous`はB。Backendは`active`、nginx経由のAPIは200。その後にKioskを再起動した。
+- A→B（もう一度`rollback --schema-checked`。元の状態へ戻すため）：`activate-release: rolled back to 20261118-010000-b82ff45`、終了コード0。`current`はB、`previous`はA。
+- Kioskの画面の目視の結果は、この記録の時点で報告を受けていない。
+
 **今回は確かめていないこと**：
 
-- `rollback --schema-checked`による手動の切戻し
 - DB Schemaの異なるRelease間の切替
 - Backendの起動の失敗を原因とする切戻し（CIのテストでは、偽の`systemctl`・`curl`による模擬の失敗で確認済み。実機は未実施）
 - 切替の直後のKioskの画面の目視
 
-**確認時点の運用の状態**（記録時点。以後の操作で変わる）：稼働中はRelease B、`previous`はRelease A、Release Cは故障を入れた確認用として残している。Releaseの削除・整理はしていない。DBの複製（`pre-hds`）は、残りの検証とGitHubへの記録が終わるまで残す。
+**確認時点の運用の状態**（2026-11-21の手動の切戻しの後。以後の操作で変わる）：稼働中はRelease B、`previous`はRelease A、Release Cは故障を入れた確認用として残している。Releaseの削除・整理はしていない。DBの複製（`pre-hds`）は、残りの検証とGitHubへの記録が終わるまで残す。
 
 ### P13：Secretの正常な読み込みと、権限が不正なときの拒否：PASS
 
@@ -231,9 +238,9 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
   - すべての外部APIが同じ時間内に回復すること、Networkの復旧をすぐに検知すること（回復までの時間は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)の範囲）。
 - 判定：予定・現在の天気・時間ごとの天気は、操作なしで回復した（PASS）。降雨と週間の天気の回復は未確認のため、この完了条件の全体はまだPASSにしない。
 
-### P16：管理コマンドの実行方法：一部確認
+### P16：管理コマンドの実行方法：PASS（下記の範囲）
 
-手順書3.5の方法（`systemd-run --uid=hds --pty -p EnvironmentFile=…`）の実行の経路を確かめた。DB・Quotaを変える操作はしていない。
+手順書3.5の方法（`systemd-run --uid=hds --pty -p EnvironmentFile=…`）で、実行の経路、排他制御、管理コマンドが本番のDBで安全に拒否されることを確かめた。DB・Quotaを変える操作はしていない。
 
 - 確認済み：
   - `systemd-run`で、`hds`（UID 999）として実行できた。
@@ -241,9 +248,13 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
   - `EnvironmentFile=/etc/home-digital-signage/backend.env`を通して、`SIGNAGE_DATA_DIR`が設定されていた（値は記録しない）。
   - `with-backend-lock.sh invalid-command`は、`lock: invalid command`を表示し、終了コード74で拒否した。この拒否はLockの取得より前に行われる。
   - 試験の後も、Backendは`active`で、APIは200を返した。
-- 未確認：
-  - `provision`・`provision-quota`・`migrate-*`の実行の成功。
-  - 正規の管理コマンドの実行時の排他制御（Backendの稼働中にLockが競合して拒否されること）。
+- 排他制御（2026-11-21）：Backendが`active`の間に`provision`を実行すると、約2秒後に`lock: timeout`、終了コード73（`CANTCREAT`）で終わった。DBは開いていない（Lock Scriptは、Lockが取れなければNode.jsを起動しない）。試験の前後とも、Backendは`active`。
+- 管理コマンドの起動と安全な拒否（2026-11-21、Backendを止めて実行）：
+  - `provision`：`provision_failed`（"Database provisioning refused or failed"）、終了コード1。DBが既にあるため、新しいDBの作成（`openSync(…, "wx")`）の時点で拒否される（`src/backend/storage/provision.ts`）。
+  - `migrate-v3`：`schema_upgrade_failed`（"Schema upgrade refused or unconfirmed"）、終了コード1。確認の環境変数（`SIGNAGE_V3_UPGRADE_ACK`）を設定していないため、DBを開く前に拒否される（`src/backend/storage/upgrade-v3.ts`）。
+  - その後にBackendを起動し、`active`になった。起動の直後の`curl`ではnginx経由のAPIが502だった。Backendが待ち受けを始める前に問い合わせたためと考えられる（推測）。続けて行った手動の切戻し（P12の4.）では、`activate-release.sh`の疎通確認（BackendとAPIの200）が成功している。
+- 確かめていないこと：本番のDBでの成功（新しいDBの作成、`provision-quota`によるQuotaの初期化、Migration）。本番のDBとQuota履歴を変えるため、行っていない。成功の経路は、CIのテスト（`tests/backend/provision-quota.test.ts`等）で確認している。`provision-quota`は、Quotaが既に初期化済みのため実行していない。
+- この範囲（実行の経路、排他制御、安全な拒否）で完了とすることは、Claude Codeの提案による（2026-11-21）。
 
 ### P17：既存DBの移行の完了：PASS
 
@@ -253,25 +264,25 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
 
 ## P1〜P17の状況
 
-| #   | 事項                                             | 状態                                                                                                                     |
-| --- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| P1  | systemdのバージョン                              | 確認済み（257）                                                                                                          |
-| P2  | 段階的Backoffの採否                              | 不採用（2026-11-21、ユーザーが判断。実機での確認はしていない。`RestartSec=5s`の固定を正式とする。理由は第26章 26.5）     |
-| P3  | `hds`からNode.jsを実行できる                     | 確認済み（`/usr/local`へ導入した後）                                                                                     |
-| P4  | `hds`で`timedatectl`・RTCを読める                | 確認済み                                                                                                                 |
-| P5  | labwcのautostartからユーザーUnitでKioskを起動    | 確認済み                                                                                                                 |
-| P6  | Keyringのパスワード要求が出ない                  | 確認済み                                                                                                                 |
-| P7  | nginxが`127.0.0.1:80`だけで待ち受ける            | 確認済み（`restart`が必要だった）                                                                                        |
-| P8  | 電源投入から2分以内に基本画面                    | 確認済み（実測20秒）                                                                                                     |
-| P9  | Backend・Chromiumを止めたときの自動復旧          | 確認済み（Chromium：約5秒後に起動し直した。Backend：約6秒で`startup_complete`）                                          |
-| P10 | nginxより先にKioskが動いても止まらない           | 確認済み                                                                                                                 |
-| P11 | 再起動の後も前回の起動のログが残る               | 確認済み                                                                                                                 |
-| P12 | Releaseの切替と失敗時の切戻し                    | 確認済み（正常な切替と、静的ファイルの不整合による自動の切戻し。手動の`rollback`は未実施）                               |
-| P13 | Secretの正常な読み込みと、権限が不正なときの拒否 | 確認済み（読み込みは本番のSecret、拒否は隔離した偽のSecretで確認）                                                       |
-| P14 | 画面が消えない・カーソルが見えない               | 確認済み（現在の運用の条件。約3日の連続表示で消灯なし、カーソルの表示なし。マウスの接続時は未検証）                      |
-| P15 | Network未接続で電源を入れても基本画面が出る      | 確認済み                                                                                                                 |
-| P16 | 管理コマンドの実行方法                           | 一部確認（`hds`・対話端末・`EnvironmentFile`での実行、不正なコマンドの拒否。管理コマンドの実行の成功と排他制御は未確認） |
-| P17 | 既存DBの移行                                     | 確認済み（上記「P17：既存DBの移行の完了」）                                                                              |
+| #   | 事項                                             | 状態                                                                                                                 |
+| --- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| P1  | systemdのバージョン                              | 確認済み（257）                                                                                                      |
+| P2  | 段階的Backoffの採否                              | 不採用（2026-11-21、ユーザーが判断。実機での確認はしていない。`RestartSec=5s`の固定を正式とする。理由は第26章 26.5） |
+| P3  | `hds`からNode.jsを実行できる                     | 確認済み（`/usr/local`へ導入した後）                                                                                 |
+| P4  | `hds`で`timedatectl`・RTCを読める                | 確認済み                                                                                                             |
+| P5  | labwcのautostartからユーザーUnitでKioskを起動    | 確認済み                                                                                                             |
+| P6  | Keyringのパスワード要求が出ない                  | 確認済み                                                                                                             |
+| P7  | nginxが`127.0.0.1:80`だけで待ち受ける            | 確認済み（`restart`が必要だった）                                                                                    |
+| P8  | 電源投入から2分以内に基本画面                    | 確認済み（実測20秒）                                                                                                 |
+| P9  | Backend・Chromiumを止めたときの自動復旧          | 確認済み（Chromium：約5秒後に起動し直した。Backend：約6秒で`startup_complete`）                                      |
+| P10 | nginxより先にKioskが動いても止まらない           | 確認済み                                                                                                             |
+| P11 | 再起動の後も前回の起動のログが残る               | 確認済み                                                                                                             |
+| P12 | Releaseの切替と失敗時の切戻し                    | 確認済み（正常な切替、静的ファイルの不整合による自動の切戻し、手動の`rollback --schema-checked`とその拒否）          |
+| P13 | Secretの正常な読み込みと、権限が不正なときの拒否 | 確認済み（読み込みは本番のSecret、拒否は隔離した偽のSecretで確認）                                                   |
+| P14 | 画面が消えない・カーソルが見えない               | 確認済み（現在の運用の条件。約3日の連続表示で消灯なし、カーソルの表示なし。マウスの接続時は未検証）                  |
+| P15 | Network未接続で電源を入れても基本画面が出る      | 確認済み                                                                                                             |
+| P16 | 管理コマンドの実行方法                           | 確認済み（実行の経路、排他制御、本番のDBでの安全な拒否。本番のDBでの成功は行っていない）                             |
+| P17 | 既存DBの移行                                     | 確認済み（上記「P17：既存DBの移行の完了」）                                                                          |
 
 ## 範囲外で観察したこと
 
@@ -288,6 +299,6 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
 
 ## 未実施の項目
 
-1. P12の残り（手動の`rollback --schema-checked`、Backendの起動の失敗による切戻し）、P16の残り（管理コマンドの実行の成功と排他制御）
+1. P12の残り（Backendの起動の失敗による切戻しの実機での確認、手動の切戻しの後のKioskの目視）
 2. Network復旧の後の、降雨・週間の天気の再取得（Issue #12の完了条件の残り。回復までの時間の目標は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)）
 3. `backend.env.save`の扱いの判断
