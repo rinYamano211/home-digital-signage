@@ -31,7 +31,7 @@
 
 - DBは、第26章 26.4が想定した「別の場所へコピーする」形ではなく、既にあった本番のPath（`/var/lib/home-digital-signage/`）で、**その場で所有者を`hds`に変えた**。変更前の複製を`/var/backups/home-digital-signage/pre-hds/`に保存した。26.4は、この結果に合わせて更新した（本PR）。
 - 変更前：Backendの停止を確認した。複製と本体のSHA256が一致した。両方の`integrity_check`が`ok`だった。Quota履歴（`provider_quota_metadata`・`provider_quota_consumptions`の件数・最後の連番・最新の予約時刻）が一致した（`MATCH`）。
-- 所有者：DB・`-wal`・`-shm`・`backend.lock`は`hds:hds`、Secretは`hds:hds`、`backend.env`は`root:root`。`backend.env.save`は変更していない（用途はユーザーの確認待ち）。
+- 所有者：DB・`-wal`・`-shm`・`backend.lock`は`hds:hds`、Secretは`hds:hds`、`backend.env`は`root:root`。`backend.env.save`は変更していない（後に削除した。下記の「`backend.env.save`の削除」）。
 - 変更後：もう一度比べて一致した（`MATCH`）。
 - 所有者の変更後の確認で、`sudo stat … /var/lib/home-digital-signage/*`は失敗した。`signage`のShellが、`hds`の0700のディレクトリの中を`*`で展開できないため。`sudo find`で確認できた（手順書は`275eb35`で修正済み）。
 - 保存した複製は、全検証とGitHubへの記録が終わるまで削除しない。
@@ -289,6 +289,15 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
 | P16 | 管理コマンドの実行方法                           | 確認済み（実行の経路、排他制御、本番のDBでの安全な拒否。本番のDBでの成功は行っていない）                             |
 | P17 | 既存DBの移行                                     | 確認済み（上記「P17：既存DBの移行の完了」）                                                                          |
 
+### `backend.env.save`の削除
+
+確認日：2026-11-21。ユーザーがPiで確認し、削除した。内容（値）は記録しない。
+
+- 所有者は`signage`、0600。最終更新は11/08 23:42で、`backend.env`（11/08 22:56）より新しかった。
+- 中身は`backend.env`と異なった。変数の名前だけを比べると、`backend.env`にだけ天気の地点の2つ（`SIGNAGE_WEATHER_LATITUDE`・`SIGNAGE_WEATHER_LONGITUDE`）があり、`.save`にだけある変数はなかった。
+- nanoが編集中の内容を退避した、`backend.env`の古い版と推定した。BackendのUnitが読むのは`backend.env`だけで、リポジトリのScript・設定にも`.save`を読むところはない。
+- 今の`backend.env`で予定・天気の取得は成功しており、`.save`は不要と判断した。`sudo rm`で削除し、`/etc/home-digital-signage/`には`backend.env`と`secrets`だけが残った。
+
 ## 範囲外で観察したこと
 
 ### A：起動直後の天気の取得のTimeout
@@ -307,4 +316,3 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
 
 1. P12の残り（Backendの起動の失敗による切戻しの実機での確認）
 2. Network復旧の後の、週間の天気の再取得（Issue #12の完了条件の残り。回復までの時間の目標は[#113](https://github.com/rinYamano211/home-digital-signage/issues/113)）。降雨はIssue #12から除き、再起動の後の待機の見直しの後に確かめる
-3. `backend.env.save`の扱いの判断
