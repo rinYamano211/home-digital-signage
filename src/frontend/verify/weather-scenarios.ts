@@ -17,6 +17,11 @@ type Options = {
   readonly days?: number;
   readonly code?: number;
   readonly isDay?: boolean;
+  /**
+   * 収まりの確認用の、一番幅を取る値（Issue #98）。現在 -10°、時間別 -10〜-12°・100%、
+   * 最高 -10°台・最低 -15°台。
+   */
+  readonly cold?: boolean;
 };
 
 function meta(now: number, ttl: number): PublishedState["meta"] {
@@ -32,13 +37,13 @@ function meta(now: number, ttl: number): PublishedState["meta"] {
 
 /** 合成の3State。時間別は次の正時から、週間は今日から。 */
 function weather(now: number, options: Options = {}): WeatherStates {
-  const { hours = 36, days = 9, code, isDay = true } = options;
+  const { hours = 36, days = 9, code, isDay = true, cold = false } = options;
   const first = nextHour(now);
   const today = dayStart(tokyoDate(now));
   return {
     currentWeather: {
       data: {
-        temperatureC: 17.6,
+        temperatureC: cold ? -10.4 : 17.6,
         weatherCode: code ?? 3,
         isDay,
         validAt: iso(Math.floor(now / (15 * MIN)) * 15 * MIN),
@@ -49,9 +54,11 @@ function weather(now: number, options: Options = {}): WeatherStates {
       data: {
         hours: Array.from({ length: hours }, (_, i) => ({
           validAt: iso(first + i * HOUR),
-          temperatureC: 18 - Math.abs(6 - i) * 0.7,
+          temperatureC: cold ? -10 - (i % 3) * 0.9 : 18 - Math.abs(6 - i) * 0.7,
           weatherCode: code ?? [0, 1, 2, 3, 61, 80, 3, 2][i % 8]!,
-          precipitationProbability: [10, 20, 40, 60, 80, 50, 30, 0][i % 8]!,
+          precipitationProbability: cold
+            ? 100
+            : [10, 20, 40, 60, 80, 50, 30, 0][i % 8]!,
         })),
       },
       meta: meta(now, 2 * HOUR),
@@ -68,8 +75,8 @@ function weather(now: number, options: Options = {}): WeatherStates {
         days: Array.from({ length: days }, (_, i) => ({
           date: tokyoDate(today + i * DAY + 12 * HOUR),
           weatherCode: code ?? [61, 2, 3, 0, 71, 95, 45, 1, 3][i % 9]!,
-          temperatureMaxC: 19 + (i % 4),
-          temperatureMinC: 9 + (i % 3),
+          temperatureMaxC: cold ? -10 - (i % 4) : 19 + (i % 4),
+          temperatureMinC: cold ? -15 - (i % 3) : 9 + (i % 3),
           precipitationProbability: [70, 30, 20, 0, 60, 90, 40, 10, 20][i % 9]!,
         })),
       },
@@ -139,6 +146,123 @@ type Scenario = {
 const at = (hour: number) => (now: number) =>
   dayStart(tokyoDate(now)) + hour * HOUR;
 
+/** 取得に失敗し、前日に取得したデータが残っている（札に日付が付く：`11/20 21:00時点`）。 */
+const staleFromYesterday =
+  (now: number) =>
+  (state: PublishedState): PublishedState => ({
+    ...state,
+    meta: {
+      ...state.meta,
+      dataUpdatedAt: iso(now - 25 * HOUR),
+      lastAttemptAt: iso(now - MIN),
+      lastAttemptResult: "failure",
+      dataSource: "cache",
+    },
+  });
+
+/**
+ * 収まりが一番厳しい組合せ（Issue #98）：現在 -10°・天気不明・最高最低あり、
+ * 現在と時間別がともに日付付きの更新待ち。降雨帯は`rain`で切り替える。
+ */
+function tightest(now: number, rain: PublishedState): WeatherStates {
+  const states = weather(now, { cold: true, code: 100 });
+  const stale = staleFromYesterday(now);
+  return {
+    ...states,
+    currentWeather: stale(states.currentWeather!),
+    hourlyWeather: stale(states.hourlyWeather!),
+    rainForecast: rain,
+  };
+}
+
+/** Issue #98の確認に使う降雨帯の状態。帯の高さが変わる状態をすべて含める（#105）。 */
+const TIGHTEST_RAINS: readonly (readonly [
+  string,
+  (now: number) => PublishedState,
+])[] = [
+  [
+    "降り始め・更新待ち",
+    (now) =>
+      rainState(
+        now,
+        {
+          status: "dry",
+          intensity: "light",
+          rainStartAt: iso(now + 20 * MIN),
+          rainEndAt: null,
+          forecastUntil: until(now),
+        },
+        7,
+        true,
+      ),
+  ],
+  [
+    "降り始め",
+    (now) =>
+      rainState(now, {
+        status: "dry",
+        intensity: "light",
+        rainStartAt: iso(now + 20 * MIN),
+        rainEndAt: iso(now + 45 * MIN),
+        forecastUntil: until(now),
+      }),
+  ],
+  [
+    "降雨中・やむ見込みあり",
+    (now) =>
+      rainState(now, {
+        status: "raining",
+        intensity: "moderate",
+        rainStartAt: null,
+        rainEndAt: iso(now + 30 * MIN),
+        forecastUntil: until(now),
+      }),
+  ],
+  [
+    "雨の予報なし",
+    (now) =>
+      rainState(now, {
+        status: "dry",
+        intensity: null,
+        rainStartAt: null,
+        rainEndAt: null,
+        forecastUntil: until(now),
+      }),
+  ],
+  [
+    "予報時刻を過ぎた",
+    (now) =>
+      rainState(
+        now,
+        {
+          status: "dry",
+          intensity: "light",
+          rainStartAt: iso(now - 2 * MIN),
+          rainEndAt: null,
+          forecastUntil: until(now),
+        },
+        8,
+      ),
+  ],
+  [
+    "取得から15分（更新待ち）",
+    (now) =>
+      rainState(
+        now,
+        {
+          status: "dry",
+          intensity: "light",
+          rainStartAt: iso(now + 20 * MIN),
+          rainEndAt: null,
+          forecastUntil: until(now),
+        },
+        15,
+        true,
+      ),
+  ],
+  ["取得できません", (now) => noData(iso(now - MIN))],
+];
+
 export const WEATHER_SCENARIOS: readonly Scenario[] = [
   { label: "正常", states: (now) => weather(now) },
   {
@@ -166,7 +290,7 @@ export const WEATHER_SCENARIOS: readonly Scenario[] = [
       })),
   },
   {
-    label: "時間別の日付またぎ（18:30として評価）",
+    label: "時間別の日付またぎ（18:30として評価。明日 0時が上段の末尾）",
     states: (now) => weather(now),
     evaluateAt: (now) => at(18)(now) + 30 * MIN,
   },
@@ -313,6 +437,36 @@ export const WEATHER_SCENARIOS: readonly Scenario[] = [
       currentWeather: noData(iso(now - MIN)),
     }),
   },
+  // Issue #98：`明日 0時`の位置と、正時・JST 0時の前後（上段の末尾は上の18:30）。
+  {
+    label: "#98 明日 0時が先頭（23:59として評価）",
+    states: (now) => weather(now),
+    evaluateAt: (now) => at(23)(now) + 59 * MIN,
+  },
+  {
+    label: "#98 0時ちょうど（00:00として評価）",
+    states: (now) => weather(now),
+    evaluateAt: at(0),
+  },
+  {
+    label: "#98 明日 0時が下段の先頭（17:30として評価）",
+    states: (now) => weather(now),
+    evaluateAt: (now) => at(17)(now) + 30 * MIN,
+  },
+  {
+    label: "#98 明日 0時が段の途中（21:30として評価）",
+    states: (now) => weather(now),
+    evaluateAt: (now) => at(21)(now) + 30 * MIN,
+  },
+  {
+    label: "#98 負の気温・100%・12枠未満（5枠）",
+    states: (now) => weather(now, { cold: true, hours: 5 }),
+  },
+  // Issue #98：収まりが一番厳しい組合せ×降雨帯の各状態。
+  ...TIGHTEST_RAINS.map(([name, rain]) => ({
+    label: `#98 最も厳しい組合せ＋降雨：${name}`,
+    states: (now: number) => tightest(now, rain(now)),
+  })),
 ];
 
 /** 選んだシナリオの3Stateと、表示の評価に使う時刻。 */

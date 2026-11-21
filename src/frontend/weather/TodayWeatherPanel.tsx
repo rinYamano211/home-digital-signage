@@ -120,16 +120,27 @@ function Rain({ view }: { view: TodayWeatherView }) {
   );
 }
 
-function Slot({ slot }: { slot: HourlySlot }) {
+/** 時間別の枠のclass。先頭の枠（次の正時）は`is-first`、日付の変わる枠は`is-day-start`（UI設計 5.2）。 */
+function slotClassName(slot: HourlySlot, first: boolean): string {
+  return ["weather-slot", first && "is-first", slot.dayStart && "is-day-start"]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function Slot({ slot, first }: { slot: HourlySlot; first: boolean }) {
   return (
-    <div className={`weather-slot ${slot.dayStart ? "is-day-start" : ""}`}>
+    <div className={slotClassName(slot, first)}>
       <span className="weather-slot-hour">{slot.label}</span>
       <WeatherIcon
         category={slot.category}
         night={slot.night}
         className="weather-slot-icon"
       />
-      <span className="weather-slot-temp">{slot.temperature}°</span>
+      {/* `°`は数字の右肩に置き、中心合わせの幅に含めない（UI設計 5.2、Issue #98）。 */}
+      <span className="weather-slot-temp">
+        {slot.temperature}
+        <span className="weather-slot-degree">°</span>
+      </span>
       <span className={`weather-slot-pop ${slot.wet ? "is-wet" : ""}`}>
         {slot.precipitation}%
       </span>
@@ -157,7 +168,11 @@ function Hourly({ view }: { view: TodayWeatherView }) {
       {rows.map((row, index) => (
         <div key={index} className="weather-hourly-row">
           {row.map((slot) => (
-            <Slot key={slot.validAt} slot={slot} />
+            <Slot
+              key={slot.validAt}
+              slot={slot}
+              first={slot.validAt === value[0]?.validAt}
+            />
           ))}
         </div>
       ))}
