@@ -2326,14 +2326,14 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 - 当初は方針A（確認した制限として受け入れる。2026-11-14）としていた。
 - 2026-11-21のユーザー判断で、家庭用MVPとして過剰な設計とし、[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)で窓別の待機を廃止した。
 - 新しい規則は[Q-01](#quota-simplification-issue-117)に従う。Clock TRUSTEDの下で、全Consumptionを`reserved_at_ms`と暫定2秒マージンで評価する。未来の時刻の行は、対称の窓（`|now − t| ≤ 窓幅 + 2秒`）で数える。
-- 再起動後の降雨は、各窓の上限に達していなければ、Clock Trust・Gate・Recoveryの再開条件の成立後すぐに取得できる。**未実装**で、実装と実機確認は#117で行う。
+- 再起動後の降雨は、各窓の上限に達していなければ、Clock Trust・Gate・Recoveryの再開条件の成立後すぐに取得できる。PR #119（`6eee07f`）で実装し、2026-11-21にRaspberry Piで、再起動から約5分後に取得が再開したことを確認した（[検証記録](verification/issue-117-quota-restart.md)）。
 - 残るリスク（確認した制限）：時計が遅れていた時期の行を少なく数え、Provider側のQuota制限に抵触する可能性がある。429を受信した場合は既存のBackoffで扱うが、Provider側の拒否の動作や利用制限の詳細は保証しない（[Q-01](#quota-simplification-issue-117)）。
 - 旧記録の「案C（未採用）」は、Q-01の検討で、より簡素な規則に置き換えた。
 
 ##### 運用上の注意
 
 - `npm run start:backend`は、`backend.env`を自動では読み込まない。本番は、systemdの`EnvironmentFile`で渡す（#12）。手動起動では、`set -a; . <backend.envのパス>; set +a`で読み込んでから起動する。`backend.env`・`weather.json`の内容は、表示・記録しない（AGENTS.md 6）。
-- 再起動後の降雨取得の窓別の待機は、#117で廃止した（[Q-01](#quota-simplification-issue-117)。未実装）。実装までは、上の表の待機（最大約25時間）が起こる。不要な再起動（設定の再読み込み・動作確認）を避ける。
+- 再起動後の降雨取得の窓別の待機は、#117で廃止した（[Q-01](#quota-simplification-issue-117)。PR #119で実装済み）。再起動の後は、Clock Trustの安定とRecoveryの条件が成立してから取得を再開する（実機では約5分）。
 
 #### MVPで許容する簡略化
 
@@ -2347,7 +2347,7 @@ Domain Data（21.3）は変更しない。表示規則はUI設計 5.2に従う�
 | 6 | Tomorrow.ioの窓定義へ厳密には追従しない | 16.4 |
 | 7 | DBを再作成したら再Provisioning | 上記 |
 | 8 | Process再起動でCooldown（5秒）を復元しない | F-02 |
-| 9 | 再起動後のQuotaは、窓別の待機なしで全Consumptionを時刻で評価する（[Q-01](#quota-simplification-issue-117)）。時計が遅れていた時期の行を少なく数えるリスクを受け入れる | #117で実装・実機確認。Tomorrow.ioの429が頻発する場合に再検討 |
+| 9 | 再起動後のQuotaは、窓別の待機なしで全Consumptionを時刻で評価する（[Q-01](#quota-simplification-issue-117)）。時計が遅れていた時期の行を少なく数えるリスクを受け入れる | #117で実装・実機確認済み（PR #119・PR #120）。Tomorrow.ioの429が頻発する場合に再検討 |
 
 簡略化しても、Quota履歴、Clock・History Trust、Fail Closed、送信前のTx-Q記録は維持する。
 
@@ -3821,7 +3821,7 @@ Lifecycle / Startup / Rangeの各RepositoryはBackendStoreの単一Connectionを
 
 <a id="quota-simplification-issue-117"></a>
 
-##### Q-01：Quota計数の簡素化（窓別の保守的待機の廃止）（[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)。設計確定・未実装）
+##### Q-01：Quota計数の簡素化（窓別の保守的待機の廃止）（[Issue #117](https://github.com/rinYamano211/home-digital-signage/issues/117)。設計確定・実装済み（PR #119）・Pi実機確認済み（PR #120））
 
 本節は、D-03・D-04・P0-1・P0-2・R-02・R55-04・4B-3のうち、**Quota窓の計数**に関する規定を置き換える。本書の他の節にある案D（Plan D）の窓別待機・全件計上・`C_w = C_old,w + C_valid,w + Σ C_uncertain_i,w`の記述は、本節が優先する。
 
