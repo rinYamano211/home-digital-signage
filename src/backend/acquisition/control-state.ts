@@ -133,7 +133,8 @@ export function nextControlState(
   if (!Number.isSafeInteger(failures))
     throw new RangeError("Failure count exhausted");
   const base = instant(outcome.completedAt);
-  let at = base + Math.min(30, 2 ** Math.min(5, failures - 1)) * 60000;
+  // 1, 2, 4, then 5 minutes (cap shortened from 30 by Issue #113).
+  let at = base + Math.min(5, 2 ** Math.min(3, failures - 1)) * 60000;
   if (outcome.httpStatus === 429)
     at = Math.max(
       at,
