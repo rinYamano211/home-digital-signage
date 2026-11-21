@@ -1439,6 +1439,7 @@ Stateごとに独立したRequestとし、共有しない（従来15.3・16.1・
 | 取得周期・TTL | 15分・2時間（19.4） | 30分・2時間（20.1） | 6時間・12時間（22.1） |
 
 - 定期取得は約148回/日（96＋48＋4。Backoff・再起動による追加は含まない）。Open-Meteoの無料APIの制限（2026-11-08に[公式](https://open-meteo.com/en/terms)で確認：600回/分・5,000回/時・10,000回/日・300,000回/月）に対して十分小さい。
+- 障害中はBackoff（上限5分、23.3）により、1 Stateあたり最大12回/時で試行する。3 Stateが同時に失敗し続けても最大36回/時・864回/日で、上記の制限に対して十分小さい。
 - `forecast_days=3`は今日のJST 00:00から72時間を返す。23時台の開始でも、次の正時から36枠を確保できる。`forecast_hours`（Open-Meteo側の現在の時から数える）は、正時の前後でサーバーの時計とずれると必要な枠が欠けるため使わない。
 - 有効期限は取得完了時刻＋TTL（Scheduleと同じ）。
 - Body上限は既存の1MiB。Open-Meteoの応答に含まれる格子点の`latitude`・`longitude`等は読まず、Domain Data・ログに入れない。
@@ -1761,7 +1762,7 @@ ProviderはDBを直接操作しない。Schedule固有の処理は共通Module�
 
 - 取得開始時のJST日付を対象日（targetDate）として固定する（18.3）。
 - 成功時は、`nextControlState()`へ渡す周期を「min(通常周期, 次のJST 0時 − 開始時刻)」とする。`nextControlState()`とBackoffの共通契約は変更しない。再起動後は保存済みの`nextAttemptAt`で引き継ぐ。
-- 失敗時は既存のBackoffを優先し、0時の再取得を強制しない。0時直前の失敗では、最大30分程度、新しい日の予定を表示できない場合がある（MVPで許容）。
+- 失敗時は既存のBackoffを優先し、0時の再取得を強制しない。0時直前の失敗では、最大5分程度（Backoff上限、23.3）、新しい日の予定を表示できない場合がある（MVPで許容）。
 - 取得完了時のJST日付が対象日より**進んでいた**場合、結果を**破棄**する。Tx-A・Tx-Pを行わず、Control Stateも変更しない。Coordinatorは`scheduled`（既存どおり現在＋1秒以上に切り上げた`recheckAt`）を返し、Schedulerは約1秒後に**Coordinatorの再評価**（`runOnce()`）を予約する。予約するのは再評価であり、取得の許可ではない。
   - 再評価では通常どおりControl Stateを読み、`nextAttemptAt`・Backoff・Published Stateの読取り・初回保存の条件を判定する。破棄ではControl Stateを変えないため、`nextAttemptAt`が到来していれば新しい日の取得を開始し、未到来なら（日付変更とは無関係に）その時刻まで待つ。
   - 取得を無条件に強制する経路は作らない。`requestRecheck()`も既存どおり取得条件を迂回しない（Architecture 16.3）。
@@ -2558,8 +2559,8 @@ nextAttemptAtは**次のHTTP取得を開始してよい最も早い時刻**と�
 | Tx-A成功後のTx-P失敗 | 取得成功として記録したnextAttemptAtを維持 |
 
 未取得・期限切れ・周期到達等で取得対象を判定したうえ、Backoff・Quota・Provider制約・inFlightも確認する。
-5 State共通Backoffは初回1分、係数2、上限30分（1、2、4、8、16、30分……）。MVPはJitterなし・即時Retryなし。
-HTTP 429は失敗とし、通常BackoffとRetry-Afterの遅い方まで待つ。Retry-Afterは秒数・HTTP Date形式に対応し、有効値が30分超でも尊重する。不正・欠損なら通常Backoffを適用する。
+5 State共通Backoffは初回1分、係数2、上限5分（1、2、4、5、5分……）。MVPはJitterなし・即時Retryなし。上限はIssue #113で30分から変更した（Architecture 11.3。実装は未完了）。上限5分はRainForecastの取得周期と同じで、障害が続いてもTomorrow.ioへの試行は通常時の頻度を超えない。
+HTTP 429は失敗とし、通常BackoffとRetry-Afterの遅い方まで待つ。Retry-Afterは秒数・HTTP Date形式に対応し、有効値がBackoff上限を超えても尊重する。不正・欠損なら通常Backoffを適用する。
 
 全Providerの外部HTTP Timeoutは10秒とし、Node.js標準fetchとAbortSignal.timeout()を使用する方針。Frontend Pollingの5秒Timeoutとは別である。
 Timeoutは取得失敗とするがProvider処理・Quota消費取消しとは判断しない。周期を超えるTaskも重複起動せず、inFlightはTask終了後に解除する。
@@ -2966,7 +2967,7 @@ PR-BのTx-P / Tx-C・Read Evidence・照合成功条件は変更しない。Tx-A
 
 #### nextAttemptAt・Backoff
 
-23.3の計算契約を維持する。成功時はHTTP取得開始＋周期、失敗時は失敗処理完了＋指数Backoff（1、2、4、8、16、30分、以後30分上限）、Jitterなし。HTTP 429は通常Backoffと有効Retry-Afterの遅い方とし、30分超でも尊重する。不正・欠損Retry-Afterは通常Backoffに従う。
+23.3の計算契約を維持する。成功時はHTTP取得開始＋周期、失敗時は失敗処理完了＋指数Backoff（1、2、4、5分、以後5分上限。Issue #113で30分上限から変更）、Jitterなし。HTTP 429は通常Backoffと有効Retry-Afterの遅い方とし、Backoff上限を超えても尊重する。不正・欠損Retry-Afterは通常Backoffに従う。
 
 Quotaによる送信抑止ではControl Stateを更新しない。Tx-A成功後にTx-Pが失敗しても取得成功記録を維持し、Provider失敗として加算しない。Tx-A保存失敗を理由にHTTPを即時再送しない。Coordinatorが判定・計算し、SchedulerはrecheckAtによる次回判定予約だけを担う。
 
