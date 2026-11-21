@@ -290,6 +290,16 @@ Issue #12の完了条件「Network復旧後に外部データ取得が自動的�
 | P16 | 管理コマンドの実行方法                           | 確認済み（実行の経路、排他制御、本番のDBでの安全な拒否。本番のDBでの成功は行っていない）                             |
 | P17 | 既存DBの移行                                     | 確認済み（上記「P17：既存DBの移行の完了」）                                                                          |
 
+### SecretがRelease・Git・journaldに含まれないこと：PASS
+
+確認日：2026-11-21。Issue #12の「Issue #16 PR-Aからの引継ぎ」の項目。値は記録しない。
+
+- Release：`/opt/home-digital-signage/releases/`の下に、`*.env`・`schedule.json`・`weather.json`・`secrets`という名前のファイル・ディレクトリはなかった（`find`）。
+- Git：リポジトリの管理対象に、Secret・`backend.env`・`.env`のファイルはない（`git ls-files`。`.gitignore`で除外）。
+- journald：Backendのログの全行（211行）を、`secrets/`の2つのJSONの各値（8文字以上の文字列。複数行の値は行ごと）と照らし合わせた。照合は1つのScriptの中で行い、項目の名前と一致した行の数だけを出した。
+  - 秘密鍵・鍵のID・`client_email`・APIキーを含むほかの項目は、すべて0件。`PRIVATE KEY`という文字を含む行も0件。
+  - `project_id`だけが51行に一致した。値がアプリの名前（`home-digital-signage`）と同じで、systemdのUnit名などに一致したもの。ログにSecretが出たのではない。
+
 ### `backend.env.save`の削除
 
 確認日：2026-11-21。ユーザーがPiで確認し、削除した。内容（値）は記録しない。
