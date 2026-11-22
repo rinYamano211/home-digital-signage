@@ -189,6 +189,17 @@ test("failures back off exponentially, keep published data, and success resets",
     consecutiveFailures: 1,
     nextAttemptAt: iso(first + 60_000),
   });
+  // Issue #87: the retained data is re-published as "cache" (10.5).
+  expect(states(runtime).currentWeather).toEqual({
+    data: published.data,
+    meta: {
+      ...published.meta,
+      lastAttemptAt: iso(first),
+      lastAttemptResult: "failure",
+      publishedAt: iso(first),
+      dataSource: "cache",
+    },
+  });
   fetchMock.mockImplementation(async () => {
     throw new TypeError("network down");
   });
@@ -206,14 +217,21 @@ test("failures back off exponentially, keep published data, and success resets",
       lastAttemptAt: iso(second),
       lastAttemptResult: "failure",
       publishedAt: iso(second),
+      dataSource: "cache", // repeated failures stay "cache"
     },
   });
   fetchMock.mockImplementation(async () => Response.json({ temperature: 20 }));
   move(120_000);
+  const recovered = wall;
   await c.runOnce("currentWeather");
   expect(control(db)).toMatchObject({ consecutiveFailures: 0 });
   expect(states(runtime).currentWeather).toMatchObject({
     data: { temperature: 20 },
+    meta: {
+      dataUpdatedAt: iso(recovered),
+      lastAttemptResult: "success",
+      dataSource: "externalApi", // back to the external API on recovery
+    },
   });
 });
 test("HTTP 429 honours Retry-After beyond the Backoff; first failure publishes data null", async () => {
@@ -237,6 +255,22 @@ test("HTTP 429 honours Retry-After beyond the Backoff; first failure publishes d
       lastAttemptAt: iso(at),
       lastAttemptResult: "failure",
       publishedAt: iso(at),
+      dataSource: null,
+    },
+  });
+  // Issue #87: with no data, a further failure keeps dataSource null.
+  move(900_000);
+  const again = wall;
+  await c.runOnce("currentWeather");
+  expect(control(db)).toMatchObject({ consecutiveFailures: 2 });
+  expect(states(runtime).currentWeather).toEqual({
+    data: null,
+    meta: {
+      dataUpdatedAt: null,
+      expiresAt: null,
+      lastAttemptAt: iso(again),
+      lastAttemptResult: "failure",
+      publishedAt: iso(again),
       dataSource: null,
     },
   });
@@ -654,7 +688,7 @@ test("a valid previous generation stays usable: failure keeps its data and saves
   expect(control(db)).toMatchObject({ consecutiveFailures: 1 });
   expect(states(runtime).currentWeather).toMatchObject({
     data: { temperature: 18 },
-    meta: { lastAttemptResult: "failure" },
+    meta: { lastAttemptResult: "failure", dataSource: "cache" },
   });
 });
 test.each([
@@ -763,6 +797,20 @@ test("multi-HTTP Provider: POST then pages through the common Adapter, one Tx-A 
   expect(states(runtime).currentWeather).toMatchObject({
     data: { pages: [{ temperature: 18 }, { temperature: 18 }] },
     meta: { lastAttemptResult: "success", dataSource: "externalApi" },
+  });
+  // Issue #87: a later multi-HTTP failure re-publishes the data as "cache".
+  fetchMock.mockImplementation(async () => new Response("", { status: 500 }));
+  move(600_000);
+  await c.runOnce("currentWeather");
+  expect(control(db)).toMatchObject({ consecutiveFailures: 1 });
+  expect(states(runtime).currentWeather).toMatchObject({
+    data: { pages: [{ temperature: 18 }, { temperature: 18 }] },
+    meta: {
+      dataUpdatedAt: iso(start),
+      expiresAt: iso(start + 3_600_000),
+      lastAttemptResult: "failure",
+      dataSource: "cache",
+    },
   });
 });
 test("multi-HTTP failure carries HTTP 429 and Retry-After into the Backoff", async () => {
@@ -1234,6 +1282,7 @@ test("Weather Providers end to end: Tx-A / Tx-P, Cache on failure, no location s
       dataUpdatedAt: iso(start),
       expiresAt: iso(start + 2 * H),
       lastAttemptResult: "failure",
+      dataSource: "cache",
     },
   });
   expect(logger.warn).toHaveBeenCalledWith(

@@ -117,6 +117,17 @@ const api = (runtime: RuntimeStoreAccess) =>
       states: Record<string, { data: unknown; meta: Record<string, unknown> }>;
     }
   ).states;
+/** Latest saved Snapshot, read directly: the API masking never changes it. */
+const stored = (db: Database.Database, key = "currentWeather") =>
+  JSON.parse(
+    (
+      db
+        .prepare(
+          "SELECT snapshot_json FROM published_state_snapshots WHERE state_key=? ORDER BY generation DESC LIMIT 1",
+        )
+        .get(key) as { snapshot_json: string }
+    ).snapshot_json,
+  );
 test("SCH-01 HTTP Timeout is recorded as a failure with Backoff", async () => {
   const { db, runtime } = start(database());
   vi.spyOn(AbortSignal, "timeout").mockImplementation(() =>
@@ -208,8 +219,35 @@ test("SCH-23/26 restart: future nextAttemptAt is respected and expired data is m
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(api(second.runtime).currentWeather.data).toEqual({ temperature: 18 });
 });
+test("Issue #87: a failure within the TTL serves the retained data as cache", async () => {
+  const { db, runtime } = start(database());
+  // A 2-minute period lets the next attempt run before expiresAt (+5m).
+  const c = new StateAcquisitionCoordinator(runtime, null, [
+    provider("currentWeather", { periodMs: 120_000 }),
+  ]);
+  const started = wall;
+  await c.runOnce("currentWeather");
+  expect(api(runtime).currentWeather?.meta.dataSource).toBe("externalApi");
+  fetchMock.mockImplementation(async () => new Response("", { status: 503 }));
+  wall = started + 240_000;
+  await c.runOnce("currentWeather");
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const expected = {
+    data: { temperature: 18 },
+    meta: {
+      dataUpdatedAt: iso(started),
+      expiresAt: iso(started + 300_000),
+      lastAttemptAt: iso(started + 240_000),
+      lastAttemptResult: "failure",
+      publishedAt: iso(started + 240_000),
+      dataSource: "cache",
+    },
+  };
+  expect(api(runtime).currentWeather).toEqual(expected);
+  expect(stored(db)).toEqual(expected);
+});
 test("SCH-32 TTL expiry with a Provider failure publishes no expired data but keeps Metadata", async () => {
-  const { runtime } = start(database());
+  const { db, runtime } = start(database());
   const c = new StateAcquisitionCoordinator(runtime, null, [
     provider("currentWeather"),
   ]);
@@ -228,6 +266,12 @@ test("SCH-32 TTL expiry with a Provider failure publishes no expired data but ke
       publishedAt: iso(started + 600_000),
       dataSource: null,
     },
+  });
+  // Issue #87: the saved Snapshot keeps the data as "cache"; only the API
+  // response is masked (10.8), and masking does not change the Snapshot.
+  expect(stored(db)).toMatchObject({
+    data: { temperature: 18 },
+    meta: { lastAttemptResult: "failure", dataSource: "cache" },
   });
 });
 test("SCH-33 one State's failure does not hinder another State's acquisition", async () => {

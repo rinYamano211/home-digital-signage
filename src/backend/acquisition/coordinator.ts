@@ -319,6 +319,8 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
         : null;
     if (snapshot && !this.valid(snapshot)) snapshot = null; // invalid Provider data
     const succeeded = snapshot !== null;
+    // Failure re-publishes the retained data as "cache" (10.5, Issue #87).
+    // Expiry is not judged here: the Published State API masks it (10.8).
     if (!snapshot)
       snapshot = existing
         ? {
@@ -328,6 +330,7 @@ export class StateAcquisitionCoordinator implements AcquisitionCoordinator {
               lastAttemptAt: startedAt,
               lastAttemptResult: "failure",
               publishedAt: completedAt,
+              dataSource: existing.data === null ? null : "cache",
             },
           }
         : {

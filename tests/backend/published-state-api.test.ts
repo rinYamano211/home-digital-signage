@@ -163,6 +163,12 @@ test("expired data is masked without changing history or publishedAt", async () 
   expect(
     readPublishedStates(runtime, now - 1).body as { states: unknown },
   ).toMatchObject({ states: { currentWeather: stored } });
+  // Just after expiresAt the data stays masked (Issue #87 boundary check).
+  expect(
+    readPublishedStates(runtime, now + 1).body as { states: unknown },
+  ).toMatchObject({
+    states: { currentWeather: { data: null, meta: { dataSource: null } } },
+  });
 });
 test("Schedule for another Asia/Tokyo date is masked even within TTL", async () => {
   const { runtime, save } = committed();
