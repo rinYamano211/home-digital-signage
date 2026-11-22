@@ -475,11 +475,12 @@ type PublishedStateMetadata = {
 保存Published StateのSnapshotでは、`dataSource`はSnapshot生成時に採用したデータの供給経路を表す。期限切れデータが内部に残っている場合も、元の供給経路を保持できる。
 
 - `externalApi`：外部APIから取得したデータを使用。
-- `cache`：Backend Cacheから読み出したデータを使用。
+- `cache`：Backend内に保持している取得済みデータを再利用した。専用のBackend Cache（`backend_cache`）からの読み出しに加え、MVPのCoordinatorが取得失敗時に既存のPublished State Snapshotのデータを再公開する場合も含む（Issue #87）。
 - `null`：表示用APIで提供するデータが存在しない。
 
 表示用API Responseでは、`dataSource`は現在APIで提供するデータの供給経路を表す。期限切れで`data: null`へ変換するときは、`dataSource`も`null`へ変換する（10.8）。
 `dataSource`と`lastAttemptResult`は独立した情報である。最後の外部取得が失敗していても、有効Cacheからデータを提供できる。取得結果だけでCache由来を判定しない。
+`dataSource`は供給経路だけを表す。データを最初に取得した経路、データの有効性、最新の外部取得の成功は保証しない。取得失敗時のCoordinatorは有効期限を判定せず、期限切れのSnapshotでも保存側は`cache`とする。期限切れデータをConsumerに提供しないことは、表示用APIのMask（10.8）で保証する。
 
 ### 10.5 外部データ取得時の更新ルール
 
@@ -1491,7 +1492,7 @@ Stateごとに独立したRequestとし、共有しない（従来15.3・16.1・
 
 #### dataSourceと更新待ち
 
-18.7と同じ規則を天気にも適用する。Frontendの「更新待ち」は`data !== null && lastAttemptResult === "failure"`で判定し、`dataSource`の値に依存しない（#87は#9で修正しない）。TTL切れは既存のAPI契約（10.8）どおり`data: null`になり、「取得できません」と表示する。
+18.7と同じ規則を天気にも適用する。Frontendの「更新待ち」は`data !== null && lastAttemptResult === "failure"`で判定し、`dataSource`の値に依存しない（取得失敗時の`dataSource`はIssue #87で修正済み。18.7）。TTL切れは既存のAPI契約（10.8）どおり`data: null`になり、「取得できません」と表示する。
 
 #### 出典表示（利用条件）
 
@@ -1824,7 +1825,7 @@ Event名は[Backend開発手順](backend-development.md)の「Schedule Service�
 
 #### dataSourceと更新待ち
 
-10.5は「取得失敗・有効Cacheあり」で`dataSource: "cache"`とするが、現在のCoordinatorは失敗時に前のSnapshotの`dataSource`を引き継ぐ（`externalApi`のまま残る）。この食い違いは#10では修正せず、#16に関連する別Issueで扱う。
+取得失敗時の`dataSource`は、#10の時点では前のSnapshotの値（`externalApi`）が残っていた。Issue #87（PR #131）で修正し、保持していたデータを再公開するときは`cache`とするようにした（10.4・10.5）。
 Frontendの「更新待ち」は`data !== null && lastAttemptResult === "failure"`で判定し、`dataSource`の値に依存しない。正常な0件（`events: []`）は取得成功として扱う。
 
 #### 残存リスク・保証範囲
