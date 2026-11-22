@@ -310,11 +310,15 @@ body {
   white-space: nowrap;
 }
 
-/* 降雨帯。#93が終わるまでは控えめな「取得できません」の表示だけ（UI設計 6.5）。 */
+/* 降雨帯（UI設計 5.2・6.1）。ここは控えめな帯（取得中・取得できません・更新待ち・雨予報なし等）。
+   最小の高さは、状態が変わっても帯と時間別が動かないよう、右端に2行の更新待ちが付いた高さに揃える
+   （Issue #105）。中身が高い場合だけ伸ばし、文字を欠かさない。 */
 .weather-rain {
   display: flex;
   align-items: center;
   gap: 18px;
+  box-sizing: border-box;
+  min-height: 83px;
   padding: 14px 28px;
   border-radius: 20px;
   background: var(--color-tile);
@@ -335,6 +339,7 @@ body {
   background: #34476a;
   color: #e3edff;
   font-size: 36px;
+  min-height: 95px;
   padding: 20px 28px;
 }
 
