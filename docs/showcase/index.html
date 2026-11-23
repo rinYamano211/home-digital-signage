@@ -1108,7 +1108,7 @@
         </h1>
         <p class="lede">
           Raspberry
-          Piと10.1インチの画面でつくる、自分のための情報端末です。時計をいつも大きく出しながら、今日の予定、今日の天気、週間天気を順番に切り替えて表示します。下の画面は本物と同じ配色・レイアウトで再現した動く見本です。ボタンで「困ったとき」も起こしてみてください。
+          Piと10.1インチの画面でつくる、自分のための情報端末です。時計をいつも大きく出しながら、今日の予定、今日の天気、週間天気を順番に切り替えて表示します。下の画面は本物と同じ配色・レイアウトで再現した動く見本です。時刻・予定・天気は、すべて「14:30」の一場面の例です。ボタンで「困ったとき」も起こしてみてください。
         </p>
 
         <div class="device">
@@ -1116,7 +1116,7 @@
             class="sign"
             id="sign"
             data-mode="normal"
-            role="img"
+            role="group"
             aria-label="サイネージ画面の再現。左に時計、右に予定と天気が切り替わる"
           >
             <div class="sign-in">
@@ -1219,7 +1219,7 @@
               </div>
             </div>
             <div class="blackout b1">
-              <span>home-digital-signage-backend.service</span
+              <span>home-digital-signage-kiosk.service</span
               ><span style="color: #e8a39d">main process exited</span>
             </div>
             <div class="blackout b2">
@@ -1275,7 +1275,7 @@
               data-m="crash"
               aria-pressed="false"
             >
-              アプリが落ちた
+              画面のアプリが落ちた
             </button>
             <button
               type="button"
@@ -2811,7 +2811,8 @@
             </svg>
           </div>
           <figcaption>
-            失敗が続いたときに、次に取りに行くまでの待ち時間（分）です。灰色が以前、オレンジがいまの設定です。待っている間も、手元に残っている期限内の情報には「更新待ち」の札を付けて表示を続けます。
+            失敗が続いたときに、次に取りに行くまでの待ち時間（分）です。灰色が以前、オレンジがいまの設定です。待っている間も、手元に残っている期限内の情報には「更新待ち」の札を付けて表示を続けます。ただし、相手のサービスから「待って」と言われたとき（HTTP
+            429のRetry-After）や、1日に使える回数（Quota）が残り少ないときは、5分より長く待つことがあります。
           </figcaption>
         </figure>
       </section>
@@ -3003,27 +3004,26 @@
           return String(n).padStart(2, "0");
         }
 
+        // サンプルの日時。予定・雨の帯・「更新待ち」の札と話を合わせるため、
+        // 現在時刻ではなく、この一場面に固定する。
+        var SAMPLE = new Date(2026, 10, 23, 14, 30);
+
         // 時計
-        function tick() {
-          var d = new Date();
-          $("#s-date").textContent =
-            d.getMonth() +
-            1 +
-            "月" +
-            d.getDate() +
-            "日（" +
-            WD[d.getDay()] +
-            "）";
-          $("#s-time").textContent =
-            pad(d.getHours()) + ":" + pad(d.getMinutes());
-        }
-        tick();
-        setInterval(tick, 1000);
+        $("#s-date").textContent =
+          SAMPLE.getMonth() +
+          1 +
+          "月" +
+          SAMPLE.getDate() +
+          "日（" +
+          WD[SAMPLE.getDay()] +
+          "）";
+        $("#s-time").textContent =
+          pad(SAMPLE.getHours()) + ":" + pad(SAMPLE.getMinutes());
 
         // 時間別（次の正時から12枠・サンプル値）
         var temps = [18, 18, 17, 16, 15, 14, 14, 13, 13, 12, 12, 11];
         var probs = [60, 70, 40, 20, 10, 10, 0, 0, 10, 10, 20, 20];
-        var start = new Date();
+        var start = new Date(SAMPLE.getTime());
         start.setMinutes(0, 0, 0);
         start.setHours(start.getHours() + 1);
         var html = "";
@@ -3067,7 +3067,7 @@
         ];
         var lo = 7,
           hi = 19,
-          today = new Date(),
+          today = SAMPLE,
           w = "";
         for (var j = 0; j < 7; j++) {
           var d = new Date(
@@ -3133,7 +3133,20 @@
           dots[cur].classList.remove("on");
           dots[n].classList.add("on");
           cur = n;
+          syncA11y();
         }
+        // 見えているパネルだけを読み上げの対象にし、選択中の点を伝える
+        function syncA11y() {
+          panels.forEach(function (p, i) {
+            if (i === cur) p.removeAttribute("aria-hidden");
+            else p.setAttribute("aria-hidden", "true");
+          });
+          dots.forEach(function (b, i) {
+            if (i === cur) b.setAttribute("aria-current", "true");
+            else b.removeAttribute("aria-current");
+          });
+        }
+        syncA11y();
         function restart() {
           clearInterval(timer);
           if (!paused)
@@ -3160,7 +3173,7 @@
           ],
           offline: [
             "Wi-Fiが切れた",
-            "手元に残っている期限内の情報で表示を続け、右上に「↻ 更新待ち・14:05時点」の札を出します。裏では1分、2分、4分、5分…と間をあけて取り直し、つながったら札は自動で消えます。",
+            "手元に残っている期限内の情報で表示を続け、右上に「↻ 更新待ち・14:05時点」の札を出します。裏では1分、2分、4分、5分…と間をあけて取り直し、つながった後に取り直しが成功すると、札は自動で消えます。",
           ],
           unsynced: [
             "時刻があやしい",
@@ -3171,8 +3184,8 @@
             "データを待たずに、まず画面を出します（電源オンから2分以内が目標）。取得中は砂時計と文字だけを出し、くるくる回る演出は使いません。",
           ],
           crash: [
-            "アプリが落ちた",
-            "Backendのプロセスが止まると、systemdが気づいて自動で起動し直します。異常終了から1分以内に元の画面へ戻るのが目標です。",
+            "画面のアプリが落ちた",
+            "画面を描くブラウザ（Chromium）が止まると、systemdが気づいて自動で起動し直します。時刻の確認と取得を経て、異常終了から1分以内に元の画面へ戻るのが目標です。なお、データを集める側（Backend）だけが止まった場合は、画面は手元に残っている期限内の情報で表示を続け、裏で起動し直します。",
           ],
         };
         function setMode(m) {
@@ -3191,13 +3204,18 @@
             );
             seq.push(
               setTimeout(function () {
-                sign.dataset.mode = "boot";
+                sign.dataset.mode = "unsynced";
               }, 4400),
             );
             seq.push(
               setTimeout(function () {
+                sign.dataset.mode = "boot";
+              }, 5800),
+            );
+            seq.push(
+              setTimeout(function () {
                 sign.dataset.mode = "normal";
-              }, 6400),
+              }, 7800),
             );
           } else if (m === "boot") {
             sign.dataset.mode = "unsynced";
