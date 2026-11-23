@@ -165,7 +165,17 @@ if [ "$kiosk_state" = ERR ]; then
   # Fallback (27.10): Chromium processes of the Desktop user.
   measure $(pgrep -u "$kiosk_user" -x chromium 2>/dev/null)
 else
-  measure $(cgroup_pids "$kiosk_cgroup")
+  # Chromium moves its main process out of the unit into its own scope
+  # (app-org.chromium.Chromium-<PID>.scope) next to the unit, so both are
+  # counted (27.4). Pi check of Issue #13 stage 2.
+  pids=$(cgroup_pids "$kiosk_cgroup")
+  if [ "$kiosk_cgroup" != - ]; then
+    for scope in "$sys/fs/cgroup${kiosk_cgroup%/*}"/app-org.chromium.Chromium-*.scope; do
+      [ -d "$scope" ] || continue
+      pids="$pids $(cat "$scope/cgroup.procs" 2>/dev/null || echo ERR)"
+    done
+  fi
+  measure $pids
 fi
 add "$kiosk_state"; add "$kiosk_restarts"
 add "$p_n"; add "$p_rss"; add "$p_pss"; add "$p_ticks"

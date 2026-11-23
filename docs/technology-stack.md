@@ -5096,7 +5096,7 @@ Piで確認するまで、確定扱いしない。結果は`docs/verification/`�
 | API | `/api/time-availability`の結果・応答時間・`availability` | `collect-metrics-api.mjs` | 60秒 |
 | API | `/api/published-states`の結果・応答時間、5つのStateの`lastAttemptAt`・`lastAttemptResult`・`dataUpdatedAt`・`expiresAt`・`dataSource` | 同上。**`data`は出力しない** | 60秒 |
 
-- Chromium全体：Kiosk Unitの`ControlGroup`に属するProcessの合計。
+- Chromium全体：Kiosk Unitの`ControlGroup`に属するProcessと、同じ階層（user managerの`app.slice`）にあるChromiumのscope（`app-org.chromium.Chromium-<PID>.scope`）に属するProcessの合計。Chromiumの主Processは、起動後に自分を専用のscopeへ移すため、Kiosk Unitのcgroupには子のProcessだけが残る（#13の段階2で実機確認。主ProcessのRSSは約315MB）。Kiosk以外のChromiumのscopeがあれば、それも数える（72時間試験の間は、Kiosk以外のChromiumを起動しない）。
 - APIの結果は、`OK`・`HTTP_<code>`（200以外）・`TIMEOUT`・`CONN_ERR`（接続の失敗）・`INVALID_JSON`（JSONとして読めない、または期待した形でない）に分ける。`OK`以外のときは、メタデータの列を`ERR`にする。
 - CPU使用率と増加の傾向は、元値の差から集計の時に計算する（Scriptでは計算しない）。
 
