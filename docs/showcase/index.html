@@ -14,7 +14,7 @@
     />
     <style>
       /* Layout: サイネージ自身の配色（柔らかいダーク・タイル）で描く一本のスクロール物語。
-   冒頭に動くサイネージの再現、そのあと「置き場所 → 中身 → データの旅 → リズム → トラブル → 道のり → これから」 */
+   冒頭に動くサイネージの再現、そのあと「設置 → ハードウェア → データフロー → 更新頻度 → 開発の歩み → 今後の展望」 */
       :root {
         --night: #16151b; /* ページの地 */
         --bg: #1c1b22; /* サイネージ画面の背景（ui-design 3.3） */
@@ -80,10 +80,15 @@
       h3 {
         margin: 0;
         text-wrap: balance;
+        word-break: auto-phrase;
         font-weight: 700;
       }
       p {
         margin: 0;
+      }
+      p,
+      figcaption {
+        text-wrap: pretty;
       }
       .kicker {
         font-family: var(--font-mono);
@@ -155,6 +160,10 @@
       .hero h1 em {
         font-style: normal;
         color: var(--amber);
+      }
+      .hero h1 span,
+      .hero h1 em {
+        display: inline-block;
       }
       .hero .lede {
         color: var(--ink-2);
@@ -648,38 +657,6 @@
         font-size: 15px;
       }
 
-      /* ---------- 数字の帯 ---------- */
-      .facts {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 1px;
-        background: var(--line);
-        border-radius: 18px;
-        overflow: hidden;
-      }
-      .fact {
-        background: var(--night);
-        padding: 18px 20px;
-        display: grid;
-        gap: 2px;
-      }
-      .fact .v {
-        font-size: 28px;
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-        line-height: 1.3;
-      }
-      .fact .v small {
-        font-size: 15px;
-        color: var(--ink-2);
-        font-weight: 500;
-        margin-left: 2px;
-      }
-      .fact .k {
-        font-size: 13px;
-        color: var(--ink-2);
-      }
-
       /* ---------- 部品 ---------- */
       .parts {
         list-style: none;
@@ -1103,12 +1080,10 @@
       <!-- ============ HERO ============ -->
       <header class="hero">
         <div class="kicker">home-digital-signage</div>
-        <h1>
-          見るだけで、今日がわかる。<br />リビングの<em>小さなサイネージ</em>をつくっている。
-        </h1>
+        <h1><span>リビングの</span><em>小さなサイネージ</em></h1>
         <p class="lede">
           Raspberry
-          Piと10.1インチの画面でつくる、自分のための情報端末です。時計をいつも大きく出しながら、今日の予定、今日の天気、週間天気を順番に切り替えて表示します。下の画面は本物と同じ配色・レイアウトで再現した動く見本です。時刻・予定・天気は、すべて「14:30」の一場面の例です。ボタンで「困ったとき」も起こしてみてください。
+          Piと10.1インチの画面でつくる、自分のための情報端末。時計をいつも大きく出しながら、今日の予定、今日の天気、週間天気を順番に切り替えて表示。<br />下の画面は本物と同じ配色・レイアウトで再現した動く見本。
         </p>
 
         <div class="device">
@@ -1289,50 +1264,20 @@
           <div class="explain" id="explain" aria-live="polite">
             <b>ふだんの画面</b>
             <p>
-              時計はずっと左に。右側は「今日の予定 → 今日の天気 →
-              週間天気」の順にふわっと切り替わります（実機は10秒ごと、ここでは7秒）。左下の点が今どれを見ているかの目印です。
+              時計は常に左に表示。右側は「今日の予定 → 今日の天気 →
+              週間天気」の順にフェードで切り替わる（実機は10秒ごと、ここでは7秒）。左下の点が表示中のコンテンツを示す。
             </p>
           </div>
         </div>
       </header>
 
-      <!-- ============ 数字 ============ -->
-      <section aria-label="数字で見るプロジェクト">
-        <div class="facts">
-          <div class="fact">
-            <span class="v">10.1<small>インチ</small></span
-            ><span class="k">1280×800・約149ppi</span>
-          </div>
-          <div class="fact">
-            <span class="v">約3<small>m</small></span
-            ><span class="k">ソファから時計が読める距離</span>
-          </div>
-          <div class="fact">
-            <span class="v">5<small>つ</small></span
-            ><span class="k">集めて表示する情報</span>
-          </div>
-          <div class="fact">
-            <span class="v">2<small>分以内</small></span
-            ><span class="k">電源オンから画面が出るまで</span>
-          </div>
-          <div class="fact">
-            <span class="v">72<small>時間</small></span
-            ><span class="k">人の手なしで動き続ける目標</span>
-          </div>
-          <div class="fact">
-            <span class="v">130<small>本</small></span
-            ><span class="k">ここまでのPull Request</span>
-          </div>
-        </div>
-      </section>
-
       <!-- ============ 置き場所 ============ -->
       <section>
         <div class="sec-head">
-          <div class="kicker">どこに置く？</div>
-          <h2>ソファから、ちらっと見て読める大きさ</h2>
+          <div class="kicker">設置</div>
+          <h2>暮らしに馴染む表示設計</h2>
           <p>
-            置き場所はリビングの壁です。夜もつけっぱなしで寝る場所からも見えるので、真っ白・真っ黒を避けた、まぶしくない配色にしています。
+            リビングの壁に設置し、夜も点灯したままにする。寝る場所からも目に入るため、真っ白・真っ黒を避けた、まぶしくない配色とした。約3m離れたソファからでも、時刻を読める文字の大きさにしている。
           </p>
         </div>
         <figure>
@@ -1602,8 +1547,7 @@
             </svg>
           </div>
           <figcaption>
-            時計の文字は約200px。この画面は1pxが約0.17mmなので、数字の高さは実寸で約2.5cmになります。「3m先なら文字の高さ2.5cm」という掲示物の目安に合わせました。本当に読めるかは、Raspberry
-            Piの実機で確かめます。
+            時計の文字は約200px。この画面は1pxが約0.17mmのため、数字の高さは実寸で約2.5cmになる。「3m先なら文字の高さ2.5cm」という掲示物の目安に合わせた。
           </figcaption>
         </figure>
       </section>
@@ -1611,11 +1555,11 @@
       <!-- ============ 中身 ============ -->
       <section>
         <div class="sec-head">
-          <div class="kicker">中身はなに？</div>
-          <h2>手のひらサイズのコンピューターが、画面の裏に</h2>
+          <div class="kicker">ハードウェア</div>
+          <h2>Raspberry Piで構築するIoTサイネージ</h2>
           <p>
-            画面の裏にRaspberry Pi
-            5を取り付けて、ケーブル2本で画面とつなぎます。キーボードもマウスもつながず、設定や更新はPCからネットワーク越し（SSH）で行います。
+            ディスプレイの裏にRaspberry Pi
+            5を取り付け、ケーブル2本で画面とつなぐ。キーボード・マウスは接続せず、設定や更新はPCからネットワーク越し（SSH）で行う。
           </p>
         </div>
         <div class="two-col">
@@ -1870,13 +1814,16 @@
               </svg>
             </div>
             <figcaption>
-              後ろから見た配線のイメージです。実際の取り付け位置は、これから3Dプリントで作る筐体の設計で決めます。
+              背面の配線イメージ。実際の取り付け位置は、今後3Dプリントで製作する筐体の設計で決める。
             </figcaption>
           </figure>
           <div style="display: grid; gap: 22px">
             <ul class="parts">
               <li>
-                <span>Raspberry Pi 5 2GB<small>サイネージの頭脳</small></span
+                <span
+                  >Raspberry Pi 5 2GB<small
+                    >データ取得と表示を担う本体</small
+                  ></span
                 ><span>14,780円</span>
               </li>
               <li>
@@ -1889,15 +1836,12 @@
               <li>
                 <span
                   >microSD 64GB（高耐久）<small
-                    >24時間書き込んでも長持ちする種類</small
+                    >常時稼働の書き込みに強い種類</small
                   ></span
                 ><span>4,142円</span>
               </li>
               <li>
-                <span
-                  >公式 27W USB-C 電源<small
-                    >Pi 5に必要な電力をしっかり</small
-                  ></span
+                <span>公式 27W USB-C 電源<small>Pi 5の推奨電源</small></span
                 ><span>2,750円</span>
               </li>
               <li>
@@ -1908,7 +1852,7 @@
                 ><span>3,635円</span>
               </li>
               <li>
-                <span>Active Cooler<small>小さなファン付きの冷却</small></span
+                <span>Active Cooler<small>ファン付きのヒートシンク</small></span
                 ><span>1,100円</span>
               </li>
             </ul>
@@ -1923,7 +1867,7 @@
               <p>
                 電子部品と配線で
                 <b class="mono" style="color: var(--ink)">41,387円</b
-                >。予算は5〜6万円で、残りはRTC電池と3Dプリントの筐体に使います。
+                >。予算は5〜6万円で、残りはRTC電池と3Dプリントの筐体に充てる。
               </p>
             </div>
           </div>
@@ -1933,10 +1877,10 @@
       <!-- ============ データの旅 ============ -->
       <section>
         <div class="sec-head">
-          <div class="kicker">データの旅</div>
-          <h2>天気や予定は、こうやって画面まで届く</h2>
+          <div class="kicker">データフロー</div>
+          <h2>日常の情報を、ひとつの画面へ</h2>
           <p>
-            集める係（Backend）と見せる係（Frontend）を分けています。集める係は取ってきた最新の状態をデータベースに置いておくだけで、何をいつ表示するかは見せる係が決めます。
+            外部APIから予定と天気を取得するBackendと、表示するFrontendを分離している。Backendは取得した最新の状態をSQLiteに保存し、何をいつ表示するかはFrontendが決める。
           </p>
         </div>
         <figure>
@@ -2162,7 +2106,7 @@
                 font-size="12"
                 fill="#a7a096"
               >
-                集める係（Node.js）
+                Backend（Node.js）
               </text>
               <rect
                 x="250"
@@ -2435,7 +2379,7 @@
                 font-size="12"
                 fill="#a7a096"
               >
-                見せる係
+                Frontend
               </text>
               <rect
                 x="450"
@@ -2557,7 +2501,7 @@
             </svg>
           </div>
           <figcaption>
-            流れる光は、データが外から画面までたどる道筋です。集める係と見せる係が直接話さず、データベースを間にはさむので、どちらかが止まっても、もう一方は最後に分かっている情報で動き続けられます。
+            流れる光は、データが外部APIから画面まで届く経路。BackendとFrontendは直接やり取りせず、データベースを介する。そのため、一方が停止しても、もう一方は最後に得た有効な情報で動作を続けられる。
           </figcaption>
         </figure>
       </section>
@@ -2565,10 +2509,10 @@
       <!-- ============ リズム ============ -->
       <section>
         <div class="sec-head">
-          <div class="kicker">それぞれのリズム</div>
-          <h2>情報ごとに、取りに行く間隔がちがう</h2>
+          <div class="kicker">更新頻度</div>
+          <h2>情報の鮮度に合わせた更新設計</h2>
           <p>
-            雨はすぐ変わるので5分ごと、週間天気はめったに変わらないので6時間ごと。1日に何回インターネットへ取りに行くかを、同じ物差しで並べました。目盛りの1本が1回分です。
+            変化の速い雨の予報は5分ごと、変化の少ない週間天気は6時間ごとに取得する。1日あたりの取得回数を同じ尺度で並べた（目盛り1本が1回）。
           </p>
         </div>
         <div class="rhythm">
@@ -2609,212 +2553,8 @@
           </div>
         </div>
         <p style="color: var(--ink-2); font-size: 14px; max-width: 68ch">
-          期限切れの情報は表示しません。古い天気を「今の天気」のように見せないためです。間隔と期限は暫定の値で、実機で使いながら調整します。
+          有効期限を過ぎた情報は表示しない。古い天気を現在の天気として見せないため。間隔と期限は暫定値で、実機での運用を通じて調整する。
         </p>
-      </section>
-
-      <!-- ============ トラブル ============ -->
-      <section>
-        <div class="sec-head">
-          <div class="kicker">失敗しても、あきらめない</div>
-          <h2>Wi-Fiが切れたら、間をあけて何度も取りに行く</h2>
-          <p>
-            取得に失敗すると、待つ時間を1分、2分、4分…と少しずつ伸ばしながら取り直します（Backoff）。以前は最大30分まで伸びて、Wi-Fiが戻っても30分近く待つことがありました。11月21日に上限を5分に縮めました。
-          </p>
-        </div>
-        <figure>
-          <div class="svgbox">
-            <svg
-              viewBox="0 0 680 300"
-              role="img"
-              aria-label="失敗が続いたときの待ち時間の比較。以前は1、2、4、8、16、30分と伸びた。今は1、2、4、5、5、5分で止まる。6回目までの合計は61分から22分になった"
-            >
-              <!-- 軸 -->
-              <line
-                x1="60"
-                y1="240"
-                x2="660"
-                y2="240"
-                stroke="#77716a"
-                stroke-width="1"
-              />
-              <g font-size="11" fill="#77716a" text-anchor="end">
-                <text x="52" y="244">0</text>
-                <line x1="56" y1="180" x2="660" y2="180" stroke="#34323c" />
-                <text x="52" y="184">10分</text>
-                <line x1="56" y1="120" x2="660" y2="120" stroke="#34323c" />
-                <text x="52" y="124">20分</text>
-                <line x1="56" y1="60" x2="660" y2="60" stroke="#34323c" />
-                <text x="52" y="64">30分</text>
-              </g>
-              <!-- 1目盛 = 6px/分。グループ幅100、棒幅34 -->
-              <g font-size="11" text-anchor="middle">
-                <!-- 1 -->
-                <rect
-                  x="76"
-                  y="234"
-                  width="34"
-                  height="6"
-                  rx="3"
-                  fill="#4a4752"
-                />
-                <rect
-                  x="114"
-                  y="234"
-                  width="34"
-                  height="6"
-                  rx="3"
-                  fill="#f2c48d"
-                />
-                <text x="93" y="228" fill="#a7a096">1</text>
-                <text x="131" y="228" fill="#f2c48d">1</text>
-                <text x="112" y="260" fill="#a7a096">1回目</text>
-                <!-- 2 -->
-                <rect
-                  x="176"
-                  y="228"
-                  width="34"
-                  height="12"
-                  rx="3"
-                  fill="#4a4752"
-                />
-                <rect
-                  x="214"
-                  y="228"
-                  width="34"
-                  height="12"
-                  rx="3"
-                  fill="#f2c48d"
-                />
-                <text x="193" y="222" fill="#a7a096">2</text>
-                <text x="231" y="222" fill="#f2c48d">2</text>
-                <text x="212" y="260" fill="#a7a096">2回目</text>
-                <!-- 3 -->
-                <rect
-                  x="276"
-                  y="216"
-                  width="34"
-                  height="24"
-                  rx="3"
-                  fill="#4a4752"
-                />
-                <rect
-                  x="314"
-                  y="216"
-                  width="34"
-                  height="24"
-                  rx="3"
-                  fill="#f2c48d"
-                />
-                <text x="293" y="210" fill="#a7a096">4</text>
-                <text x="331" y="210" fill="#f2c48d">4</text>
-                <text x="312" y="260" fill="#a7a096">3回目</text>
-                <!-- 4 -->
-                <rect
-                  x="376"
-                  y="192"
-                  width="34"
-                  height="48"
-                  rx="3"
-                  fill="#4a4752"
-                />
-                <rect
-                  x="414"
-                  y="210"
-                  width="34"
-                  height="30"
-                  rx="3"
-                  fill="#f2c48d"
-                />
-                <text x="393" y="186" fill="#a7a096">8</text>
-                <text x="431" y="204" fill="#f2c48d">5</text>
-                <text x="412" y="260" fill="#a7a096">4回目</text>
-                <!-- 5 -->
-                <rect
-                  x="476"
-                  y="144"
-                  width="34"
-                  height="96"
-                  rx="3"
-                  fill="#4a4752"
-                />
-                <rect
-                  x="514"
-                  y="210"
-                  width="34"
-                  height="30"
-                  rx="3"
-                  fill="#f2c48d"
-                />
-                <text x="493" y="138" fill="#a7a096">16</text>
-                <text x="531" y="204" fill="#f2c48d">5</text>
-                <text x="512" y="260" fill="#a7a096">5回目</text>
-                <!-- 6 -->
-                <rect
-                  x="576"
-                  y="60"
-                  width="34"
-                  height="180"
-                  rx="3"
-                  fill="#4a4752"
-                />
-                <rect
-                  x="614"
-                  y="210"
-                  width="34"
-                  height="30"
-                  rx="3"
-                  fill="#f2c48d"
-                />
-                <text x="593" y="54" fill="#a7a096">30</text>
-                <text x="631" y="204" fill="#f2c48d">5</text>
-                <text x="612" y="260" fill="#a7a096">6回目</text>
-              </g>
-              <!-- 上限線 -->
-              <line
-                x1="60"
-                y1="210"
-                x2="660"
-                y2="210"
-                stroke="#f2c48d"
-                stroke-width="1"
-                stroke-dasharray="4 4"
-                opacity=".7"
-              />
-              <text x="66" y="204" font-size="11" fill="#f2c48d">
-                いまの上限 5分
-              </text>
-              <!-- 凡例 -->
-              <rect
-                x="400"
-                y="278"
-                width="12"
-                height="12"
-                rx="3"
-                fill="#4a4752"
-              />
-              <text x="418" y="288" font-size="12" fill="#a7a096">
-                以前：6回目まで合計61分
-              </text>
-              <rect x="400" y="14" width="0" height="0" />
-              <rect
-                x="60"
-                y="278"
-                width="12"
-                height="12"
-                rx="3"
-                fill="#f2c48d"
-              />
-              <text x="78" y="288" font-size="12" fill="#ece6dc">
-                いま：6回目まで合計22分
-              </text>
-            </svg>
-          </div>
-          <figcaption>
-            失敗が続いたときに、次に取りに行くまでの待ち時間（分）です。灰色が以前、オレンジがいまの設定です。待っている間も、手元に残っている期限内の情報には「更新待ち」の札を付けて表示を続けます。ただし、相手のサービスから「待って」と言われたとき（HTTP
-            429のRetry-After）や、1日に使える回数（Quota）が残り少ないときは、5分より長く待つことがあります。
-          </figcaption>
-        </figure>
       </section>
 
       <!-- ============ 道のり ============ -->
@@ -2822,132 +2562,119 @@
         <div class="two-col">
           <div style="display: grid; gap: 24px">
             <div class="sec-head">
-              <div class="kicker">ここまでの道のり</div>
-              <h2>部品えらびから、壁に掛けるまで</h2>
+              <div class="kicker">開発の歩み</div>
+              <h2>構想から実装・検証へ</h2>
               <p>
-                1つの機能は「設計を書く → Backendを作る → 画面を作る →
-                Piで確かめて記録する」の順に、小さなPull
-                Requestを重ねて進めています。
+                1つの機能は「設計 → Backend → 画面 →
+                実機での検証と記録」の順に、小さなPull&nbsp;Requestを積み重ねて進めている。
               </p>
             </div>
             <ol class="road">
               <li>
                 <span class="dt">9/11</span><span class="pin"></span
-                ><span class="tx">部品が決まる<small>#1</small></span>
+                ><span class="tx">部品の選定<small>#1</small></span>
               </li>
               <li>
                 <span class="dt">9/14</span><span class="pin"></span
-                ><span class="tx"
-                  >何を作るか（MVP）が決まる<small>#2</small></span
-                >
+                ><span class="tx">MVPの範囲の決定<small>#2</small></span>
               </li>
               <li>
                 <span class="dt">10/4</span><span class="pin"></span
                 ><span class="tx"
-                  >集める係と見せる係の設計<small>#3</small></span
+                  >Backend・Frontendの責務設計<small>#3</small></span
                 >
               </li>
               <li>
                 <span class="dt">10/24</span><span class="pin"></span
                 ><span class="tx"
-                  >使う技術が決まり、Piが動き出す<small>#4・#6</small></span
+                  >技術選定・Piのセットアップ<small>#4・#6</small></span
                 >
               </li>
               <li>
                 <span class="dt">11/2</span><span class="pin"></span
-                ><span class="tx">画面のデザインが決まる<small>#5</small></span>
+                ><span class="tx">画面デザインの決定<small>#5</small></span>
               </li>
               <li>
                 <span class="dt">11/7</span><span class="pin"></span
                 ><span class="tx"
-                  >時計と、画面の切り替え<small>#7・#8</small></span
+                  >時計・コンテンツの切替<small>#7・#8</small></span
                 >
               </li>
               <li>
                 <span class="dt">11/8</span><span class="pin"></span
-                ><span class="tx"
-                  >予定と天気が画面に出る<small>#10・#9</small></span
-                >
+                ><span class="tx">予定・天気の表示<small>#10・#9</small></span>
               </li>
               <li>
                 <span class="dt">11/14</span><span class="pin"></span
-                ><span class="tx">雨の予報が出る<small>#93</small></span>
+                ><span class="tx">降雨予報の表示<small>#93</small></span>
               </li>
               <li>
                 <span class="dt">11/15</span><span class="pin"></span
-                ><span class="tx"
-                  >あやしい時刻は見せない<small>#65</small></span
-                >
+                ><span class="tx">時刻の信頼性の確認<small>#65</small></span>
               </li>
               <li>
                 <span class="dt">11/21</span><span class="pin"></span
-                ><span class="tx"
-                  >電源を入れたら勝手に起動<small>#12</small></span
-                >
+                ><span class="tx">電源投入時の自動起動<small>#12</small></span>
               </li>
               <li>
                 <span class="dt">11/22</span><span class="pin"></span
                 ><span class="tx"
-                  >天気を遠くからでも読みやすく<small>#98</small></span
+                  >天気表示の視認性の改善<small>#98</small></span
                 >
               </li>
               <li class="phase">
                 <span class="dt">いま</span><span class="pin"></span
-                ><span class="tx">ソフトはほぼそろった</span>
+                ><span class="tx">MVPのソフトウェアがほぼ完成</span>
+              </li>
+              <li class="future">
+                <span class="dt">11月</span><span class="pin"></span
+                ><span class="tx">72時間の連続稼働試験<small>#13</small></span>
               </li>
               <li class="future">
                 <span class="dt">12月</span><span class="pin"></span
                 ><span class="tx"
-                  >72時間つけっぱなしテスト<small>#13</small></span
-                >
-              </li>
-              <li class="future">
-                <span class="dt">12月</span><span class="pin"></span
-                ><span class="tx"
-                  >筐体を測ってCADで設計<small>#19・#20</small></span
+                  >筐体の採寸・CAD設計<small>#19・#20</small></span
                 >
               </li>
               <li class="future">
                 <span class="dt">12/30</span><span class="pin"></span
                 ><span class="tx"
-                  >3Dプリントできる筐体データの完成<small>#21</small></span
+                  >3Dプリント用の筐体データの完成<small>#21</small></span
                 >
               </li>
             </ol>
           </div>
           <div style="display: grid; gap: 24px; align-content: start">
             <div class="sec-head">
-              <div class="kicker">AIと一緒に作る</div>
-              <h2>AIは手を動かし、決めるのは自分</h2>
+              <div class="kicker">AI駆動開発</div>
+              <h2>AIを活用した開発プロセス</h2>
               <p>
-                コードや文書の多くはClaude
-                CodeとCodexが書いています。設計の変更やIssueへの書き込み、Mergeは、毎回自分が確認してから進めます。ルールは<code
+                コードや文書の多くはClaude&nbsp;CodeとCodexが作成する。設計の変更、Issueへの書き込み、Mergeは、毎回自分が確認してから進める。ルールは<code
                   class="mono"
                   style="color: var(--amber)"
                   >AGENTS.md</code
-                >にまとめています。
+                >に定めている。
               </p>
             </div>
             <div class="ai">
               <div>
-                <b>設計</b><span>docsに決めたことを書く</span><code>docs:</code>
+                <b>設計</b><span>決定事項をdocsに記録</span><code>docs:</code>
               </div>
               <div>
-                <b>Backend</b><span>集める係を作る</span
+                <b>Backend</b><span>データ取得・保存の実装</span
                 ><code>feat(backend):</code>
               </div>
               <div>
-                <b>画面</b><span>見せる係を作る</span
-                ><code>feat(frontend):</code>
+                <b>画面</b><span>表示の実装</span><code>feat(frontend):</code>
               </div>
               <div>
-                <b>実機確認</b><span>Piで試して記録</span
+                <b>実機確認</b><span>Piでの検証と記録</span
                 ><code>docs/verification</code>
               </div>
             </div>
             <p style="color: var(--ink-2); font-size: 14px">
-              たとえば雨の予報（#93）は、PR
-              #99〜#107の9本で仕上げました。作業のたびに、自動テストとLintが通ることを確かめています。
+              例えば降雨予報（#93）は、PR
+              #99〜#107の9本で仕上げた。作業のたびに、自動テストとLintの成功を確認している。
             </p>
           </div>
         </div>
@@ -2956,10 +2683,10 @@
       <!-- ============ これから ============ -->
       <section>
         <div class="sec-head">
-          <div class="kicker">いつかやりたい</div>
-          <h2>まずは毎日ちゃんと動くこと。その先に</h2>
+          <div class="kicker">Future</div>
+          <h2>今後の展望</h2>
           <p>
-            今回の完成目標（MVP）はここまでで、以下は将来の夢です。今の作りは、あとから表示を足しやすいように分けてあります。
+            MVPの範囲はここまで。以下は未実装の将来構想で、表示を後から追加しやすい構成にしている。
           </p>
         </div>
         <div class="dreams">
@@ -2986,10 +2713,10 @@
 
       <footer>
         <p>
-          画面の再現とサンプルの予定・天気は説明用の見本で、実際のデータではありません。
+          画面の再現の時刻・予定・天気は、14:30の一場面を想定した説明用のサンプルで、実際のデータではない。
         </p>
         <p>
-          内容は2026-11-23時点のリポジトリ（requirements・architecture・technology-stack・ui-design・hardware）をもとにしています。
+          内容は2026-11-23時点のリポジトリ（requirements・architecture・technology-stack・ui-design・hardware）に基づく。
         </p>
       </footer>
     </div>
@@ -3169,23 +2896,23 @@
         var texts = {
           normal: [
             "ふだんの画面",
-            "時計はずっと左に。右側は「今日の予定 → 今日の天気 → 週間天気」の順にふわっと切り替わります（実機は10秒ごと、ここでは7秒）。左下の点が今どれを見ているかの目印です。",
+            "時計は常に左に表示。右側は「今日の予定 → 今日の天気 → 週間天気」の順にフェードで切り替わる（実機は10秒ごと、ここでは7秒）。左下の点が表示中のコンテンツを示す。",
           ],
           offline: [
             "Wi-Fiが切れた",
-            "手元に残っている期限内の情報で表示を続け、右上に「↻ 更新待ち・14:05時点」の札を出します。裏では1分、2分、4分、5分…と間をあけて取り直し、つながった後に取り直しが成功すると、札は自動で消えます。",
+            "手元に残っている期限内の情報で表示を続け、右上に「↻ 更新待ち・14:05時点」の札を出す。裏では1分、2分、4分、5分…と間隔をあけて取り直し、通信の回復後に取得が成功すると札は消える。相手側の制限（HTTP 429・Quota）により、5分より長く待つこともある。",
           ],
           unsynced: [
             "時刻があやしい",
-            "RTCの電池がない状態で電源を切ると、ずれた時刻で起動することがあります。正しいと確かめられるまで、時計も予定も天気も出しません。間違った「今日」を見せないためです。",
+            "RTCの電池がない状態で電源を切ると、ずれた時刻で起動することがある。正しい時刻を確認できるまで、時計・予定・天気を表示しない。誤った「今日」を見せないため。",
           ],
           boot: [
             "電源を入れた直後",
-            "データを待たずに、まず画面を出します（電源オンから2分以内が目標）。取得中は砂時計と文字だけを出し、くるくる回る演出は使いません。",
+            "データを待たずに、まず画面を表示する（電源投入から2分以内が目標）。取得中は砂時計と文字のみを表示し、回転する演出は使わない。",
           ],
           crash: [
             "画面のアプリが落ちた",
-            "画面を描くブラウザ（Chromium）が止まると、systemdが気づいて自動で起動し直します。時刻の確認と取得を経て、異常終了から1分以内に元の画面へ戻るのが目標です。なお、データを集める側（Backend）だけが止まった場合は、画面は手元に残っている期限内の情報で表示を続け、裏で起動し直します。",
+            "画面を描くブラウザ（Chromium）が停止すると、systemdが検知して自動で再起動する。時刻の確認と取得を経て、異常終了から1分以内に元の画面へ戻ることが目標。Backendだけが停止した場合は、手元に残る期限内の情報で表示を続け、裏で再起動する。",
           ],
         };
         function setMode(m) {
