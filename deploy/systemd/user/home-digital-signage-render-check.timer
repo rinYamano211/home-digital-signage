@@ -1,0 +1,11 @@
+# Every 5 min (technology-stack 27.5).
+[Unit]
+Description=Home Digital Signage render check every 5 min (Issue #13)
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
