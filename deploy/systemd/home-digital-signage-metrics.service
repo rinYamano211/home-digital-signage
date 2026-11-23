@@ -1,0 +1,13 @@
+# Metrics for the Issue #13 72-hour run (technology-stack 27). Install to
+# /etc/systemd/system/ with the timer. Test only: stop and disable after #13.
+[Unit]
+Description=Home Digital Signage metrics (Issue #13)
+
+[Service]
+Type=oneshot
+# root: reads the Backend data directory (0700) and smaps_rollup. Reads only;
+# writes only to the metrics directory.
+ExecStart=/bin/sh /opt/home-digital-signage/current/scripts/collect-metrics.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30s

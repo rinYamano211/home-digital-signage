@@ -25,3 +25,4 @@
 /vite.frontend.config.ts text eol=lf
 /deploy/** text eol=lf
 /docs/operations.md text eol=lf
+/scripts/*.mjs text eol=lf

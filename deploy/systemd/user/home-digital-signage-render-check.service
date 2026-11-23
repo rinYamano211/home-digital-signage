@@ -1,0 +1,11 @@
+# Render check for the Issue #13 72-hour run (technology-stack 27.5). Install
+# to ~signage/.config/systemd/user/ as signage (never with sudo). Needs
+# WAYLAND_DISPLAY, which labwc autostart passes to the user manager.
+[Unit]
+Description=Home Digital Signage render check (Issue #13)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/home-digital-signage/current/scripts/check-render.sh
+Nice=10
+TimeoutStartSec=60s

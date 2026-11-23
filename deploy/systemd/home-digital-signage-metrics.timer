@@ -1,0 +1,11 @@
+# Every 60 s (technology-stack 27.2). A oneshot unit never runs twice at once.
+[Unit]
+Description=Home Digital Signage metrics every 60 s (Issue #13)
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
