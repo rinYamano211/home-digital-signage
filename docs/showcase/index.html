@@ -166,6 +166,8 @@
         display: inline-block;
       }
       .hero .lede {
+        display: grid;
+        gap: 0.6em;
         color: var(--ink-2);
         max-width: 60ch;
         font-size: 17px;
@@ -1081,10 +1083,13 @@
       <header class="hero">
         <div class="kicker">home-digital-signage</div>
         <h1><span>リビングの</span><em>小さなサイネージ</em></h1>
-        <p class="lede">
-          Raspberry
-          Piと10.1インチの画面でつくる、自分のための情報端末。時計をいつも大きく出しながら、今日の予定、今日の天気、週間天気を順番に切り替えて表示。<br />下の画面は本物と同じ配色・レイアウトで再現した動く見本。
-        </p>
+        <div class="lede">
+          <p>
+            Raspberry
+            Piと10.1インチの画面でつくる、自分のための情報端末。時計をいつも大きく出しながら、今日の予定、今日の天気、週間天気を順番に切り替えて表示。
+          </p>
+          <p>下の画面は本物と同じ配色・レイアウトで再現した動く見本。</p>
+        </div>
 
         <div class="device">
           <div
@@ -2624,11 +2629,11 @@
               </li>
               <li class="phase">
                 <span class="dt">いま</span><span class="pin"></span
-                ><span class="tx">MVPのソフトウェアがほぼ完成</span>
-              </li>
-              <li class="future">
-                <span class="dt">11月</span><span class="pin"></span
-                ><span class="tx">72時間の連続稼働試験<small>#13</small></span>
+                ><span class="tx"
+                  >ソフトウェアがほぼ完成し、72時間の連続稼働試験を実施中<small
+                    >#13</small
+                  ></span
+                >
               </li>
               <li class="future">
                 <span class="dt">12月</span><span class="pin"></span
