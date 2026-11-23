@@ -62,7 +62,10 @@ header='ts_utc,seq,boot_id,uptime_s,script_ms,result,reason,capture_ms,sha256'
 row="$ts,$seq,$boot,$uptime,$((($(uptime_cs) - started) * 10)),$result,$reason,$capture_ms,$hash"
 day=$(printf '%s' "$ts" | cut -c1-10 | tr -d -)
 file="$dir/render-$day.csv"
-if ! { [ -e "$file" ] || printf '%s\n' "$header"; printf '%s\n' "$row"; } >> "$file"; then
+# Check before the redirection: ">>" creates the file.
+if [ -e "$file" ]; then out=$row; else out="$header
+$row"; fi
+if ! printf '%s\n' "$out" >> "$file"; then
   log 'cannot write the CSV row'
   exit 1
 fi

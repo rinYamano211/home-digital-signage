@@ -10,6 +10,8 @@ dir=${HDS_METRICS_DIR:-/var/lib/home-digital-signage-metrics}
 data=${HDS_DATA_DIR:-/var/lib/home-digital-signage}
 base=${HDS_BASE:-/opt/home-digital-signage}
 sys=${HDS_SYSFS:-/sys}
+# Per-process files only (tests use a fake tree); /proc/uptime etc. stay real.
+proc=${HDS_PROC:-/proc}
 kiosk_user=${HDS_KIOSK_USER:-signage}
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
@@ -85,28 +87,50 @@ cgroup_pids() {
   if [ "$1" = - ]; then return 0; fi
   cat "$sys/fs/cgroup$1/cgroup.procs" 2>/dev/null || echo ERR
 }
-# measure PIDS...: sets p_n p_rss p_pss p_ticks p_fds (sums). p_pss is empty
-# when not a slow round. Processes that exit during the round are skipped.
+# measure PIDS...: sets p_n p_rss p_pss p_ticks p_fds (sums of the processes).
+# - A process that has exited (no /proc/PID, or a zombie) is not counted.
+# - A value that cannot be read from a living process makes that sum ERR; the
+#   other sums and processes are still measured (sums and error flags are
+#   kept apart so that ERR never enters arithmetic).
+# - p_pss is empty when this is not a slow round.
 measure() {
   p_n=0 p_rss=0 p_pss=0 p_ticks=0 p_fds=0
+  e_rss=0 e_pss=0 e_ticks=0 e_fds=0
   case " $* " in *' ERR '*)
     p_n=ERR p_rss=ERR p_pss=ERR p_ticks=ERR p_fds=ERR
+    [ "$slow" -eq 1 ] || p_pss=''
     return 0 ;;
   esac
   for p; do
-    [ -r "/proc/$p/stat" ] || continue
-    t=$(awk '{ sub(/^.*\) /, ""); print $12 + $13 }' "/proc/$p/stat" 2>/dev/null) || continue
-    r=$(awk '$1 == "VmRSS:" { print $2 }' "/proc/$p/status" 2>/dev/null)
-    f=$(ls "/proc/$p/fd" 2>/dev/null | wc -l)
-    p_n=$((p_n + 1))
-    p_ticks=$((p_ticks + ${t:-0}))
-    p_rss=$((p_rss + ${r:-0}))
-    p_fds=$((p_fds + f))
+    case $p in '' | *[!0-9]*) continue ;; esac
+    # Field 3 is the state; utime and stime are fields 14 and 15.
+    st=$(awk '{ sub(/^.*\) /, ""); print $1, $12 + $13 }' "$proc/$p/stat" 2>/dev/null) || st=''
+    t=${st#* }
+    r=$(awk '$1 == "VmRSS:" { print $2 }' "$proc/$p/status" 2>/dev/null) || r=''
+    if fds=$(ls -A "$proc/$p/fd" 2>/dev/null); then
+      if [ -n "$fds" ]; then f=$(printf '%s\n' "$fds" | awk 'END { print NR }'); else f=0; fi
+    else
+      f=''
+    fi
+    s=''
     if [ "$slow" -eq 1 ]; then
-      s=$(awk '$1 == "Pss:" { print $2 }' "/proc/$p/smaps_rollup" 2>/dev/null)
-      if [ -n "$s" ]; then p_pss=$((p_pss + s)); else p_pss=ERR; fi
+      s=$(awk '$1 == "Pss:" { print $2 }' "$proc/$p/smaps_rollup" 2>/dev/null) || s=''
+    fi
+    # Exited during the round, or a zombie: not counted.
+    [ -d "$proc/$p" ] || continue
+    [ "${st%% *}" != Z ] || continue
+    p_n=$((p_n + 1))
+    case $t in '' | *[!0-9]*) e_ticks=1 ;; *) p_ticks=$((p_ticks + t)) ;; esac
+    case $r in '' | *[!0-9]*) e_rss=1 ;; *) p_rss=$((p_rss + r)) ;; esac
+    case $f in '' | *[!0-9]*) e_fds=1 ;; *) p_fds=$((p_fds + f)) ;; esac
+    if [ "$slow" -eq 1 ]; then
+      case $s in '' | *[!0-9]*) e_pss=1 ;; *) p_pss=$((p_pss + s)) ;; esac
     fi
   done
+  [ "$e_ticks" -eq 0 ] || p_ticks=ERR
+  [ "$e_rss" -eq 0 ] || p_rss=ERR
+  [ "$e_fds" -eq 0 ] || p_fds=ERR
+  [ "$e_pss" -eq 0 ] || p_pss=ERR
   [ "$slow" -eq 1 ] || p_pss=''
 }
 
@@ -216,7 +240,10 @@ row="${row#,}$body"
 day=$(printf '%s' "$ts" | cut -c1-10 | tr -d -)
 file="$dir/metrics-$day.csv"
 # A failed write is reported and does not affect the next run (27.2).
-if ! { [ -e "$file" ] || printf '%s\n' "$header"; printf '%s\n' "$row"; } >> "$file"; then
+# Check before the redirection: ">>" creates the file.
+if [ -e "$file" ]; then out=$row; else out="$header
+$row"; fi
+if ! printf '%s\n' "$out" >> "$file"; then
   log 'cannot write the CSV row'
   exit 1
 fi

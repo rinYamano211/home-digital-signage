@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -143,12 +144,18 @@ async function collectSetup() {
 }
 
 async function rows(dir: string, prefix: string) {
-  const files = (await readdir(dir)).filter((f) => f.startsWith(prefix));
+  const files = (await readdir(dir)).filter(
+    (f) => f.startsWith(prefix) && f.endsWith(".csv"),
+  );
   expect(files).toHaveLength(1);
   const lines = (await readFile(join(dir, files[0]), "utf8"))
     .trimEnd()
     .split("\n");
+  // Exactly one header line, at the top.
+  expect(lines[0]).toMatch(/^ts_utc,seq,boot_id,/);
+  expect(lines.filter((line) => line.startsWith("ts_utc,"))).toHaveLength(1);
   const header = lines[0].split(",");
+  expect(new Set(header).size).toBe(header.length);
   return {
     file: join(dir, files[0]),
     text: lines.join("\n"),
@@ -291,15 +298,72 @@ linux(
     const { metrics, env } = await collectSetup();
     expect((await run(collect, env)).code).toBe(0);
     const { file } = await rows(metrics, "metrics-");
-    await chmod(file, 0o444);
+    // A directory in place of the CSV makes the write fail even as root
+    // (a read-only file does not stop root).
+    await rename(file, `${file}.saved`);
+    await mkdir(file);
     const failed = await run(collect, env);
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain("cannot write the CSV row");
-    await chmod(file, 0o644);
+    await rm(file, { recursive: true });
+    await rename(`${file}.saved`, file);
     expect((await run(collect, env)).code).toBe(0);
     const { rows: all } = await rows(metrics, "metrics-");
     // seq 2 is the failed run: a gap in seq shows the missing row.
     expect(all.map((r) => r.seq)).toEqual(["1", "3"]);
+  },
+  20_000,
+);
+
+linux(
+  "keeps measuring when a value of one process cannot be read",
+  async () => {
+    const { metrics, env } = await collectSetup();
+    const proc = join(metrics, "..", "proc");
+    // utime and stime are fields 14 and 15 of /proc/PID/stat.
+    const stat = (pid: number, state: string, utime: number, stime: number) =>
+      `${pid} (chromium) ${state} 1 1 1 0 -1 0 0 0 0 0 ${utime} ${stime} 0 0\n`;
+    const processes: Array<{
+      pid: number;
+      state: string;
+      rss?: number;
+      pss?: number;
+    }> = [
+      { pid: 101, state: "S", rss: 1000, pss: 500 },
+      { pid: 102, state: "S", rss: 2000 }, // no smaps_rollup: PSS is ERR
+      { pid: 103, state: "S", pss: 700 }, // no VmRSS: RSS is ERR
+      { pid: 104, state: "Z", rss: 9000, pss: 9000 }, // zombie: not counted
+    ];
+    for (const p of processes) {
+      const dir = join(proc, String(p.pid));
+      await mkdir(join(dir, "fd"), { recursive: true });
+      await writeFile(join(dir, "fd", "0"), "");
+      await writeFile(join(dir, "stat"), stat(p.pid, p.state, 7, 3));
+      await writeFile(
+        join(dir, "status"),
+        p.rss === undefined ? "Name:\tchromium\n" : `VmRSS:\t${p.rss} kB\n`,
+      );
+      if (p.pss !== undefined)
+        await writeFile(join(dir, "smaps_rollup"), `Pss: ${p.pss} kB\n`);
+    }
+    // 105 has exited (no /proc/105): not counted.
+    await writeFile(
+      join(env.HDS_SYSFS, "fs/cgroup/kiosk/cgroup.procs"),
+      "101\n102\n103\n104\n105\n",
+    );
+    expect((await run(collect, { ...env, HDS_PROC: proc })).code).toBe(0);
+    const {
+      rows: [row],
+    } = await rows(metrics, "metrics-");
+    expect(row).toMatchObject({
+      chromium_procs: "3",
+      chromium_rss_kb: "ERR",
+      chromium_pss_kb: "ERR",
+      chromium_cpu_ticks: "30",
+    });
+    // The other values of the row are still measured.
+    expect(row.time_result).toBe("OK");
+    expect(row.db_bytes).toBe("4096");
   },
   20_000,
 );
