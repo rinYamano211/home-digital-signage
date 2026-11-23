@@ -4646,6 +4646,7 @@ Dependency・設定ファイル・npm scripts・Workflow、PASS / FAIL確認、�
 Pino、persistent journald、OS標準Monitoringを正式採用する。外部監視基盤はMVPに導入しない。
 72時間試験はsystemd timer + 軽量スクリプトで定期計測する方式を正式採用する。容量100MiB・保持7日・Production INFO以上・計測60秒は実機前の初期設定案であり、性能保証・受入閾値ではない。
 CPU・メモリ・温度・Disk・Service状態・再起動／障害履歴を計測する。ログ項目・Rate Limit・機密情報対策・CSV Schema・Script・合否判定・回収方法は#12・#13で具体化する。R-06 / R-09の既存受入条件は変更しない。
+#13での具体化（計測項目・CSV・間隔・判定・回収）は[第27章](#long-run-observation)に定めた。
 
 ### 24.6 Backend Deploy / Rollback
 
@@ -4958,7 +4959,7 @@ Architecture 11.3のCrash Loopの値（5分以内に3回、5〜15分後に再試
 
 - journaldの設定を`/etc/systemd/journald.conf.d/home-digital-signage.conf`に置く：`Storage=persistent`、`SystemMaxUse=100M`、`MaxRetentionSec=7day`。値は24.5の初期設定案のままで、#13で見直す。
 - この設定はOS全体のログに効く（7日より古いログはOS全体で消える）。Piはサイネージ専用機のため受け入れる。設定後に`systemd-journald`の再起動が必要。
-- Chromiumのログは、ユーザーUnitの出力としてjournaldに入る。量は#13で観察する。
+- Chromiumのログは、ユーザーUnitの出力としてjournaldに入る。量は#13で観察する（journalの大きさの計測は[第27章](#long-run-observation)）。
 
 ### 26.9 Deploy・Rollback
 
@@ -5026,3 +5027,135 @@ Piで確認するまで、確定扱いしない。結果は`docs/verification/`�
 - [#13](https://github.com/rinYamano211/home-digital-signage/issues/13)：R-06の受入確認（2分・1分の実測）、72時間試験と計測Script、OS Hang Watchdog・Backend Watchdogの要否、Chromiumのタブ単独のCrash、Chromiumのログ量、Crash Loopの値と再起動による降雨の欠測の評価。
 - [#113](https://github.com/rinYamano211/home-digital-signage/issues/113)：Network復旧後の再取得までの時間とBackoff。
 - Future：systemdのHardening、Deployの自動化、時間帯による画面のON/OFF。
+- 72時間試験の計測は[第27章](#long-run-observation)に定めた。
+
+<a id="long-run-observation"></a>
+
+## 27. 72時間試験の観測（Issue #13）
+
+状態：設計確定（2026-11-23）。未実装・Pi実機で未確認。24.5で採用した「systemd timer＋軽量Script、計測60秒」を具体化する。方針は[Issue #13の方針コメント](https://github.com/rinYamano211/home-digital-signage/issues/13#issuecomment-7090369824)に従う。
+
+### 27.1 範囲
+
+- 対象：#13の試験（特に72時間試験）で、資源・Service・API・描画の状態を定期的に記録する仕組み。
+- 試験用の仕組みであり、MVPの常時監視ではない。#13の試験の後は停止・無効化する（27.9）。外部監視基盤・警告・自動の対処は追加しない（24.5）。
+- R-06・R-09の受入条件、journaldの設定（26.8）、Backend・KioskのUnit（26.5・26.7）は変更しない。
+- 受入の閾値は設けない（R-09。27.7）。
+
+### 27.2 構成
+
+| 要素 | 内容 |
+|---|---|
+| `scripts/collect-metrics.sh` | 資源・Service・Networkの計測（POSIX sh＋awk）。60秒ごと |
+| `scripts/collect-metrics-api.mjs` | APIの応答とStateのメタデータの抽出（Node.js。外部Packageなし）。`collect-metrics.sh`から呼ぶ |
+| `scripts/check-render.sh` | 描画の確認（27.5）。5分ごと |
+| `deploy/systemd/home-digital-signage-metrics.service`・`.timer` | System Unit。`Type=oneshot`、root。`OnBootSec=60s`・`OnUnitActiveSec=60s`・`AccuracySec=1s` |
+| `deploy/systemd/user/home-digital-signage-render-check.service`・`.timer` | `signage`のユーザーUnit（Waylandの画面に触れるため）。5分ごと |
+
+- Scriptは、ほかのScriptと同じく稼働中のRelease（`/opt/home-digital-signage/current/scripts/`）から実行する。試験の間はReleaseを固定する。Unitは`deploy/`から設置する（`deploy/`はReleaseに含めない。operations.md 4.1）。
+- APIの抽出にNode.jsを使う理由：`/api/published-states`の応答では、`data`（予定のタイトル等の任意の文字列）が`meta`より前にあり、sh＋awkでは`meta`だけを安全に切り出せないため。Node.jsは既にPiにあり（26.3）、Packageを追加しない。当初の方針（POSIX sh＋awkだけ）からの変更である。Node.jsの起動の負荷は、計測の値に含まれる（`script_ms`で確認する）。
+- 実行の優先度を下げる（`Nice=10`、`IOSchedulingClass=idle`）。`TimeoutStartSec=30s`で打ち切る。
+- 重複実行：`Type=oneshot`のUnitは、実行中に次の起動の要求を受けても二重には動かない。手動の実行に備え、Scriptも`flock -n`で排他し、取れなければ何もせずに終了する。
+- APIへのアクセスは1回3秒でTimeoutする（FrontendのTimeoutと同じ。25.4）。
+- CSVの書き込みに失敗しても、次回の計測は通常どおり行う。失敗はjournalに1行出し（値は出さない）、終了コードを0以外にする。
+
+### 27.3 出力
+
+- 保存先：`/var/lib/home-digital-signage-metrics/`（root、0700）。描画の確認は`/home/signage/.local/state/home-digital-signage/`（`signage`、0700）。Repo・Releaseの外に置く。
+- ファイル：UTCの日付ごとに1つ（`metrics-YYYYMMDD.csv`、`render-YYYYMMDD.csv`）。新しいファイルの先頭に見出し行を書く。72時間で約4,300行・約2MBを見込む。
+- 生のCSVはCommitしない。検証記録には集計だけを載せる。
+
+全行に入れる列：
+
+| 列 | 内容 |
+|---|---|
+| `ts_utc` | 計測の開始時刻（UTC、ISO 8601）。開始・終了の照合に使う |
+| `seq` | 連番（状態ファイルに保存し、OSの再起動をまたいで続ける） |
+| `boot_id` | `/proc/sys/kernel/random/boot_id`。OSの再起動の検出に使う |
+| `uptime_s` | `/proc/uptime` |
+| `script_ms` | Script自身の実行時間（単調時計の差） |
+| `release` | 稼働中のRelease名（`current`のリンク先の名前） |
+
+値の書き方：取らない回の項目（10分ごとの項目の、ほかの回）は空欄とする。取ろうとして取れなかった項目は`ERR`とし、空欄と区別する。
+
+### 27.4 計測項目
+
+| 区分 | 項目 | 取り方 | 間隔 |
+|---|---|---|---|
+| CPU | 全体の各時間の元値（user・nice・system・idle・iowait・irq・softirq・steal）、load average 1・5・15 | `/proc/stat`、`/proc/loadavg` | 60秒 |
+| CPU | Backend・Chromium全体のCPU時間（utime＋stime） | `/proc/<pid>/stat` | 60秒 |
+| メモリ | MemTotal・MemAvailable・SwapTotal・SwapFree | `/proc/meminfo` | 60秒 |
+| メモリ | BackendのRSS、Chromium全体のRSSとProcess数 | `/proc/<pid>/status` | 60秒 |
+| メモリ | BackendのPSS、Chromium全体のPSS | `/proc/<pid>/smaps_rollup` | 10分 |
+| 温度 | CPU温度、ファンの`cur_state`、`throttled` | `/sys/class/thermal/`、`vcgencmd get_throttled` | 60秒 |
+| ストレージ | `/`の空き、DB・`-wal`・`-shm`の大きさ | `df -Pk /`、`stat -c %s` | 60秒 |
+| ストレージ | journalの大きさ | `journalctl --disk-usage` | 10分 |
+| Service | Backend・nginxの`ActiveState`・`NRestarts`・MainPID、BackendのFD数 | `systemctl show`、`/proc/<pid>/fd` | 60秒 |
+| Service | Kioskの`ActiveState`・`NRestarts` | `systemctl --user -M signage@ show` | 60秒 |
+| Network | `wlan0`の`operstate`、既定経路の有無、`NTPSynchronized` | `/sys/class/net/wlan0/operstate`、`ip route`、`timedatectl show` | 60秒 |
+| API | `/api/time-availability`の結果・応答時間・`availability` | `collect-metrics-api.mjs` | 60秒 |
+| API | `/api/published-states`の結果・応答時間、5つのStateの`lastAttemptAt`・`lastAttemptResult`・`dataUpdatedAt`・`expiresAt`・`dataSource` | 同上。**`data`は出力しない** | 60秒 |
+
+- Chromium全体：Kiosk Unitの`ControlGroup`に属するProcessの合計。
+- APIの結果は、`OK`・`HTTP_<code>`（200以外）・`TIMEOUT`・`CONN_ERR`（接続の失敗）・`INVALID_JSON`（JSONとして読めない、または期待した形でない）に分ける。`OK`以外のときは、メタデータの列を`ERR`にする。
+- CPU使用率と増加の傾向は、元値の差から集計の時に計算する（Scriptでは計算しない）。
+
+### 27.5 描画の確認
+
+- 5分ごとに`grim`（Waylandの画面撮影）で画面を撮り、SHA-256だけを記録する。画像は`$XDG_RUNTIME_DIR`（tmpfs）に一時的に置き、すぐに消す。画像は保存しない（予定のタイトルが写るため）。
+- 結果は3つに分ける。
+
+| 結果 | 意味 |
+|---|---|
+| `CHANGED` | 前回とハッシュが違う |
+| `SAME` | 前回と同じ。時計は毎分変わるため、描画の停止を疑う |
+| `CAPTURE_FAIL` | 撮影の失敗（終了コードが0以外、ファイルが空、`WAYLAND_DISPLAY`がない）。描画の停止とは扱わない |
+
+- `CHANGED`だけで正常な描画とは判定しない（エラー画面や崩れた表示でもハッシュは変わる）。正常かどうかは目視（1日2〜3回）で判定する。
+- 検出の限界：5分より短い停止や、目視と目視の間に止まって戻った描画は検出できない。
+- 撮影の時間と負荷は、60秒の計測とは別に確かめる。`grim`がない場合は、Wayland環境・撮影の権限・負荷を確かめてから導入する。動かない場合は目視だけとし、限界を検証記録に書く。
+
+### 27.6 判定の層
+
+Process（`ActiveState`・`NRestarts`）、API（27.4の結果・応答時間・メタデータ）、描画（27.5と目視）は、別々に判定する。Processが動いていても、APIが応答しない、描画が止まっている場合がある。
+
+### 27.7 集計
+
+- 72時間を6時間ごとの12区間に分け、各項目の中央値・最大値と、区間ごとの推移を示す。
+- ウォームアップ：開始から2時間をウォームアップとする。第1区間（0〜6時間）は、全体の値と、ウォームアップを除いた値（2〜6時間）の両方を示す。増加の傾向は、ウォームアップを除いた第1区間と第12区間の中央値で比べる。
+- 傾向を見る項目：BackendのRSS・PSS・FD数、DB・WALの大きさ、ChromiumのPSS。
+- ウォームアップの間も、再起動・Crash・APIの失敗等の事象は数え、判定（27.8）の対象とする。
+- 固定の閾値は設けない。結果を示し、判断はユーザーが行う（R-09）。
+
+### 27.8 72時間試験の開始・終了・判定
+
+開始の条件（満たしたことを記録してから開始する）：固定したReleaseが稼働している。`/etc/hosts`とカレンダーの共有を元に戻した。Wi-Fiが接続されている。5つのStateの`lastAttemptResult`が`success`。`time-availability`が`available`。計測が数行正しく記録されている。基準値（DB・WAL・journalの大きさ、`NRestarts`）を記録した。
+
+終了：開始から72時間の経過。最終の確認（目視、API、Secretの照合、CSVとjournalの回収）を行う。
+
+| 事象 | 判断の材料 | 扱い |
+|---|---|---|
+| 自動の再起動が1回 | `NRestarts`が1増えた | 続ける。原因と停止時間を記録し、最終の合否は保留する（自動で復旧しただけで合格にしない） |
+| 同じUnitのCrashが2回以上 | `NRestarts` | 不合格 |
+| 人による再起動・Deploy | 操作の記録、`release`の列 | やり直し |
+| OSの再起動（停電を含む） | `boot_id`が変わった | 原則やり直し |
+| 60秒の計測の欠測 | `metrics`の行の間が180秒を超え、journalにBackend・Kioskの停止がない | 1回30分以下・合計1時間以下なら続ける。超えたらユーザーが判断する |
+| 描画の確認の欠測・`CAPTURE_FAIL` | `render`の行の間が10分を超える、または`CAPTURE_FAIL` | 60秒の計測の欠測とは**別に数える**。描画の確認の失敗だけで、60秒の計測が欠測したことにはしない。合計が多い場合は、目視だけの判定に切り替えるかをユーザーが判断する |
+
+- 欠測の許容値は、試験運用上の暫定の基準であり、要件の値ではない。
+- 計測の欠測（記録がない）と、アプリの停止（記録があり、異常を示している）は混同しない。
+
+### 27.9 秘密情報・後始末
+
+- CSVに、Stateの`data`・Secret・地点・カレンダーIDを書かない。journalにも値を出さない。
+- ログの中のSecretの照合は、値を画面・ログ・CSV・コマンドの引数に出さない方法で行う。照合の文字列は`/run`の下の0700の一時ファイルだけに置き、`grep -F -f`で照合し、件数だけを出す。PEMのヘッダー・フッター、8文字未満の断片、秘密ではない項目は照合しない。照合のScriptはRepoに入れず、#13の手順書で扱う。
+- #13の試験の後、timerを停止・無効化し、実行中のServiceがないことを確かめる（operations.md 5.4）。Unit・Scriptのファイルは、次の試験で使えるように残す。計測用のディレクトリを消すかは、ユーザーが判断する。
+
+### 27.10 検証待ちの事項
+
+| 事項 | 確認できなかった場合 |
+|---|---|
+| `grim`が使えるか、ユーザーUnitから撮影できるか、撮影の時間と負荷 | 目視だけにし、限界を記録する |
+| `systemctl --user -M signage@`でKioskの状態を読めるか | Chromiumの主Processの有無で代用する |
+| `vcgencmd`をrootで実行できるか | `throttled`は`ERR`とし、温度だけを使う |
+| 計測の負荷（`script_ms`、Node.jsの起動の分を含む） | 間隔・項目を見直す（設計変更として扱う） |

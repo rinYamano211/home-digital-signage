@@ -1,4 +1,4 @@
-# 運用手順書（Raspberry Pi・Issue #12）
+# 運用手順書（Raspberry Pi・Issue #12・#13）
 
 本番の構成と方針の正本は[技術スタック選定 第26章](technology-stack.md#startup-recovery-operations)である。本書は、その構成をPiに設置・更新するための手順をまとめる。設定ファイルは`deploy/`、Scriptは`scripts/`にある。
 
@@ -356,3 +356,75 @@ sudo systemctl start home-digital-signage-backend
 
 - `--schema-checked`は、戻す先のReleaseがDBの現在のSchemaに対応していることを確かめた、という確認である。Migrationを実行した後は、Migrationより前のReleaseへは戻さない。対応が分からない場合は実行せず、Backupからの復元を含めて判断する（26.9）。
 - 戻す先のBackendがSchemaに対応していない場合は、起動時のSchemaの検証で止まり、疎通確認が失敗する。そのときはログを見て判断する。
+
+## 5. 72時間試験の計測（Issue #13）
+
+構成と判定の正本は[技術スタック選定 第27章](technology-stack.md#long-run-observation)である。試験の手順（段階ごと）は、#13の手順書に従う。
+
+### 5.1 設置
+
+計測のScriptは、稼働中のReleaseの`scripts/`に入っている。Unitは、2.と同じく開発PCから`deploy/`を`~/incoming/deploy/`へ転送し、`~/incoming`で設置する。
+
+60秒の計測（System Unit。`signage`から`sudo`で実行する）：
+
+```sh
+sudo install -m 0644 deploy/systemd/home-digital-signage-metrics.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/home-digital-signage-metrics.timer /etc/systemd/system/
+sudo install -d -m 0700 /var/lib/home-digital-signage-metrics
+sudo systemctl daemon-reload
+sudo systemctl enable --now home-digital-signage-metrics.timer
+```
+
+描画の確認（ユーザーUnit）：
+
+- **必ず`signage`として実行する。`sudo`を付けない**（`sudo systemctl --user`はrootのユーザーUnitを操作してしまう）。
+- 前提：`signage`のDesktopの自動ログイン（2.8）で、ユーザーのsystemd（user manager）が動いていること。labwcのautostartが`WAYLAND_DISPLAY`等をuser managerへ渡していること（`deploy/labwc/autostart`）。
+- SSHから操作する場合は、`signage`としてログインし、`XDG_RUNTIME_DIR`が`/run/user/<signageのUID>`であることを確かめる。設定されていない場合は、`export XDG_RUNTIME_DIR=/run/user/$(id -u)`を実行してから操作する。
+
+```sh
+echo "$XDG_RUNTIME_DIR"
+systemctl --user show-environment | grep -c '^WAYLAND_DISPLAY='
+install -d -m 0700 ~/.config/systemd/user ~/.local/state/home-digital-signage
+install -m 0644 deploy/systemd/user/home-digital-signage-render-check.service ~/.config/systemd/user/
+install -m 0644 deploy/systemd/user/home-digital-signage-render-check.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now home-digital-signage-render-check.timer
+```
+
+- 2行目が`1`であること（`WAYLAND_DISPLAY`がuser managerに渡っている）。`0`なら、Kioskの起動（2.8）を確かめる。撮影は`CAPTURE_FAIL`になる。
+
+### 5.2 動作の確認
+
+```sh
+systemctl list-timers 'home-digital-signage-*'
+sudo sh -c 'tail -n 3 /var/lib/home-digital-signage-metrics/metrics-$(date -u +%Y%m%d).csv'
+journalctl -u home-digital-signage-metrics -n 20
+systemctl --user list-timers 'home-digital-signage-*'
+tail -n 3 ~/.local/state/home-digital-signage/render-$(date -u +%Y%m%d).csv
+```
+
+- 計測の行が60秒ごとに増え、想定外の`ERR`がないこと。描画の確認の行が5分ごとに増えること。
+
+### 5.3 回収
+
+計測用のディレクトリはrootの所有のため、`signage`の作業ディレクトリへ一度コピーしてから、開発PCから`scp`で取り出す。手順は#13の手順書に従う。CSVはRepoにCommitしない。
+
+### 5.4 停止
+
+試験の後に止める。Unit・Scriptのファイルは残す。
+
+```sh
+sudo systemctl disable --now home-digital-signage-metrics.timer
+systemctl --user disable --now home-digital-signage-render-check.timer
+systemctl is-active home-digital-signage-metrics.service
+systemctl --user is-active home-digital-signage-render-check.service
+```
+
+- 最後の2つが`inactive`であること。`activating`（実行中）なら、数十秒待ってもう一度確かめる。終わらなければ止める。
+
+```sh
+sudo systemctl stop home-digital-signage-metrics.service
+systemctl --user stop home-digital-signage-render-check.service
+```
+
+- `systemctl list-timers 'home-digital-signage-*'`と`systemctl --user list-timers 'home-digital-signage-*'`に、計測のtimerが出ないこと。
