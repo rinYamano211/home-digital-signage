@@ -1365,7 +1365,7 @@ Issue #3では論理上の責務・契約・動作原則を確定する。
 | Startup / State更新 | 早期復旧と速やかな外部取得を両立するConcurrency・非同期処理・Task管理、State更新・通知のタイミング・同期方式、Recovery Event / Trigger |
 | Time / Date | systemd-timesyncdをMVP採用（技術選定C-Impl-5B-1、実機確認は後続）。Pi 5内蔵RTC・Backup Battery採用、UTC / ISO 8601・Asia/Tokyo・Monotonic Clockの既存方針を維持。RTC設定・同期状態・Time Usability実機確認は後続（技術選定24.3） |
 | Runtime / Framework | 日時API、Monotonic Clock API、Timer / Scheduler、Polling / Event / Timer等による時間変化検知・再評価起動。標準TimerのMonotonic Time利用を確認し、利用可能なら標準機能を優先する |
-| Logs / Metrics | Pino・persistent journald・OS標準Monitoring・systemd timer＋軽量スクリプトによる72時間計測を正式採用。100MiB・7日・INFO以上・60秒は実機前の初期設定案。最終値・Rate Limit・ログ項目・CSV Schema・Script・合否基準は後続（技術選定24.5） |
+| Logs / Metrics | Pino・persistent journald・OS標準Monitoring・systemd timer＋軽量スクリプトによる72時間計測を正式採用。100MiB・7日・INFO以上・60秒は実機前の初期設定案。72時間試験の計測項目・CSV・判定は技術選定第27章（Issue #13）。journaldの最終値・Rate Limit・ログ項目は#13の結果で見直す（技術選定24.5） |
 
 ### 15.2 Issue #5：UI Design
 
