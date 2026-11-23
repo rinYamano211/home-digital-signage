@@ -6,6 +6,8 @@ Raspberry Piを利用した家庭用デジタルサイネージ。
 
 自宅のディスプレイに時計・予定・気温・天気予報・写真などを表示する。
 
+プロジェクトの全体像は、紹介ページ「[リビングの小さなサイネージ](https://rinyamano211.github.io/home-digital-signage/showcase/)」で、動く画面の再現と図を使って紹介している。
+
 ## Documentation
 
 - [企画書](docs/home-digital-signage-project-plan.md)
