@@ -368,6 +368,46 @@ linux(
   20_000,
 );
 
+linux(
+  "counts the Chromium main process that moved into its own scope",
+  async () => {
+    const { metrics, env } = await collectSetup();
+    const proc = join(metrics, "..", "proc");
+    const stat = (pid: number) =>
+      `${pid} (chromium) S 1 1 1 0 -1 0 0 0 0 0 7 3 0 0\n`;
+    for (const [pid, rss, pss] of [
+      [201, 1000, 100], // a child left in the Kiosk unit
+      [202, 3000, 300], // the main process in its own scope
+    ]) {
+      const dir = join(proc, String(pid));
+      await mkdir(join(dir, "fd"), { recursive: true });
+      await writeFile(join(dir, "stat"), stat(pid));
+      await writeFile(join(dir, "status"), `VmRSS:\t${rss} kB\n`);
+      await writeFile(join(dir, "smaps_rollup"), `Pss: ${pss} kB\n`);
+    }
+    const cgroup = join(env.HDS_SYSFS, "fs/cgroup");
+    await writeFile(join(cgroup, "kiosk/cgroup.procs"), "201\n");
+    // The Kiosk unit is /kiosk in the fake tree, so its scope is next to it.
+    await mkdir(join(cgroup, "app-org.chromium.Chromium-202.scope"));
+    await writeFile(
+      join(cgroup, "app-org.chromium.Chromium-202.scope/cgroup.procs"),
+      "202\n",
+    );
+    expect((await run(collect, { ...env, HDS_PROC: proc })).code).toBe(0);
+    const {
+      rows: [row],
+    } = await rows(metrics, "metrics-");
+    expect(row).toMatchObject({
+      kiosk_state: "active",
+      chromium_procs: "2",
+      chromium_rss_kb: "4000",
+      chromium_pss_kb: "400",
+      chromium_cpu_ticks: "20",
+    });
+  },
+  20_000,
+);
+
 linux("fails without the metrics directory", async () => {
   const result = await run(collect, {
     PATH: process.env.PATH,
