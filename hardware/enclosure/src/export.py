@@ -7,6 +7,7 @@
 - clamps-*：メインシャーシに押さえ板2枚と上部ストッパー2個を付けた状態（背面・斜め後ろ）
 - rear-cover-*：リアカバー（背面〈壁の側〉・内側・斜め）
 - assembly-*：全部を組み立てた状態（正面・背面・下面・斜め後ろ）
+- stand-*：卓上スタンドを付けた状態（横・斜め後ろ）。本体は傾けずに描く
 """
 
 from pathlib import Path
@@ -16,6 +17,7 @@ import cadquery as cq
 import chassis
 import rear_cover
 import reference
+import stand
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "out"
 
@@ -90,6 +92,17 @@ def main():
         "assembly",
         assembly,
         {k: CHASSIS_VIEWS[k] for k in ("front", "back", "bottom", "iso-back")},
+    )
+    with_stand = assembly
+    for bracket in stand.brackets():
+        with_stand = with_stand.add(bracket)
+    export_views("stand", with_stand, {"iso-back": CHASSIS_VIEWS["iso-back"]})
+    # 横から見た図：CadQueryのSVGは横向きの視点で上下が逆になるため、
+    # 奥行きの軸のまわりに180度回してから描く（足が下になる）
+    export_views(
+        "stand",
+        with_stand.rotate((0, 0, 0), (0, 0, 1), 180),
+        {"side": (1, 0, 0)},
     )
     for line in summary():
         print(line)

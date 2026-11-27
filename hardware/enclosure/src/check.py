@@ -9,6 +9,8 @@
 - 保持：リアカバーがなくても、Displayの下（押さえ板）と上（上部ストッパー）が押さえられるか
 - 前面の縁：ガラスに被る幅が、表示領域にかからないか（LIP_MIN_GAP以上の余裕）
 - 造形範囲：各部品がプリンタの造形範囲（余裕込み）に収まるか
+- 卓上スタンド：重さの中心が前後・左右の支点の内側に余裕をもってあるか、
+  本体の下面（配線口・吸気のスリット）と机の間に隙間があるか
 
 実行：venvのPythonで `python hardware/enclosure/src/check.py`
 1つでも満たさなければ、終了コード1で終わる。
@@ -25,6 +27,7 @@ import chassis
 import params as p
 import rear_cover
 import reference
+import stand
 from reference import to_cad
 
 TOLERANCE = 1e-3  # 体積の許容（mm³）。計算の誤差だけを許す
@@ -108,6 +111,56 @@ def check_cover_screws(body, cover):
     return ok
 
 
+def check_stand(brackets):
+    """卓上スタンド：安定（重さの中心と支点）と、本体の下面と机の隙間。"""
+    ok = True
+    (cg_x, cg_y, cg_z), mass = stand.center_of_mass()
+    print(
+        f"[INFO] 重さの見積もり：{mass:.0f} g（筐体は充填100%として重めに見積もる）、"
+        f"重さの中心 X {cg_x:.1f} Y {cg_y:.1f} 奥行き {cg_z:.1f}"
+    )
+    w_cg, _ = stand.world(cg_y, cg_z)
+    w_front, u_desk = stand.world(*stand.FRONT_POINT)
+    w_back, u_back = stand.world(*stand.back_point((cg_y, cg_z)))
+    ok &= report(abs(u_back - u_desk) < 1e-6, "スタンド：前後の支点が同じ高さ（机の上）")
+    ok &= report(
+        w_cg - w_front >= p.STAND_MIN_MARGIN,
+        f"スタンド：前へ倒れる向きの余裕（重さの中心〜前の支点）{w_cg - w_front:.1f}（最小{p.STAND_MIN_MARGIN}）",
+    )
+    ok &= report(
+        w_back - w_cg >= p.STAND_MIN_MARGIN,
+        f"スタンド：後ろへ倒れる向きの余裕（重さの中心〜後ろの支点）{w_back - w_cg:.1f}（最小{p.STAND_MIN_MARGIN}）",
+    )
+    x0 = min(p.KEYHOLE_X) - p.STAND_W / 2
+    x1 = max(p.KEYHOLE_X) + p.STAND_W / 2
+    side = min(cg_x - x0, x1 - cg_x)
+    ok &= report(
+        side >= p.STAND_MIN_MARGIN,
+        f"スタンド：左右に倒れる向きの余裕（重さの中心〜外側のブラケット）{side:.1f}（最小{p.STAND_MIN_MARGIN}）",
+    )
+    # ブラケットの輪郭の点が、机より下に出ない
+    low = min(stand.world(y, z)[1] for y, z in stand.profile((cg_y, cg_z))) - u_desk
+    ok &= report(low >= -1e-6, f"スタンド：ブラケットが机より下に出ない（最も低い点の差 {low:.2f}）")
+
+    # 本体の下面（Y＝下面、奥行き z）と机の隙間
+    def gap(z):
+        return stand.world(stand.Y_BOTTOM, z)[1] - u_desk
+
+    checks = {
+        "本体の下面（一番低い後ろの端）": (stand.Z_BACK, stand.Z_BACK),
+        "Pi用の配線口（奥行き15〜35）": (15.0, 35.0),
+        "Display用の配線口（奥行き3〜19）": (3.0, 19.0),
+        "吸気のスリット（奥行き12〜40）": (12.0, 40.0),
+    }
+    for name, (z0, z1) in checks.items():
+        g = min(gap(z0), gap(z1))
+        ok &= report(
+            g >= p.STAND_MIN_CLEARANCE,
+            f"スタンド：{name}と机の隙間 {g:.1f}（最小{p.STAND_MIN_CLEARANCE}）",
+        )
+    return ok
+
+
 def check_lips():
     ok = True
     lips = {
@@ -131,12 +184,14 @@ def main():
     clamps = chassis.clamp_plates()
     stoppers = chassis.top_stoppers()
     cover = rear_cover.rear_cover()
+    brackets = stand.brackets()
     refs = reference.parts()
 
     parts = {"メインシャーシ": body}
     parts.update({f"押さえ板{i}": c for i, c in enumerate(clamps, start=1)})
     parts.update({f"上部ストッパー{i}": s for i, s in enumerate(stoppers, start=1)})
     parts["リアカバー"] = cover
+    parts.update({f"スタンド{i}": b for i, b in enumerate(brackets, start=1)})
 
     results = []
     # 形状と干渉（部品どうしは、組み合わせを1回ずつ確かめる）
@@ -163,6 +218,12 @@ def main():
         )
     results.append(check_contact("リアカバー", cover, "シャーシの縁", body, 0.1))
     results.append(check_cover_screws(body, cover))
+    for i, b in enumerate(brackets, start=1):
+        results.append(check_contact(f"スタンド{i}", b, "リアカバーの背面", cover, 0.1))
+        moved_up = b.translate((0, 0.1, 0))  # Yは上へ正
+        area = overlap(moved_up, body) / 0.1
+        results.append(report(area > TOLERANCE, f"接触 スタンド{i} → 本体の下面：{area:.1f} mm2"))
+    results.append(check_stand(brackets))
 
     # 保持：リアカバーの有無
     print(
