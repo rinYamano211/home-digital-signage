@@ -56,16 +56,18 @@ def case_parts_raw():
     return result
 
 
-def center_of_mass():
+def center_of_mass(enclosure_ratio=1.0):
     """本体（Display・Pi・筐体）の重さの中心と、合計の重さ。
 
-    Display・Piは参照モデルの形の中心に重さがあると仮定する。筐体は充填100%として重めに見積もる。
+    Display・Piは参照モデルの形の中心に重さがあると仮定する。筐体の重さは、
+    充填100%（中身を詰めた）の重さに enclosure_ratio を掛ける。
+    スタンドの形（後ろの支点）は、enclosure_ratio＝1.0 の中心から決める。
     """
     items = [
         (reference.display(), p.DISPLAY_MASS),
         (reference.pi_envelope(), p.PI_MASS),
     ]
-    items += [(shape, mass) for _, shape, mass in case_parts_raw()]
+    items += [(shape, mass * enclosure_ratio) for _, shape, mass in case_parts_raw()]
     total = sum(m for _, m in items)
     x = y = z = 0.0
     for shape, mass in items:

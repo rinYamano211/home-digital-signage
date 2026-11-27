@@ -171,6 +171,10 @@ STAND_BACK_REACH = 40.0  # 設計。重さの中心より後ろに置く支点�
 STAND_SCREW_PILOT_D = 2.5  # 設計（仮定）。キーホール用ネジ（M3タッピング）の下穴
 STAND_SCREW_DEPTH = 9.0  # 設計。下穴の深さ
 STAND_SCREW_STANDOFF = 2.9  # 設計。ネジの頭の下をブラケットから浮かせる量（板2.4＋0.5）
+STAND_SCREW_HEAD_D_MAX = 8.0  # 設計。キーホール用ネジの頭の径の上限（丸い穴9）
+STAND_SCREW_HEAD_T_MAX = 2.5  # 設計。頭の厚みの上限（PR #152のレビューで3.0から変更。天井まで0.5残す）
+STAND_SCREW_SHANK_D_MAX = 4.0  # 設計。軸の径の上限（溝4.5）
+STAND_MASS_RATIOS = (0.3, 0.6, 1.0)  # 設計。安定を確かめる筐体の重さの割合（充填100%に対して）
 
 # 重さの見積もり（安定の確認に使う）
 DISPLAY_MASS = 407.2  # 実測。g

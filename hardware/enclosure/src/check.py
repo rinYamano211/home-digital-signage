@@ -9,8 +9,9 @@
 - 保持：リアカバーがなくても、Displayの下（押さえ板）と上（上部ストッパー）が押さえられるか
 - 前面の縁：ガラスに被る幅が、表示領域にかからないか（LIP_MIN_GAP以上の余裕）
 - 造形範囲：各部品がプリンタの造形範囲（余裕込み）に収まるか
-- 卓上スタンド：重さの中心が前後・左右の支点の内側に余裕をもってあるか、
-  本体の下面（配線口・吸気のスリット）と机の間に隙間があるか
+- 卓上スタンド：CADを傾けたときの実際の接地点から、重さの中心（筐体の重さを変えた3通り）が
+  前後・左右の支点の内側に余裕をもってあるか、本体と机の間に隙間があるか、
+  取り付けの動き（押し込み・10下ろす）の途中で重ならないか
 
 実行：venvのPythonで `python hardware/enclosure/src/check.py`
 1つでも満たさなければ、終了コード1で終わる。
@@ -111,53 +112,136 @@ def check_cover_screws(body, cover):
     return ok
 
 
-def check_stand(brackets):
-    """卓上スタンド：安定（重さの中心と支点）と、本体の下面と机の隙間。"""
+def tilted(point):
+    """CADの座標の点 (x, y, z) を、スタンドで傾けた状態の (x, W 後ろ, U 上) にする。
+
+    CADのZ＝−奥行き。stand.world と同じ式。
+    """
+    x, y, z = point
+    w, u = stand.world(y, -z)
+    return x, w, u
+
+
+def lowest_points(shapes, tol=0.01):
+    """形の頂点を傾けた状態にし、一番低い高さと、その高さにある点を返す。"""
+    pts = [tilted(v.toTuple()) for s in shapes for v in s.vertices().vals()]
+    u_min = min(u for _, _, u in pts)
+    return u_min, [(x, w) for x, w, u in pts if u - u_min < tol]
+
+
+def check_stand(brackets, body, cover):
+    """卓上スタンド：CADを傾けて、実際の接地点・安定・下面と机の隙間を確かめる。
+
+    支点や隙間は、計算の式ではなく、CADの頂点を傾けたときの一番低い所から求める。
+    重さの中心は、筐体の重さを STAND_MASS_RATIOS の割合で変えて確かめる
+    （筐体が軽いと中心が前へ寄る。重めの見積もりが、中心の位置の安全側とは限らないため）。
+    """
     ok = True
-    (cg_x, cg_y, cg_z), mass = stand.center_of_mass()
+    # 接地：ブラケットの一番低い点（机）
+    u_desk, contacts = lowest_points(brackets)
+    w_front = min(w for _, w in contacts)
+    w_back = max(w for _, w in contacts)
+    x0 = min(x for x, _ in contacts)
+    x1 = max(x for x, _ in contacts)
     print(
-        f"[INFO] 重さの見積もり：{mass:.0f} g（筐体は充填100%として重めに見積もる）、"
-        f"重さの中心 X {cg_x:.1f} Y {cg_y:.1f} 奥行き {cg_z:.1f}"
+        f"[INFO] 接地（CADから）：机の高さ{u_desk:.2f}、前の支点W {w_front:.1f}・後ろの支点W {w_back:.1f}、"
+        f"左右X {x0:.1f}〜{x1:.1f}"
     )
-    w_cg, _ = stand.world(cg_y, cg_z)
-    w_front, u_desk = stand.world(*stand.FRONT_POINT)
-    w_back, u_back = stand.world(*stand.back_point((cg_y, cg_z)))
-    ok &= report(abs(u_back - u_desk) < 1e-6, "スタンド：前後の支点が同じ高さ（机の上）")
-    ok &= report(
-        w_cg - w_front >= p.STAND_MIN_MARGIN,
-        f"スタンド：前へ倒れる向きの余裕（重さの中心〜前の支点）{w_cg - w_front:.1f}（最小{p.STAND_MIN_MARGIN}）",
-    )
-    ok &= report(
-        w_back - w_cg >= p.STAND_MIN_MARGIN,
-        f"スタンド：後ろへ倒れる向きの余裕（重さの中心〜後ろの支点）{w_back - w_cg:.1f}（最小{p.STAND_MIN_MARGIN}）",
-    )
-    x0 = min(p.KEYHOLE_X) - p.STAND_W / 2
-    x1 = max(p.KEYHOLE_X) + p.STAND_W / 2
-    side = min(cg_x - x0, x1 - cg_x)
-    ok &= report(
-        side >= p.STAND_MIN_MARGIN,
-        f"スタンド：左右に倒れる向きの余裕（重さの中心〜外側のブラケット）{side:.1f}（最小{p.STAND_MIN_MARGIN}）",
-    )
-    # ブラケットの輪郭の点が、机より下に出ない
-    low = min(stand.world(y, z)[1] for y, z in stand.profile((cg_y, cg_z))) - u_desk
-    ok &= report(low >= -1e-6, f"スタンド：ブラケットが机より下に出ない（最も低い点の差 {low:.2f}）")
+    # 計算の式で作った支点と一致するか（形と式のずれを見つける）
+    w_f_calc, u_calc = stand.world(*stand.FRONT_POINT)
+    match = abs(u_calc - u_desk) < 0.05 and abs(w_f_calc - w_front) < 0.05
+    ok &= report(match, f"スタンド：CADの接地と計算の支点が一致（前W 計算{w_f_calc:.1f}／CAD{w_front:.1f}）")
 
-    # 本体の下面（Y＝下面、奥行き z）と机の隙間
-    def gap(z):
-        return stand.world(stand.Y_BOTTOM, z)[1] - u_desk
+    # 本体（シャーシ＋カバー）が机より上にあるか、一番低い所の隙間
+    u_case, _ = lowest_points([body, cover])
+    gap_min = u_case - u_desk
+    ok &= report(
+        gap_min >= p.STAND_MIN_CLEARANCE,
+        f"スタンド：本体の一番低い所と机の隙間（CADから）{gap_min:.1f}（最小{p.STAND_MIN_CLEARANCE}）",
+    )
 
-    checks = {
-        "本体の下面（一番低い後ろの端）": (stand.Z_BACK, stand.Z_BACK),
+    # 下面の穴のある所の隙間（下面は平らな面なので、奥行きの範囲の両端で確かめる）
+    def gap(depth):
+        return stand.world(stand.Y_BOTTOM, depth)[1] - u_desk
+
+    zones = {
         "Pi用の配線口（奥行き15〜35）": (15.0, 35.0),
         "Display用の配線口（奥行き3〜19）": (3.0, 19.0),
         "吸気のスリット（奥行き12〜40）": (12.0, 40.0),
     }
-    for name, (z0, z1) in checks.items():
-        g = min(gap(z0), gap(z1))
+    for name, (d0, d1) in zones.items():
+        g = min(gap(d0), gap(d1))
         ok &= report(
-            g >= p.STAND_MIN_CLEARANCE,
-            f"スタンド：{name}と机の隙間 {g:.1f}（最小{p.STAND_MIN_CLEARANCE}）",
+            g >= p.STAND_MIN_CLEARANCE, f"スタンド：{name}と机の隙間 {g:.1f}（最小{p.STAND_MIN_CLEARANCE}）"
         )
+
+    # 安定：筐体の重さを変えて、重さの中心と支点の水平距離
+    for ratio in p.STAND_MASS_RATIOS:
+        (cx, cy, cz), mass = stand.center_of_mass(ratio)
+        w_cg, _ = stand.world(cy, cz)
+        front = w_cg - w_front
+        back = w_back - w_cg
+        side = min(cx - x0, x1 - cx)
+        good = min(front, back, side) >= p.STAND_MIN_MARGIN
+        ok &= report(
+            good,
+            f"スタンド：安定 筐体{int(ratio * 100)}%（合計{mass:.0f}g、中心X {cx:.1f}・Y {cy:.1f}・奥行き{cz:.1f}）"
+            f" 前{front:.1f}・後ろ{back:.1f}・左右{side:.1f}（最小{p.STAND_MIN_MARGIN}）",
+        )
+    return ok
+
+
+def screw_model(cx, head_d, head_t, shank_d):
+    """キーホールに掛けるネジ（ブラケットにねじ込んだ状態）。Displayの座標。"""
+    screw_y = p.KEYHOLE_ENTRY_Y + p.KEYHOLE_SLOT_LEN
+    face = stand.Z_BACK  # ブラケットの当たり面＝カバーの外側
+    shank = chassis.cylinder_z(cx, screw_y, face - p.STAND_SCREW_STANDOFF, face, shank_d)
+    head = chassis.cylinder_z(
+        cx, screw_y, face - p.STAND_SCREW_STANDOFF - head_t, face - p.STAND_SCREW_STANDOFF, head_d
+    )
+    return shank.union(head)
+
+
+def check_stand_assembly():
+    """取り付けの動き：本体をキーホールの丸い穴の位置（10上）で押し込み、10下ろす。
+
+    途中で、本体とブラケット、カバーとネジ（上限の大きさ）が重ならないかを1mmごとに確かめる。
+    ネジの頭の上と、頭の空間の天井の余裕も確かめる。
+    """
+    ok = True
+    case = chassis.chassis_raw().union(rear_cover.rear_cover_raw())
+    cover = rear_cover.rear_cover_raw()
+    brs = stand.brackets_raw()
+    screws = [
+        screw_model(cx, p.STAND_SCREW_HEAD_D_MAX, p.STAND_SCREW_HEAD_T_MAX, p.STAND_SCREW_SHANK_D_MAX)
+        for cx in p.KEYHOLE_X
+    ]
+    slide = p.KEYHOLE_SLOT_LEN
+    worst = 0.0
+    # 押し込み：丸い穴の位置（slide 上）で、本体を後ろから6手前の所から当たり面まで
+    for k in range(0, 7):
+        moved = case.translate((0, slide, -float(k)))
+        worst = max(worst, sum(overlap(moved, b) for b in brs))
+        worst = max(worst, sum(overlap(cover.translate((0, slide, -float(k))), s) for s in screws))
+    # 下ろす：slide 上から最終位置まで
+    for k in range(0, int(slide) + 1):
+        dy = slide - k
+        moved = case.translate((0, dy, 0))
+        worst = max(worst, sum(overlap(moved, b) for b in brs))
+        worst = max(worst, sum(overlap(cover.translate((0, dy, 0)), s) for s in screws))
+    ok &= report(
+        worst <= TOLERANCE,
+        f"スタンド：取り付けの動き（押し込み・10下ろす）で、本体・ネジ（頭{p.STAND_SCREW_HEAD_D_MAX}×厚み"
+        f"{p.STAND_SCREW_HEAD_T_MAX}、軸{p.STAND_SCREW_SHANK_D_MAX}）が重ならない（最大{worst:.3f} mm3）",
+    )
+    roof = p.COVER_T + p.KEYHOLE_POCKET_H
+    margin = roof - (p.STAND_SCREW_STANDOFF + p.STAND_SCREW_HEAD_T_MAX)
+    ok &= report(
+        margin >= 0.3,
+        f"スタンド：ネジの頭の上と、頭の空間の天井の余裕 {margin:.1f}（最小0.3）",
+    )
+    under = p.STAND_SCREW_STANDOFF - p.COVER_T
+    ok &= report(under >= 0.2, f"スタンド：ネジの頭の下と、カバーの板の隙間 {under:.1f}（最小0.2）")
     return ok
 
 
@@ -223,7 +307,8 @@ def main():
         moved_up = b.translate((0, 0.1, 0))  # Yは上へ正
         area = overlap(moved_up, body) / 0.1
         results.append(report(area > TOLERANCE, f"接触 スタンド{i} → 本体の下面：{area:.1f} mm2"))
-    results.append(check_stand(brackets))
+    results.append(check_stand(brackets, body, cover))
+    results.append(check_stand_assembly())
 
     # 保持：リアカバーの有無
     print(
