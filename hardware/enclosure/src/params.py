@@ -1,0 +1,58 @@
+"""筐体CADの寸法をすべて集めたファイル（Issue #20）。
+
+出典は docs/enclosure-requirements.md（Issue #19）。値ごとに種類を書く。
+- 実測：ユーザーがノギス・直尺で測った値
+- 計算：実測値から算出した値
+- 仮定：確かめていない前提。変わる可能性がある
+- 公式：Raspberry Pi の公式資料による参考値（実物では測っていない）
+
+座標：Displayを正面から見て左下の角が原点。
+X＝右、Y＝上、Z＝正面のガラス面から背面への奥行き。単位はmm。
+（docs/enclosure-requirements.md と同じ。CADの中では Z＝−奥行き に直す。reference.to_cad を参照）
+"""
+
+# --- Display（Santek SOF01010A1B） ---
+DISPLAY_W = 228.0  # 実測。外形の幅
+DISPLAY_H = 148.6  # 実測。外形の高さ
+DISPLAY_T_THIN = 4.4  # 実測。基板がない部分の厚み
+DISPLAY_T_BOARD = 9.0  # 実測。背面の基板がある部分の厚み
+BOARD_FROM_TOP = 67.9  # 実測。上端から基板の上端まで
+BOARD_TOP_Y = DISPLAY_H - BOARD_FROM_TOP  # 計算。基板の上端のY（80.7）
+# 仮定：基板は左右いっぱいに広がっているとみなす（基板の幅は測っていない）
+
+BEZEL_TOP = 4.4  # 実測。ガラスの端から表示領域まで
+BEZEL_BOTTOM = 7.0  # 実測
+BEZEL_LEFT = 4.3  # 実測（正面から見て）
+BEZEL_RIGHT = 7.0  # 実測（正面から見て）
+
+# --- 下部の固定耳（左右に1つずつ） ---
+TAB_W = 8.4  # 実測。耳の幅（外側の端面はDisplayの側面と面一）
+TAB_DROP = 8.4  # 実測。Displayの下端から下への出っ張り
+TAB_INNER_GAP_MEASURED = 210.0  # 実測（直尺の概算「約210」）。左右の耳の内側の間隔
+TAB_INNER_GAP = DISPLAY_W - 2 * TAB_W  # 計算（211.2）
+TAB_HOLE_D = 3.0  # 実測。穴の直径
+TAB_HOLE_EDGE_X = 2.8  # 実測。耳の外側の端面から穴の縁まで（横）
+TAB_HOLE_CX = TAB_HOLE_EDGE_X + TAB_HOLE_D / 2  # 計算。外側の端面から穴の中心まで（4.3）
+# 仮定：穴の中心は耳の下の円弧の中心と同じで、耳の下端から TAB_W/2 上にある。
+# （縦方向の2.8は基準面が未確認のため使わない）
+TAB_HOLE_CY = -(TAB_DROP - TAB_W / 2)  # 仮定。穴の中心のY（-4.2）
+TAB_Z0 = DISPLAY_T_THIN  # 仮定。耳は背面の基板の一部で、Zは基板と同じ範囲
+TAB_Z1 = DISPLAY_T_BOARD  # 仮定
+
+# --- Displayの左側面の端子 ---
+PORT_POWER_Y = 33.5  # 実測。電源USB-Cの中心のY
+PORT_HDMI_Y = 55.5  # 実測。Mini HDMIの中心のY
+PORT_Z = 8.9  # 実測。ただし基準面が未確認
+PORT_PLUG_OUT = 49.1  # 実測（概算）。左側面からプラグ＋ケーブルの一番外側まで
+
+# --- Raspberry Pi 5 ＋ Active Cooler ---
+PI_W = 85.0  # 公式。基板の長辺（X方向に置く。HDMI端子が下向き）
+PI_H = 56.0  # 公式。基板の短辺
+PI_X0 = 59.8  # 実測。基板の左下の角のX
+PI_Y0 = 24.7  # 実測。基板の左下の角のY
+PI_TOP_Z = DISPLAY_T_THIN + 35.0  # 計算（39.4）。仮定：35.0は基板がない部分の背面から
+PI_PLUG_DROP = 26.5  # 実測。基板の下端から、挿したプラグの一番下まで
+PI_SPACER_H = 11.0  # 実測（1回）
+
+# --- 測定の不確かさに対する余裕（設計の判断。#20のPRで見直す） ---
+MARGIN_Z_UNCERTAIN = 3.0  # 仮定。基準面が未確認のZ（端子、39.4）に足す余裕

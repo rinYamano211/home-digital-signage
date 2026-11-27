@@ -13,3 +13,6 @@ coverage/
 
 # Personal Claude Code settings. Excluding this file from Git does not enforce permissions.
 /.claude/settings.local.json
+
+# Python bytecode from the enclosure CAD scripts.
+__pycache__/
