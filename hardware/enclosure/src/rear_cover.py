@@ -11,10 +11,9 @@ CADの座標に直す。背面を下にして印刷する前提（内側の形�
   板の内側に、頭が入る空間を囲む台を付ける
 - ワイヤーを通す穴の組2つ：ピクチャーレールのフックに掛けるワイヤー・ひもを、
   外から入れて内側の溝を通し、外へ出して結ぶ
-- Displayの上側を後ろから押さえる柱2本（カバーを付けたときだけ効く）
 
 荷重の流れ（壁掛け）：壁のネジ・ピン（またはワイヤー）→ キーホールの台（またはワイヤーの穴の組）
-→ 背面の板 → 6本のネジ → シャーシのボス → シャーシ → 前面の縁・押さえ板 → Display。
+→ 背面の板 → 6本のネジ → シャーシのボス → シャーシ → 前面の縁・押さえ板・上部ストッパー → Display。
 強度は実機で確かめていない。
 """
 
@@ -116,20 +115,9 @@ def wire_anchor_parts(cx):
     return block, channel, holes
 
 
-def top_posts():
-    """Displayの上側（基板がない薄い部分）の背面を押さえる柱。"""
-    w, h = p.TOP_POST_SIZE
-    z_tip = p.DISPLAY_T_THIN + p.TOP_POST_GAP
-    result = None
-    for cx in p.TOP_POST_X:
-        post = ch.box(cx - w / 2, p.TOP_POST_Y - h / 2, z_tip, cx + w / 2, p.TOP_POST_Y + h / 2, Z0)
-        result = post if result is None else result.union(post)
-    return result
-
-
 def rear_cover_raw():
     """Displayの座標（Z＝奥行き）のままの形。"""
-    body = plate().union(top_posts())
+    body = plate()
     cuts = screw_holes().union(vents())
     for cx in p.KEYHOLE_X:
         block, pocket, through = keyhole_parts(cx)

@@ -4,7 +4,7 @@
 出力：hardware/enclosure/out/ の SVG
 - reference-*：参照モデル（正面・背面・下面・左側面）
 - chassis-*：メインシャーシ（正面・背面・下面・上面・斜め後ろ）
-- clamps-*：メインシャーシに押さえ板2枚を付けた状態（背面・斜め後ろ）
+- clamps-*：メインシャーシに押さえ板2枚と上部ストッパー2個を付けた状態（背面・斜め後ろ）
 - rear-cover-*：リアカバー（背面〈壁の側〉・内側・斜め）
 - assembly-*：全部を組み立てた状態（正面・背面・下面・斜め後ろ）
 """
@@ -69,7 +69,7 @@ def main():
     export_views("reference", reference.assembly())
     export_views("chassis", chassis.chassis(), CHASSIS_VIEWS)
     with_clamps = chassis.chassis()
-    for plate in chassis.clamp_plates():
+    for plate in chassis.clamp_plates() + chassis.top_stoppers():
         with_clamps = with_clamps.add(plate)
     export_views(
         "clamps",
