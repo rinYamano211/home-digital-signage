@@ -11,6 +11,7 @@ from pathlib import Path
 
 import vtk
 
+import cables
 import chassis
 import params as p
 import rear_cover
@@ -22,6 +23,7 @@ BODY_COLOR = (0.30, 0.30, 0.31)  # 仮の色（ダークチャコール）
 SCREEN_COLOR = (0.05, 0.05, 0.06)
 WALL_COLOR = (0.85, 0.84, 0.82)
 DESK_COLOR = (0.55, 0.45, 0.35)
+CABLE_COLOR = (0.85, 0.85, 0.85)  # ケーブルは見分けやすい明るい色（実物は黒）
 
 
 def actor(shape, color, tolerance=0.05):
@@ -53,11 +55,13 @@ def screen():
     return glass  # CADの座標（Z＝−奥行き）：ガラス面は奥行き0〜0.5
 
 
-def scene_parts(with_stand=False):
+def scene_parts(with_stand=False, with_cables=False):
     parts = [(chassis.chassis(), BODY_COLOR), (rear_cover.rear_cover(), BODY_COLOR)]
     parts.append((screen(), SCREEN_COLOR))
     if with_stand:
         parts += [(b, BODY_COLOR) for b in stand.brackets()]
+    if with_cables:
+        parts += [(c, CABLE_COLOR) for c in cables.cables().values()]
     return parts
 
 
@@ -151,14 +155,25 @@ def main():
     tilt = p.STAND_TILT_DEG
     u_desk = stand.world(*stand.FRONT_POINT)[1]
     desk = cq.Workplane().add(cq.Solid.makeBox(700, 5, 500, cq.Vector(-260, u_desk - 5, -350)))
-    sparts = scene_parts(with_stand=True)
+    sparts = scene_parts(with_stand=True, with_cables=True)
     for name, pos in {
+        "desk-front": (center[0], center[1] + 60, d),
         "desk-left45": (center[0] - d * 0.75, center[1] + 120, d * 0.6),
         "desk-left": (center[0] - d, center[1], center[2]),
+        "desk-back-left45": (center[0] - d * 0.6, center[1] + 160, -d * 0.75),
     }.items():
         render(
-            name, sparts, pos, center, rotate_x=-tilt, extra=[(desk, DESK_COLOR)], parallel="45" not in name
+            name, sparts, pos, center, rotate_x=-tilt, extra=[(desk, DESK_COLOR)], parallel=name in ("desk-front", "desk-left")
         )
+    # 下から見た図（机なし・傾けない）：下面の配線口・スタンド・ケーブルの位置関係
+    render(
+        "desk-bottom",
+        sparts,
+        (center[0], center[1] - d, center[2]),
+        center,
+        view_up=(0, 0, 1),
+        parallel=True,
+    )
     print(f"PNG: {OUT_DIR}")
 
 
