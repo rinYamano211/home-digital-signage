@@ -7,7 +7,8 @@ CADの座標に直す。
 構成：
 - 前面の板と、ガラスに被せる縁（表示領域より外側だけ）
 - 外周の壁。左側は、Displayの端子とプラグを収める左サイドカバー
-- 下フレーム：固定耳を前から受ける台2つ、押さえ板用のボス2つ、配線口2つ、吸気のスリット
+- 下フレーム：固定耳を前から受ける台2つ、押さえ板用のボス2つ、配線口2つ、
+  結束バンドを通す穴の組2つ、吸気のスリット
 - 上の壁：排気のスリット
 - 左の位置決めリブ（左サイドカバーの側は壁がないため）
 - リアカバーを留めるネジボス6つ
@@ -16,8 +17,6 @@ CADの座標に直す。
 - 固定耳の押さえ板2枚（clamp_plates）。耳の後ろに当て、押さえ板用のボスにネジで留める
 
 まだ作っていないもの（後のPRで扱う）：
-- Displayの上側を後ろから押さえる部品（今はリアカバーを外すと、下の押さえ板2枚と
-  前面の縁だけで支える）
 - 配線口の縁の丸め（今は端を丸めた長穴だけ）
 """
 
@@ -241,6 +240,21 @@ def cable_holes():
     return pi_hole.union(display_hole)
 
 
+def tie_slots():
+    """結束バンドを通す穴の組（下フレームの床）。配線口の横で、ケーブルを床に留める。
+
+    ケーブルを引っ張っても端子に力がかからないよう、端子と配線口の間で留める。
+    """
+    w, d = p.TIE_SLOT
+    result = None
+    for cx, cz in (p.TIE_PI, p.TIE_DISPLAY):
+        for dx in (-p.TIE_PITCH / 2, p.TIE_PITCH / 2):
+            x = cx + dx
+            slot = box(x - w / 2, Y_OUT0, cz - d / 2, x + w / 2, Y_IN0, cz + d / 2)
+            result = slot if result is None else result.union(slot)
+    return result
+
+
 def vents():
     """吸気（下）と排気（上）のスリット。幅2.5、奥行き方向に長い。"""
     result = None
@@ -262,7 +276,11 @@ def chassis_raw():
         .union(cover_bosses())
     )
     return (
-        body.cut(clamp_pilots()).cut(cover_pilots()).cut(cable_holes()).cut(vents())
+        body.cut(clamp_pilots())
+        .cut(cover_pilots())
+        .cut(cable_holes())
+        .cut(tie_slots())
+        .cut(vents())
     )
 
 

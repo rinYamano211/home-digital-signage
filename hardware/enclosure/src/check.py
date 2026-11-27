@@ -16,6 +16,7 @@ import sys
 
 import chassis
 import params as p
+import rear_cover
 import reference
 
 TOLERANCE = 1e-3  # 体積の許容（mm³）。計算の誤差だけを許す
@@ -100,14 +101,54 @@ def check_clamps(body):
     return ok
 
 
+def overlap(a, b):
+    return sum(s.Volume() for s in a.intersect(b).solids().vals())
+
+
+def check_rear_cover(body):
+    """リアカバー：正しい立体か、参照モデル・シャーシ・押さえ板と重ならないか、ネジ穴の位置。"""
+    cover = rear_cover.rear_cover()
+    ok = check_solid("リアカバー", cover)
+    ok &= check_interference("リアカバー", cover)
+    others = [("メインシャーシ", body)] + [
+        (f"押さえ板{i}", plate) for i, plate in enumerate(chassis.clamp_plates(), start=1)
+    ]
+    for name, other in others:
+        volume = overlap(cover, other)
+        status = "OK" if volume <= TOLERANCE else "NG"
+        ok &= status == "OK"
+        print(f"[{status}] 干渉 リアカバー × {name}: {volume:.3f} mm3")
+    # カバーをシャーシ側へ0.1動かすと、6つのボスの頭と重なる＝ボスの上に載っている
+    pushed = cover.translate((0, 0, 0.1))  # CADのZは正面へ正
+    seated = overlap(pushed, body) / 0.1
+    status = "OK" if seated > TOLERANCE else "NG"
+    ok &= status == "OK"
+    print(f"[{status}] リアカバーがシャーシに載る面積: {seated:.0f} mm2")
+    # 上側の柱：カバーを付けたとき、Displayの背面との隙間が TOP_POST_GAP であること
+    probe = cover.translate((0, 0, p.TOP_POST_GAP + 0.05))
+    touch = overlap(probe, reference.parts()["display"])
+    status = "OK" if touch > TOLERANCE else "NG"
+    ok &= status == "OK"
+    print(f"[{status}] 上側の柱が、隙間{p.TOP_POST_GAP}を詰めるとDisplayに当たる")
+    return ok
+
+
+def check_total_depth():
+    d0, d1 = rear_cover.OUTER_DEPTH
+    print(f"[INFO] 組み立てたときの全体の奥行き：{d1 - d0:.1f}（前面の板〜リアカバーの外側）")
+    return True
+
+
 def main():
     body = chassis.chassis()
     results = [
         check_solid("メインシャーシ", body),
         check_interference("メインシャーシ", body),
         check_clamps(body),
+        check_rear_cover(body),
         check_lips(),
         check_print_size(),
+        check_total_depth(),
     ]
     if all(results):
         print("すべてOK")

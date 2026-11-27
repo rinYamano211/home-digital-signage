@@ -105,6 +105,18 @@ def pi_plugs():
     )
 
 
+def rtc_space():
+    """RTC Battery（任意・後付け）を置くために空けておく範囲（仮定の大きさ）。"""
+    return box(
+        p.RTC_SPACE_X[0],
+        p.RTC_SPACE_Y[0],
+        p.RTC_SPACE_DEPTH[0],
+        p.RTC_SPACE_X[1],
+        p.RTC_SPACE_Y[1],
+        p.RTC_SPACE_DEPTH[1],
+    )
+
+
 def to_cad(shape):
     """奥行き（Z＝背面へ正）で作った形を、CADの座標（Z＝正面へ正）に直す。
 
@@ -122,6 +134,7 @@ def parts():
         "display_plugs": to_cad(display_plugs()),
         "pi": to_cad(pi_envelope()),
         "pi_plugs": to_cad(pi_plugs()),
+        "rtc_space": to_cad(rtc_space()),
     }
 
 
