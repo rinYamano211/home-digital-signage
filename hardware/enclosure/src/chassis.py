@@ -83,18 +83,30 @@ def shell():
 
 
 def left_ribs():
-    """Displayの左端の位置決め。端子とプラグの範囲（Y 27〜62）を避ける。"""
-    x0, x1 = -p.CLEAR - 1.5, -p.CLEAR
+    """Displayの左端の位置決め。端子とプラグの範囲（Y 27〜62）を避ける。
+
+    前面の板から立ち上がる（前面を下にした印刷で、床から積み上がる）。
+    右の壁との間でDisplayを左右に±CLEARの範囲に収める。厚みは壁と同じ。
+    """
+    x0, x1 = -p.CLEAR - p.WALL, -p.CLEAR
     ribs = box(x0, 5.0, 0, x1, 20.0, 8.0)
     return ribs.union(box(x0, 75.0, 0, x1, 140.0, 8.0))
 
 
 def tab_bosses():
-    """固定耳を前から受けるボス。ネジは背面から耳の穴を通してねじ込む。"""
+    """固定耳を前から受けるボス。ネジは背面から耳の穴を通してねじ込む。
+
+    円柱だけだと、前面の板との接続は円柱の底面（約38mm²）だけになる。ボスから
+    下フレームの床（壁）まで台を伸ばし、前面の板と床の壁の2面につなぐ。
+    台は奥行き0〜z1（耳の前面の手前）で、Display（Y≥0）と耳には入らない。
+    """
     z1 = p.TAB_Z0 - p.TAB_BOSS_GAP
+    r = p.TAB_BOSS_D / 2
     result = None
     for cx in (p.TAB_HOLE_CX, p.DISPLAY_W - p.TAB_HOLE_CX):
         boss = cylinder_z(cx, p.TAB_HOLE_CY, 0, z1, p.TAB_BOSS_D)
+        pad = box(cx - r, Y_IN0 - 0.5, 0, cx + r, p.TAB_HOLE_CY, z1)
+        boss = boss.union(pad)
         result = boss if result is None else result.union(boss)
     return result
 

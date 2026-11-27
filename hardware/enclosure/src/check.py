@@ -1,5 +1,6 @@
 """筐体の確認（Issue #20）。
 
+0. 形状：正しい立体（isValid）で、1つのつながった塊か
 1. 干渉：筐体と参照モデル（reference.py）が重なる体積が0か
 2. 前面の縁：ガラスに被る幅が、表示領域にかからないか（LIP_MIN_GAP以上の余裕）
 3. 造形範囲：外形がプリンタの造形範囲（余裕込み）に収まるか
@@ -7,7 +8,8 @@
 実行：venvのPythonで `python hardware/enclosure/src/check.py`
 1つでも満たさなければ、終了コード1で終わる。
 
-参照モデルと重ならないことは、実機に組み付けられることを保証しない。
+この確認がすべてOKでも、実機での組立適合性・強度・冷却性能は保証しない。
+参照モデルは暫定の範囲で、実物の細かい形ではない。
 """
 
 import sys
@@ -22,12 +24,23 @@ TOLERANCE = 1e-3  # 体積の許容（mm³）。計算の誤差だけを許す
 def check_interference(name, body):
     ok = True
     for part_name, part in reference.parts().items():
+        # 重なりが複数の離れた塊になっても、すべての体積を合計する
         common = body.intersect(part)
-        volume = common.val().Volume() if common.vals() else 0.0
+        volume = sum(s.Volume() for s in common.solids().vals())
         status = "OK" if volume <= TOLERANCE else "NG"
         ok &= status == "OK"
         print(f"[{status}] 干渉 {name} × {part_name}: {volume:.3f} mm3")
     return ok
+
+
+def check_solid(name, body):
+    """形が正しい立体で、1つのつながった塊か（ボスやリブが浮いていないか）。"""
+    solids = body.solids().vals()
+    valid = all(s.isValid() for s in solids)
+    single = len(solids) == 1
+    print(f"[{'OK' if valid else 'NG'}] 形状 {name}：isValid={valid}")
+    print(f"[{'OK' if single else 'NG'}] ソリッドの数 {name}：{len(solids)}（1であること）")
+    return valid and single
 
 
 def check_lips():
@@ -68,6 +81,7 @@ def check_print_size():
 def main():
     body = chassis.chassis()
     results = [
+        check_solid("メインシャーシ", body),
         check_interference("メインシャーシ", body),
         check_lips(),
         check_print_size(),
