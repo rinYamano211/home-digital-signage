@@ -7,17 +7,20 @@ CADの座標に直す。
 構成：
 - 前面の板と、ガラスに被せる縁（表示領域より外側だけ）
 - 外周の壁。左側は、Displayの端子とプラグを収める左サイドカバー
-- 下フレーム：固定耳を前から受ける台2つ、押さえ板用のボス2つ、配線口2つ、吸気のスリット
+- 下フレーム：固定耳を前から受ける台2つ、押さえ板用のボス2つ、配線口2つ、
+  結束バンドを通す穴の組2つ、吸気のスリット
 - 上の壁：排気のスリット
 - 左の位置決めリブ（左サイドカバーの側は壁がないため）
 - リアカバーを留めるネジボス6つ
 
+- 上の壁：上部ストッパーを留める台2つ（下に45度の支え）
+
 別の部品：
 - 固定耳の押さえ板2枚（clamp_plates）。耳の後ろに当て、押さえ板用のボスにネジで留める
+- 上部ストッパー2個（top_stoppers）。L字。台に背面からネジで留め、Displayの上側が
+  後ろへ倒れるのを止める（リアカバーがなくても効く）
 
 まだ作っていないもの（後のPRで扱う）：
-- Displayの上側を後ろから押さえる部品（今はリアカバーを外すと、下の押さえ板2枚と
-  前面の縁だけで支える）
 - 配線口の縁の丸め（今は端を丸めた長穴だけ）
 """
 
@@ -241,6 +244,88 @@ def cable_holes():
     return pi_hole.union(display_hole)
 
 
+def top_stop_blocks():
+    """上部ストッパーを留める台。上の壁から吊り、下（正面の側）に45度の支えを付ける。
+
+    前面を下にした印刷で、支えから積み上がるためサポートが要らない。支えは
+    Displayの上端（Y 148.6、奥行き4.4まで）と重ならないよう、奥行き TOP_STOP_GUSSET_Z0 から始める。
+    """
+    half = p.TOP_STOP_W / 2
+    reach = Y_IN1 - p.TOP_STOP_BLOCK_Y0
+    z0 = p.TOP_STOP_GUSSET_Z0 + reach  # 台の下面
+    result = None
+    for cx in p.TOP_STOP_X:
+        block = box(cx - half, p.TOP_STOP_BLOCK_Y0, z0, cx + half, Y_IN1 + 0.5, p.TOP_STOP_BLOCK_Z1)
+        gusset = (
+            cq.Workplane("YZ")
+            .polyline([(Y_IN1, z0), (Y_IN1 - reach, z0), (Y_IN1, p.TOP_STOP_GUSSET_Z0)])
+            .close()
+            .extrude(p.TOP_STOP_W)
+            .translate((cx - half, 0, 0))
+        )
+        part = block.union(gusset)
+        result = part if result is None else result.union(part)
+    return result
+
+
+TOP_STOP_SCREW_Y = (p.TOP_STOP_BLOCK_Y0 + Y_IN1) / 2  # 台の中央のY
+
+
+def top_stop_pilots():
+    result = None
+    for cx in p.TOP_STOP_X:
+        hole = cylinder_z(
+            cx,
+            TOP_STOP_SCREW_Y,
+            p.TOP_STOP_BLOCK_Z1 - p.TOP_STOP_SCREW_DEPTH,
+            p.TOP_STOP_BLOCK_Z1,
+            p.SCREW_PILOT_D,
+        )
+        result = hole if result is None else result.union(hole)
+    return result
+
+
+def top_stoppers_raw():
+    """上部ストッパー2個（Displayの座標）。L字：台に載る板＋正面の側へ伸びる脚。
+
+    脚の先は、Displayの上側（基板がない薄い部分）の背面に TOP_STOP_GAP の隙間で向き合う。
+    リアカバーとは関係なく、シャーシだけでDisplayの上側が後ろへ倒れるのを止める。
+    """
+    half = p.TOP_STOP_W / 2
+    leg_y1 = p.TOP_STOP_BLOCK_Y0 - p.TOP_STOP_LEG_GAP
+    leg_y0 = leg_y1 - p.TOP_STOP_LEG_T
+    z_tip = p.DISPLAY_T_THIN + p.TOP_STOP_GAP
+    z_plate0 = p.TOP_STOP_BLOCK_Z1
+    z_plate1 = z_plate0 + p.TOP_STOP_PLATE_T
+    parts = []
+    for cx in p.TOP_STOP_X:
+        plate = box(cx - half, leg_y0, z_plate0, cx + half, Y_IN1 - 0.3, z_plate1)
+        leg = box(cx - half, leg_y0, z_tip, cx + half, leg_y1, z_plate0)
+        hole = cylinder_z(cx, TOP_STOP_SCREW_Y, z_plate0, z_plate1, p.CLAMP_SCREW_CLEAR_D)
+        parts.append(plate.union(leg).cut(hole))
+    return parts
+
+
+def top_stoppers():
+    """上部ストッパー2個（CADの座標）。"""
+    return [to_cad(part) for part in top_stoppers_raw()]
+
+
+def tie_slots():
+    """結束バンドを通す穴の組（下フレームの床）。配線口の横で、ケーブルを床に留める。
+
+    ケーブルを引っ張っても端子に力がかからないよう、端子と配線口の間で留める。
+    """
+    w, d = p.TIE_SLOT
+    result = None
+    for cx, cz in (p.TIE_PI, p.TIE_DISPLAY):
+        for dx in (-p.TIE_PITCH / 2, p.TIE_PITCH / 2):
+            x = cx + dx
+            slot = box(x - w / 2, Y_OUT0, cz - d / 2, x + w / 2, Y_IN0, cz + d / 2)
+            result = slot if result is None else result.union(slot)
+    return result
+
+
 def vents():
     """吸気（下）と排気（上）のスリット。幅2.5、奥行き方向に長い。"""
     result = None
@@ -259,10 +344,16 @@ def chassis_raw():
         .union(left_ribs())
         .union(tab_bosses())
         .union(clamp_bosses())
+        .union(top_stop_blocks())
         .union(cover_bosses())
     )
     return (
-        body.cut(clamp_pilots()).cut(cover_pilots()).cut(cable_holes()).cut(vents())
+        body.cut(clamp_pilots())
+        .cut(top_stop_pilots())
+        .cut(cover_pilots())
+        .cut(cable_holes())
+        .cut(tie_slots())
+        .cut(vents())
     )
 
 

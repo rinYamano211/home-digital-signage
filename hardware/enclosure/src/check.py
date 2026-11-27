@@ -1,35 +1,43 @@
 """筐体の確認（Issue #20）。
 
-0. 形状：正しい立体（isValid）で、1つのつながった塊か
-1. 干渉：筐体と参照モデル（reference.py）が重なる体積が0か
-2. 前面の縁：ガラスに被る幅が、表示領域にかからないか（LIP_MIN_GAP以上の余裕）
-3. 造形範囲：外形がプリンタの造形範囲（余裕込み）に収まるか
+確認すること：
+- 形状：各部品が正しい立体（isValid）で、1つのつながった塊か
+- 干渉：各部品と参照モデル（reference.py）、部品どうしが重なる体積が0か
+- 接触：押さえ板・上部ストッパー・リアカバーが、決めた相手に当たる・載るか
+  （部品を相手の側へ少し動かすと重なる＝接している、で確かめる）
+- ネジ：リアカバーの6か所で、カバーの通し穴・シャーシのボスの上面・下穴がそろっているか
+- 保持：リアカバーがなくても、Displayの下（押さえ板）と上（上部ストッパー）が押さえられるか
+- 前面の縁：ガラスに被る幅が、表示領域にかからないか（LIP_MIN_GAP以上の余裕）
+- 造形範囲：各部品がプリンタの造形範囲（余裕込み）に収まるか
 
 実行：venvのPythonで `python hardware/enclosure/src/check.py`
 1つでも満たさなければ、終了コード1で終わる。
 
-この確認がすべてOKでも、実機での組立適合性・強度・冷却性能は保証しない。
+この確認がすべてOKでも、実機での組立適合性・保持力・強度・冷却性能は保証しない。
 参照モデルは暫定の範囲で、実物の細かい形ではない。
 """
 
 import sys
 
+import cadquery as cq
+
 import chassis
 import params as p
+import rear_cover
 import reference
+from reference import to_cad
 
 TOLERANCE = 1e-3  # 体積の許容（mm³）。計算の誤差だけを許す
+TOWARD_FRONT = (0, 0, 1)  # CADのZは正面へ正
 
 
-def check_interference(name, body):
-    ok = True
-    for part_name, part in reference.parts().items():
-        # 重なりが複数の離れた塊になっても、すべての体積を合計する
-        common = body.intersect(part)
-        volume = sum(s.Volume() for s in common.solids().vals())
-        status = "OK" if volume <= TOLERANCE else "NG"
-        ok &= status == "OK"
-        print(f"[{status}] 干渉 {name} × {part_name}: {volume:.3f} mm3")
+def overlap(a, b):
+    """重なりの体積。重なりが複数の離れた塊になっても、すべて合計する。"""
+    return sum(s.Volume() for s in a.intersect(b).solids().vals())
+
+
+def report(ok, text):
+    print(f"[{'OK' if ok else 'NG'}] {text}")
     return ok
 
 
@@ -37,10 +45,67 @@ def check_solid(name, body):
     """形が正しい立体で、1つのつながった塊か（ボスやリブが浮いていないか）。"""
     solids = body.solids().vals()
     valid = all(s.isValid() for s in solids)
-    single = len(solids) == 1
-    print(f"[{'OK' if valid else 'NG'}] 形状 {name}：isValid={valid}")
-    print(f"[{'OK' if single else 'NG'}] ソリッドの数 {name}：{len(solids)}（1であること）")
-    return valid and single
+    ok = report(valid, f"形状 {name}：isValid={valid}")
+    ok &= report(len(solids) == 1, f"ソリッドの数 {name}：{len(solids)}（1であること）")
+    return ok
+
+
+def check_interference(name, body, others):
+    """参照モデルと、ほかの部品（others：名前→形）に重ならないか。"""
+    ok = True
+    targets = list(reference.parts().items()) + list(others.items())
+    for other_name, other in targets:
+        volume = overlap(body, other)
+        ok &= report(volume <= TOLERANCE, f"干渉 {name} × {other_name}: {volume:.3f} mm3")
+    return ok
+
+
+def check_contact(name, body, target_name, target, distance, gap=0.0):
+    """body を正面の側へ distance 動かすと target と重なる＝向き合って接している。
+
+    gap は、もともとある隙間。重なりの厚みは distance − gap になるため、それで割って面積にする。
+    """
+    moved = body.translate(tuple(distance * v for v in TOWARD_FRONT))
+    area = overlap(moved, target) / (distance - gap)
+    return report(area > TOLERANCE, f"接触 {name} → {target_name}：{area:.1f} mm2")
+
+
+def check_print_size(name, body):
+    limit = p.PRINT_BED - p.PRINT_MARGIN
+    bb = body.val().BoundingBox()
+    sizes = sorted([bb.xlen, bb.ylen, bb.zlen], reverse=True)
+    # 一番小さい寸法を印刷の高さとし、残り2つが床に収まるかを見る
+    ok = sizes[0] <= limit and sizes[1] <= limit
+    return report(
+        ok,
+        f"造形範囲 {name}：{sizes[0]:.1f}×{sizes[1]:.1f}（上限{limit:.0f}）、"
+        f"高さ{sizes[2]:.1f}（プリンタの高さの上限は未確認）",
+    )
+
+
+def check_cover_screws(body, cover):
+    """リアカバーの6か所：通し穴があり、シャーシのボスの上面が当たり、下穴が開いているか。"""
+    ok = True
+    z_back = chassis.Z_BACK
+    for i, (cx, cy) in enumerate(rear_cover.screw_points(), start=1):
+        # ボスの上面：穴の周り（外径の内側、下穴の外側）に、シャーシの面がある
+        ring = chassis.cylinder_z(cx, cy, z_back - 0.1, z_back, p.COVER_BOSS_D - 0.5).cut(
+            chassis.cylinder_z(cx, cy, z_back - 0.1, z_back, p.SCREW_PILOT_D + 0.5)
+        )
+        seat = overlap(to_cad(ring), body) / 0.1
+        # 下穴：穴の中心の細い円柱が、シャーシの中で何にも当たらない
+        core = to_cad(chassis.cylinder_z(cx, cy, z_back - p.COVER_SCREW_DEPTH + 0.5, z_back, 1.0))
+        pilot_open = overlap(core, body) <= TOLERANCE
+        # 通し穴：カバーの板を貫く細い円柱が、カバーに当たらない
+        through = to_cad(chassis.cylinder_z(cx, cy, rear_cover.Z0, rear_cover.Z1, 2.0))
+        hole_open = overlap(through, cover) <= TOLERANCE
+        good = seat > 1.0 and pilot_open and hole_open
+        ok &= report(
+            good,
+            f"ネジ{i}（X {cx:.1f}, Y {cy:.1f}）：ボスの上面{seat:.1f} mm2、"
+            f"下穴{'あり' if pilot_open else 'なし'}、カバーの通し穴{'あり' if hole_open else 'なし'}",
+        )
+    return ok
 
 
 def check_lips():
@@ -54,61 +119,64 @@ def check_lips():
     for side, (lip, bezel) in lips.items():
         # Displayは隙間CLEARの分だけ動くため、その分も引いて確かめる
         gap = bezel - lip - p.CLEAR
-        status = "OK" if gap >= p.LIP_MIN_GAP else "NG"
-        ok &= status == "OK"
-        print(
-            f"[{status}] 前面の縁 {side}：被り{lip} ベゼル{bezel} "
-            f"表示領域までの余裕{gap:.1f}（最小{p.LIP_MIN_GAP}）"
+        ok &= report(
+            gap >= p.LIP_MIN_GAP,
+            f"前面の縁 {side}：被り{lip} ベゼル{bezel} 表示領域までの余裕{gap:.1f}（最小{p.LIP_MIN_GAP}）",
         )
-    return ok
-
-
-def check_print_size():
-    limit = p.PRINT_BED - p.PRINT_MARGIN
-    w = chassis.OUTER["x"][1] - chassis.OUTER["x"][0]
-    h = chassis.OUTER["y"][1] - chassis.OUTER["y"][0]
-    d = chassis.OUTER["depth"][1] - chassis.OUTER["depth"][0]
-    # 前面を下にして印刷する：床に置く面は幅×高さ、印刷の高さは奥行き
-    ok = w <= limit and h <= limit
-    status = "OK" if ok else "NG"
-    print(
-        f"[{status}] 造形範囲 メインシャーシ 幅{w:.1f}×高さ{h:.1f}（上限{limit:.0f}）、"
-        f"印刷の高さ{d:.1f}（プリンタの高さの上限は未確認）"
-    )
-    return ok
-
-
-def check_clamps(body):
-    """押さえ板：正しい立体か、参照モデル・メインシャーシと重ならないか、耳に掛かるか。"""
-    ok = True
-    tabs = reference.parts()["tabs"]
-    for i, plate in enumerate(chassis.clamp_plates(), start=1):
-        name = f"押さえ板{i}"
-        ok &= check_solid(name, plate)
-        ok &= check_interference(name, plate)
-        common = plate.intersect(body)
-        volume = sum(s.Volume() for s in common.solids().vals())
-        status = "OK" if volume <= TOLERANCE else "NG"
-        ok &= status == "OK"
-        print(f"[{status}] 干渉 {name} × メインシャーシ: {volume:.3f} mm3")
-        # 板を耳の側へ0.1動かすと耳と重なる＝板が耳の背面に掛かっている
-        pushed = plate.translate((0, 0, 0.1))  # CADのZは正面へ正
-        overlap = sum(s.Volume() for s in pushed.intersect(tabs).solids().vals())
-        status = "OK" if overlap > TOLERANCE else "NG"
-        ok &= status == "OK"
-        print(f"[{status}] 押さえ {name} が耳に掛かる面積: {overlap / 0.1:.1f} mm2")
     return ok
 
 
 def main():
     body = chassis.chassis()
-    results = [
-        check_solid("メインシャーシ", body),
-        check_interference("メインシャーシ", body),
-        check_clamps(body),
-        check_lips(),
-        check_print_size(),
-    ]
+    clamps = chassis.clamp_plates()
+    stoppers = chassis.top_stoppers()
+    cover = rear_cover.rear_cover()
+    refs = reference.parts()
+
+    parts = {"メインシャーシ": body}
+    parts.update({f"押さえ板{i}": c for i, c in enumerate(clamps, start=1)})
+    parts.update({f"上部ストッパー{i}": s for i, s in enumerate(stoppers, start=1)})
+    parts["リアカバー"] = cover
+
+    results = []
+    # 形状と干渉（部品どうしは、組み合わせを1回ずつ確かめる）
+    names = list(parts)
+    for i, name in enumerate(names):
+        results.append(check_solid(name, parts[name]))
+        later = {n: parts[n] for n in names[i + 1 :]}
+        results.append(check_interference(name, parts[name], later))
+
+    # 接触
+    for i, c in enumerate(clamps, start=1):
+        results.append(check_contact(f"押さえ板{i}", c, "固定耳の背面", refs["tabs"], 0.1))
+    for i, s in enumerate(stoppers, start=1):
+        results.append(check_contact(f"上部ストッパー{i}", s, "シャーシの台", body, 0.1))
+        results.append(
+            check_contact(
+                f"上部ストッパー{i}（隙間{p.TOP_STOP_GAP}を詰めたとき）",
+                s,
+                "Displayの背面",
+                refs["display"],
+                p.TOP_STOP_GAP + 0.05,
+                gap=p.TOP_STOP_GAP,
+            )
+        )
+    results.append(check_contact("リアカバー", cover, "シャーシの縁", body, 0.1))
+    results.append(check_cover_screws(body, cover))
+
+    # 保持：リアカバーの有無
+    print(
+        "[INFO] 保持（リアカバーなし）：前面の縁＋下の押さえ板2枚＋上部ストッパー2個。"
+        "どれもシャーシに付くため、リアカバーを外しても変わらない（上の接触の確認を参照）"
+    )
+    print("[INFO] 保持（リアカバーあり）：上と同じ。リアカバーはDisplayを押さえない")
+
+    results.append(check_lips())
+    for name, part in parts.items():
+        results.append(check_print_size(name, part))
+    d0, d1 = rear_cover.OUTER_DEPTH
+    print(f"[INFO] 組み立てたときの全体の奥行き：{d1 - d0:.1f}（前面の板〜リアカバーの外側）")
+
     if all(results):
         print("すべてOK")
         return 0
