@@ -33,13 +33,24 @@ def screw_points():
 
 
 def plate():
-    return ch.box(ch.X_OUT0, ch.Y_OUT0, Z0, ch.X_OUT1, ch.Y_OUT1, Z1)
+    """背面の板。シャーシの背面の外形より SHADOW_INSET 小さく（シャドーライン）、
+    角は CORNER_R に合わせて丸め、壁の側の外周を C COVER_BACK_CHAMFER で面取りする。"""
+    i = p.SHADOW_INSET
+    c = p.COVER_BACK_CHAMFER
+    x0, y0, x1, y1 = ch.X_OUT0 + i, ch.Y_OUT0 + i, ch.X_OUT1 - i, ch.Y_OUT1 - i
+    r = p.CORNER_R - i
+    wires = [
+        ch.rounded_rect_wire(x0, y0, x1, y1, Z0, r),
+        ch.rounded_rect_wire(x0, y0, x1, y1, Z1 - c, r),
+        ch.rounded_rect_wire(x0 + c, y0 + c, x1 - c, y1 - c, Z1, r - c),
+    ]
+    return cq.Workplane().add(cq.Solid.makeLoft(wires, True))
 
 
 def screw_holes():
     result = None
     for cx, cy in screw_points():
-        hole = ch.cylinder_z(cx, cy, Z0, Z1, p.COVER_SCREW_CLEAR_D)
+        hole = ch.cylinder_z(cx, cy, Z0 - 0.5, Z1 + 0.5, p.COVER_SCREW_CLEAR_D)
         result = hole if result is None else result.union(hole)
     return result
 
@@ -48,7 +59,7 @@ def vents():
     """Piの後ろの補助の通気口（縦のスリット）。"""
     result = None
     for x in range(64, 141, 6):
-        s = ch.box(x - 1.25, 30.0, Z0, x + 1.25, 75.0, Z1)
+        s = ch.box(x - 1.25, 30.0, Z0 - 0.5, x + 1.25, 75.0, Z1 + 0.5)
         result = s if result is None else result.union(s)
     return result
 
@@ -81,14 +92,15 @@ def keyhole_parts(cx):
         Z0,
     )
     # 板を貫く穴：頭を通す丸い穴＋上へずらす溝
-    entry_hole = ch.cylinder_z(cx, entry, Z0, Z1, p.KEYHOLE_HEAD_D)
+    # 内側は頭の空間とつながるため、面をそろえたまま（重ねると形の計算が失敗する）。外側だけ長く抜く
+    entry_hole = ch.cylinder_z(cx, entry, Z0, Z1 + 0.5, p.KEYHOLE_HEAD_D)
     slot = stadium_z(
         cx,
         entry - p.KEYHOLE_SLOT_W / 2,
         top + p.KEYHOLE_SLOT_W / 2,
         p.KEYHOLE_SLOT_W,
         Z0,
-        Z1,
+        Z1 + 0.5,
     )
     return block, pocket, entry_hole.union(slot)
 
@@ -109,8 +121,8 @@ def wire_anchor_parts(cx):
         Z0,
     )
     channel = ch.box(cx - half - r, y - r, Z0 - channel_h, cx + half + r, y + r, Z0)
-    holes = ch.cylinder_z(cx - half, y, Z0, Z1, p.WIRE_HOLE_D).union(
-        ch.cylinder_z(cx + half, y, Z0, Z1, p.WIRE_HOLE_D)
+    holes = ch.cylinder_z(cx - half, y, Z0, Z1 + 0.5, p.WIRE_HOLE_D).union(
+        ch.cylinder_z(cx + half, y, Z0, Z1 + 0.5, p.WIRE_HOLE_D)
     )
     return block, channel, holes
 

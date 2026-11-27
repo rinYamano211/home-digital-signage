@@ -128,6 +128,16 @@ def brackets_raw(cg_yz=None):
             .extrude(p.STAND_W)
             .translate((cx - p.STAND_W / 2, 0, 0))
         )
+        # 外観：当たり面の上・後ろの角を丸め、左右の側面の外周を面取りする。
+        # 机に着く辺・足の上面・当たり面は平らのまま（面取りの分だけ幅が狭くなる）。
+        top_back = (cx, p.STAND_PAD_Y[1], Z_BACK + p.STAND_PAD_T)
+        body = (
+            body.edges("|X")
+            .edges(cq.selectors.NearestToPointSelector(top_back))
+            .fillet(p.STAND_TOP_R)
+        )
+        body = body.faces("<X").chamfer(p.STAND_EDGE_CHAMFER)
+        body = body.faces(">X").chamfer(p.STAND_EDGE_CHAMFER)
         pilot = ch.cylinder_z(
             cx, screw_y, Z_BACK, Z_BACK + p.STAND_SCREW_DEPTH, p.STAND_SCREW_PILOT_D
         )
