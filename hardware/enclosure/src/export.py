@@ -1,7 +1,7 @@
 """参照モデルの図（SVG）と、形の数値の要約を出力する（Issue #20）。
 
 実行：venvのPythonで `python hardware/enclosure/src/export.py`
-出力：hardware/enclosure/out/ の SVG（正面・上面・側面）
+出力：hardware/enclosure/out/ の SVG（正面・背面・下面・左側面）
 """
 
 from pathlib import Path
