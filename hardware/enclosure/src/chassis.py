@@ -56,36 +56,91 @@ def cylinder_z(cx, cy, z0, z1, d):
     )
 
 
+CUT_EXTRA = 0.5  # 貫く穴を、壁の面より長く抜く量
+
+
 def slot_y(cx, cz, length_x, length_z, y0, y1):
     """上下方向に壁を貫く長穴（端が丸い）。長い向きは length_x と length_z の大きい方。"""
-    r = min(length_x, length_z) / 2
-    if length_x >= length_z:
-        core = box(cx - length_x / 2 + r, y0, cz - r, cx + length_x / 2 - r, y1, cz + r)
-        ends = [(cx - length_x / 2 + r, cz), (cx + length_x / 2 - r, cz)]
+    # 長穴の2D（XY平面）を作り、X軸まわりに90度回してXZ平面に置き、Y方向に押し出す。
+    # 箱と円柱を足し合わせる作り方だと、背面テーパーの面との引き算が失敗することがあった。
+    width = min(length_x, length_z)
+    centers = max(length_x, length_z) - width  # 両端の円の中心の間隔
+    angle = 0 if length_x >= length_z else 90
+    if centers > 1e-6:
+        sketch = cq.Sketch().slot(centers, width, angle)
     else:
-        core = box(cx - r, y0, cz - length_z / 2 + r, cx + r, y1, cz + length_z / 2 - r)
-        ends = [(cx, cz - length_z / 2 + r), (cx, cz + length_z / 2 - r)]
-    for ex, ez in ends:
-        cyl = cq.Solid.makeCylinder(
-            r, y1 - y0, cq.Vector(ex, y0, ez), cq.Vector(0, 1, 0)
+        sketch = cq.Sketch().circle(width / 2)
+    face = sketch._faces.Faces()[0]
+    face = face.rotate(cq.Vector(0, 0, 0), cq.Vector(1, 0, 0), 90).translate(
+        cq.Vector(cx, y0, cz)
+    )
+    return cq.Workplane().add(cq.Solid.extrudeLinear(face, cq.Vector(0, y1 - y0, 0)))
+
+
+def rounded_rect_wire(x0, y0, x1, y1, z, r):
+    """角を半径 r で丸めた長方形の輪郭（奥行き z の平面上）。"""
+    sketch = cq.Sketch().rect(x1 - x0, y1 - y0).vertices().fillet(r)
+    face = sketch._faces.Faces()[0]
+    return face.outerWire().translate(cq.Vector((x0 + x1) / 2, (y0 + y1) / 2, z))
+
+
+def rounded_rect_solid(x0, y0, x1, y1, z0, z1, r):
+    """角を丸めた長方形を、奥行き z0〜z1 に押し出した形。"""
+    w0 = rounded_rect_wire(x0, y0, x1, y1, z0, r)
+    w1 = rounded_rect_wire(x0, y0, x1, y1, z1, r)
+    return cq.Workplane().add(cq.Solid.makeLoft([w0, w1], True))
+
+
+# 前面の外形（背面テーパーのため、上・左・右に FRONT_FLARE 広い。下は同じ）
+X_FRONT0 = X_OUT0 - p.FRONT_FLARE
+X_FRONT1 = X_OUT1 + p.FRONT_FLARE
+Y_FRONT1 = Y_OUT1 + p.FRONT_FLARE
+
+
+def outer_body():
+    """外側の形：前面の外形から背面の外形へ絞る（背面テーパー）。下面は平ら。
+
+    正面から見た4隅は CORNER_R で丸める。正面の外周の縁は C FRONT_CHAMFER、
+    背面の外周の縁は C SHADOW_CHAMFER（リアカバーとの境界のシャドーライン）。
+    内側の形（Displayの入る空間）は変えない。
+    """
+    # 面取りは、輪郭を4段に分けた直線の押し出し（ロフト）で作る：
+    # 前面（面取りの分だけ小さい）→ 面取りの奥 → 背面の面取りの手前 → 背面（面取りの分だけ小さい）
+    def section(z, inset):
+        t = (z - Z_FRONT) / (Z_BACK - Z_FRONT)  # 0＝前面、1＝背面
+        x0 = X_FRONT0 + (X_OUT0 - X_FRONT0) * t
+        x1 = X_FRONT1 + (X_OUT1 - X_FRONT1) * t
+        y1 = Y_FRONT1 + (Y_OUT1 - Y_FRONT1) * t
+        return rounded_rect_wire(
+            x0 + inset, Y_OUT0 + inset, x1 - inset, y1 - inset, z, p.CORNER_R - inset
         )
-        core = core.union(cq.Workplane().add(cyl))
-    return core
+
+    wires = [
+        section(Z_FRONT, p.FRONT_CHAMFER),
+        section(Z_FRONT + p.FRONT_CHAMFER, 0.0),
+        section(Z_BACK - p.SHADOW_CHAMFER, 0.0),
+        section(Z_BACK, p.SHADOW_CHAMFER),
+    ]
+    return cq.Workplane().add(cq.Solid.makeLoft(wires, True))
+
+
+def window():
+    """前面の窓。4隅を WINDOW_R で丸める。"""
+    return rounded_rect_solid(
+        p.LIP_LEFT,
+        p.LIP_BOTTOM,
+        p.DISPLAY_W - p.LIP_RIGHT,
+        p.DISPLAY_H - p.LIP_TOP,
+        Z_FRONT - 0.5,
+        0.01,
+        p.WINDOW_R,
+    )
 
 
 def shell():
     """外周の壁と前面の板（Displayの入る空間と、前面の窓を抜く）。"""
-    outer = box(X_OUT0, Y_OUT0, Z_FRONT, X_OUT1, Y_OUT1, Z_BACK)
-    inner = box(X_IN0, Y_IN0, 0, X_IN1, Y_IN1, Z_BACK)
-    window = box(
-        p.LIP_LEFT,
-        p.LIP_BOTTOM,
-        Z_FRONT,
-        p.DISPLAY_W - p.LIP_RIGHT,
-        p.DISPLAY_H - p.LIP_TOP,
-        0,
-    )
-    return outer.cut(inner).cut(window)
+    inner = box(X_IN0, Y_IN0, 0, X_IN1, Y_IN1, Z_BACK + 0.5)
+    return outer_body().cut(inner).cut(window())
 
 
 def left_ribs():
@@ -234,7 +289,8 @@ def cover_pilots():
 
 def cable_holes():
     """下面の配線口2つ。プラグが通る大きさ（Micro HDMIを外へ出す例外も含む）。"""
-    y0, y1 = Y_OUT0, Y_IN0
+    # 穴は壁の両側の面より0.5ずつ長く抜く（面がちょうど重なると、形の計算が失敗することがある）
+    y0, y1 = Y_OUT0 - CUT_EXTRA, Y_IN0 + CUT_EXTRA
     # Pi用：中央下。プラグ（26×12×7、Micro HDMIは14.7×6.9）が通る幅18。
     # プラグの奥行きの位置は測っていないため、奥行き方向に長くする（15〜35）。
     pi_hole = slot_y(p.PI_POWER_X, 25.0, 18.0, 20.0, y0, y1)
@@ -321,7 +377,9 @@ def tie_slots():
     for cx, cz in (p.TIE_PI, p.TIE_DISPLAY):
         for dx in (-p.TIE_PITCH / 2, p.TIE_PITCH / 2):
             x = cx + dx
-            slot = box(x - w / 2, Y_OUT0, cz - d / 2, x + w / 2, Y_IN0, cz + d / 2)
+            slot = box(
+                x - w / 2, Y_OUT0 - CUT_EXTRA, cz - d / 2, x + w / 2, Y_IN0 + CUT_EXTRA, cz + d / 2
+            )
             result = slot if result is None else result.union(slot)
     return result
 
@@ -330,10 +388,12 @@ def vents():
     """吸気（下）と排気（上）のスリット。幅2.5、奥行き方向に長い。"""
     result = None
     for x in range(64, 121, 6):  # 下：Piの下、Pi用の配線口より左
-        s = slot_y(float(x), 26.0, 2.5, 28.0, Y_OUT0, Y_IN0)
+        s = slot_y(float(x), 26.0, 2.5, 28.0, Y_OUT0 - CUT_EXTRA, Y_IN0 + CUT_EXTRA)
         result = s if result is None else result.union(s)
     for x in range(62, 143, 6):  # 上：Piの上あたり
-        result = result.union(slot_y(float(x), 28.0, 2.5, 28.0, Y_IN1, Y_OUT1))
+        result = result.union(
+            slot_y(float(x), 28.0, 2.5, 28.0, Y_IN1 - CUT_EXTRA, Y_FRONT1 + 1.0)
+        )
     return result
 
 
@@ -364,7 +424,7 @@ def chassis():
 
 # check.py と export.py で使う値
 OUTER = {
-    "x": (X_OUT0, X_OUT1),
-    "y": (Y_OUT0, Y_OUT1),
+    "x": (X_FRONT0, X_FRONT1),  # 前面の外形（一番大きい所）
+    "y": (Y_OUT0, Y_FRONT1),
     "depth": (Z_FRONT, Z_BACK),
 }

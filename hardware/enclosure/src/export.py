@@ -8,6 +8,9 @@
 - rear-cover-*：リアカバー（背面〈壁の側〉・内側・斜め）
 - assembly-*：全部を組み立てた状態（正面・背面・下面・斜め後ろ）
 - stand-*：卓上スタンドを付けた状態（横・斜め後ろ）。本体は傾けずに描く
+- exterior-*：外観の確認（正面・背面・左右45度・左右側面）
+- wall-*：壁掛けの状態（壁の板を後ろに置く。左45度・左側面）
+- desk-*：卓上の状態（スタンドで後ろへ傾ける。左45度・左側面）
 """
 
 from pathlib import Path
@@ -52,6 +55,39 @@ def export_views(name, shape, views=VIEWS):
                 "height": 600,
             },
         )
+
+
+SIDE_FLIP = ((0, 0, 0), (0, 0, 1), 180)  # 横から見る図は、上下が逆になるため180度回す
+
+
+def export_exterior(assembly, with_stand):
+    """外観の確認用の図。横から見る図は、回してから反対の側から見る（左右が入れ替わるため）。"""
+    flipped = assembly.rotate(*SIDE_FLIP)
+    export_views(
+        "exterior",
+        assembly,
+        {"front": (0, 0, 1), "back": (0, 0, -1), "left45": (-1, 0.25, 1), "right45": (1, 0.25, 1)},
+    )
+    export_views("exterior", flipped, {"left": (1, 0, 0), "right": (-1, 0, 0)})
+
+    # 壁掛け：背面の後ろに壁の板（厚み5）を置く。CADのZ＝−奥行き
+    wall = cq.Workplane().add(
+        cq.Solid.makeBox(500, 300, 5, cq.Vector(-150, -70, -(rear_cover.Z1 + 5)))
+    )
+    on_wall = assembly.add(wall)
+    export_views("wall", on_wall, {"left45": (-1, 0.25, 1)})
+    export_views("wall", on_wall.rotate(*SIDE_FLIP), {"left": (1, 0, 0)})
+
+    # 卓上：スタンドごと、本体を後ろへ傾ける（X軸まわり。上が奥へ）
+    tilted = with_stand.rotate((0, 0, 0), (1, 0, 0), -p_tilt())
+    export_views("desk", tilted, {"left45": (-1, 0.25, 1)})
+    export_views("desk", tilted.rotate(*SIDE_FLIP), {"left": (1, 0, 0)})
+
+
+def p_tilt():
+    import params
+
+    return params.STAND_TILT_DEG
 
 
 def summary():
@@ -104,6 +140,7 @@ def main():
         with_stand.rotate((0, 0, 0), (0, 0, 1), 180),
         {"side": (1, 0, 0)},
     )
+    export_exterior(assembly, with_stand)
     for line in summary():
         print(line)
     print(f"SVG: {OUT_DIR}")
