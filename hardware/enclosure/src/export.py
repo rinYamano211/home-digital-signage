@@ -4,6 +4,7 @@
 出力：hardware/enclosure/out/ の SVG
 - reference-*：参照モデル（正面・背面・下面・左側面）
 - chassis-*：メインシャーシ（正面・背面・下面・上面・斜め後ろ）
+- clamps-*：メインシャーシに押さえ板2枚を付けた状態（背面・斜め後ろ）
 """
 
 from pathlib import Path
@@ -64,6 +65,14 @@ def main():
     OUT_DIR.mkdir(exist_ok=True)
     export_views("reference", reference.assembly())
     export_views("chassis", chassis.chassis(), CHASSIS_VIEWS)
+    with_clamps = chassis.chassis()
+    for plate in chassis.clamp_plates():
+        with_clamps = with_clamps.add(plate)
+    export_views(
+        "clamps",
+        with_clamps,
+        {k: CHASSIS_VIEWS[k] for k in ("back", "iso-back")},
+    )
     for line in summary():
         print(line)
     print(f"SVG: {OUT_DIR}")

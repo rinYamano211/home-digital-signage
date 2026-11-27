@@ -78,11 +78,34 @@ def check_print_size():
     return ok
 
 
+def check_clamps(body):
+    """押さえ板：正しい立体か、参照モデル・メインシャーシと重ならないか、耳に掛かるか。"""
+    ok = True
+    tabs = reference.parts()["tabs"]
+    for i, plate in enumerate(chassis.clamp_plates(), start=1):
+        name = f"押さえ板{i}"
+        ok &= check_solid(name, plate)
+        ok &= check_interference(name, plate)
+        common = plate.intersect(body)
+        volume = sum(s.Volume() for s in common.solids().vals())
+        status = "OK" if volume <= TOLERANCE else "NG"
+        ok &= status == "OK"
+        print(f"[{status}] 干渉 {name} × メインシャーシ: {volume:.3f} mm3")
+        # 板を耳の側へ0.1動かすと耳と重なる＝板が耳の背面に掛かっている
+        pushed = plate.translate((0, 0, 0.1))  # CADのZは正面へ正
+        overlap = sum(s.Volume() for s in pushed.intersect(tabs).solids().vals())
+        status = "OK" if overlap > TOLERANCE else "NG"
+        ok &= status == "OK"
+        print(f"[{status}] 押さえ {name} が耳に掛かる面積: {overlap / 0.1:.1f} mm2")
+    return ok
+
+
 def main():
     body = chassis.chassis()
     results = [
         check_solid("メインシャーシ", body),
         check_interference("メインシャーシ", body),
+        check_clamps(body),
         check_lips(),
         check_print_size(),
     ]

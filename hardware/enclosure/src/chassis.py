@@ -7,13 +7,16 @@ CADの座標に直す。
 構成：
 - 前面の板と、ガラスに被せる縁（表示領域より外側だけ）
 - 外周の壁。左側は、Displayの端子とプラグを収める左サイドカバー
-- 下フレーム：固定耳を受けるボス2つ、配線口2つ、吸気のスリット
+- 下フレーム：固定耳を前から受ける台2つ、押さえ板用のボス2つ、配線口2つ、吸気のスリット
 - 上の壁：排気のスリット
 - 左の位置決めリブ（左サイドカバーの側は壁がないため）
 - リアカバーを留めるネジボス6つ
 
+別の部品：
+- 固定耳の押さえ板2枚（clamp_plates）。耳の後ろに当て、押さえ板用のボスにネジで留める
+
 まだ作っていないもの（後のPRで扱う）：
-- Displayの上側を後ろから押さえる部品（今はリアカバーを外すと、下の2本のネジと
+- Displayの上側を後ろから押さえる部品（今はリアカバーを外すと、下の押さえ板2枚と
   前面の縁だけで支える）
 - 配線口の縁の丸め（今は端を丸めた長穴だけ）
 """
@@ -94,10 +97,10 @@ def left_ribs():
 
 
 def tab_bosses():
-    """固定耳を前から受けるボス。ネジは背面から耳の穴を通してねじ込む。
+    """固定耳を前から受ける台。ネジは通さない（耳は押さえ板で後ろから挟む）。
 
-    円柱だけだと、前面の板との接続は円柱の底面（約38mm²）だけになる。ボスから
-    下フレームの床（壁）まで台を伸ばし、前面の板と床の壁の2面につなぐ。
+    円柱だけだと、前面の板との接続は円柱の底面（約38mm²）だけになる。台を
+    下フレームの床（壁）まで伸ばし、前面の板と床の壁の2面につなぐ。
     台は奥行き0〜z1（耳の前面の手前）で、Display（Y≥0）と耳には入らない。
     """
     z1 = p.TAB_Z0 - p.TAB_BOSS_GAP
@@ -111,14 +114,67 @@ def tab_bosses():
     return result
 
 
-def tab_pilots():
-    """固定耳のネジの下穴。前面の板を貫かないよう、表から1.0残す。"""
-    z1 = p.TAB_Z0 - p.TAB_BOSS_GAP
+# 押さえ板用のボス：耳の内側の隣に立てる。上面は耳の背面より CLAMP_PRELOAD 低い。
+CLAMP_BOSS_TOP = p.TAB_Z1 - p.CLAMP_PRELOAD
+CLAMP_Y_TOP = -p.CLAMP_Y_MARGIN  # 押さえ板とボスの上端（Displayの下端より下）
+
+
+def clamp_boss_x():
+    """左右の押さえ板用ボスの中心のX。"""
+    left = p.TAB_W + p.CLAMP_GAP_X + p.CLAMP_BOSS_W / 2
+    return (left, p.DISPLAY_W - left)
+
+
+def clamp_bosses():
+    """押さえ板用のボス。前面の板から立ち上がり、床の壁にもつなぐ。"""
+    half = p.CLAMP_BOSS_W / 2
     result = None
-    for cx in (p.TAB_HOLE_CX, p.DISPLAY_W - p.TAB_HOLE_CX):
-        hole = cylinder_z(cx, p.TAB_HOLE_CY, Z_FRONT + 1.0, z1, p.TAB_SCREW_PILOT_D)
+    for cx in clamp_boss_x():
+        boss = box(cx - half, Y_IN0 - 0.5, 0, cx + half, CLAMP_Y_TOP, CLAMP_BOSS_TOP)
+        result = boss if result is None else result.union(boss)
+    return result
+
+
+def clamp_pilots():
+    """押さえ板のネジの下穴（M3タッピング）。"""
+    result = None
+    for cx in clamp_boss_x():
+        hole = cylinder_z(
+            cx,
+            p.TAB_HOLE_CY,
+            CLAMP_BOSS_TOP - p.CLAMP_SCREW_DEPTH,
+            CLAMP_BOSS_TOP,
+            p.SCREW_PILOT_D,
+        )
         result = hole if result is None else result.union(hole)
     return result
+
+
+def clamp_plates_raw():
+    """固定耳の押さえ板2枚（Displayの座標）。耳の背面（奥行き9.0）に当たる。
+
+    耳の外側の端から CLAMP_EDGE 内側から、ボスの内側の端まで。上端はDisplayの
+    下端より下。耳の位置が左右に数mmずれても、板が耳に掛かる。
+    """
+    z0 = p.TAB_Z1
+    z1 = z0 + p.CLAMP_T
+    half = p.CLAMP_BOSS_W / 2
+    y0 = -p.TAB_DROP + 0.4
+    plates = []
+    for side, cx in zip(("left", "right"), clamp_boss_x()):
+        if side == "left":
+            x0, x1 = p.CLAMP_EDGE, cx + half
+        else:
+            x0, x1 = cx - half, p.DISPLAY_W - p.CLAMP_EDGE
+        plate = box(x0, y0, z0, x1, CLAMP_Y_TOP, z1)
+        hole = cylinder_z(cx, p.TAB_HOLE_CY, z0, z1, p.CLAMP_SCREW_CLEAR_D)
+        plates.append(plate.cut(hole))
+    return plates
+
+
+def clamp_plates():
+    """押さえ板2枚（CADの座標）。"""
+    return [to_cad(plate) for plate in clamp_plates_raw()]
 
 
 # リアカバー用のネジボスの位置
@@ -198,8 +254,16 @@ def vents():
 
 def chassis_raw():
     """Displayの座標（Z＝奥行き）のままの形。"""
-    body = shell().union(left_ribs()).union(tab_bosses()).union(cover_bosses())
-    return body.cut(tab_pilots()).cut(cover_pilots()).cut(cable_holes()).cut(vents())
+    body = (
+        shell()
+        .union(left_ribs())
+        .union(tab_bosses())
+        .union(clamp_bosses())
+        .union(cover_bosses())
+    )
+    return (
+        body.cut(clamp_pilots()).cut(cover_pilots()).cut(cable_holes()).cut(vents())
+    )
 
 
 def chassis():
