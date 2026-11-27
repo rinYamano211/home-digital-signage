@@ -44,7 +44,12 @@ def bend_budget(depth, d, r=None):
 
 def path_world(depth, r=None, step_deg=7.5):
     """ケーブルの中心線の点（W, U）の並び。配線口の内側の床から、後ろの支点の後ろまで。"""
-    r = p.CABLE_BEND_R if r is None else r
+    if r is None:
+        # 空間に余裕があるときは、仮定の半径より緩く曲げて机に載る形にする（図のため。確認には使わない）
+        _, u_exit = stand.world(stand.Y_BOTTOM, depth)
+        _, u_desk = stand.world(*stand.FRONT_POINT)
+        d = max(spec[3] for spec in cable_specs())
+        r = max(p.CABLE_BEND_R, (u_exit - u_desk - d / 2) / (1 + S))
     w0, u0 = stand.world(ch.Y_IN0 + 0.5, depth)  # 床の内側（穴の中）
     wp, up = stand.world(stand.Y_BOTTOM, depth)  # 下面に出る点
     pts = [(w0, u0), (wp, up)]

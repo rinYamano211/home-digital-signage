@@ -457,29 +457,35 @@ def check_openings(body, cover):
     return ok
 
 def check_cables(brackets, body, cover):
-    """卓上の配線（簡易モデル）。曲げの半径が仮定のため、結果は注意（WARN）として表示し、合否には入れない。
+    """卓上の配線（簡易モデル）。曲げの半径・出る位置は仮定の値での確認で、実物のケーブルを
+    安全に曲げられることを保証するものではない（実物の確認は#21）。
 
     - 曲げに使える高さ：配線口から下面に垂直に出て、後ろ向きに机へ寝かせるのに必要な高さと比べる
     - 干渉：ケーブルのモデルと、スタンド・本体が重ならないか
     """
+    ok = True
     for name, x, depth, d in cables.cable_specs():
         rows = []
         for z in (depth - 10, depth, depth + 10) if name == "Pi電源" else (depth - 8, depth, depth + 8):
             available, needed = cables.bend_budget(z, d)
             rows.append(f"奥行き{z:.0f}で{available - needed:+.1f}")
         available, needed = cables.bend_budget(depth, d)
-        tag = "OK" if available - needed >= 0 else "WARN"
-        print(
-            f"[{tag}] 卓上の配線 {name}：後ろへ曲げるのに要る高さ{needed:.1f}、使える高さ{available:.1f}"
-            f"（余裕 {'・'.join(rows)}。曲げ半径{p.CABLE_BEND_R}は仮定）"
+        # 配線口の前から後ろの端まで、どこから出ても足りること
+        worst = min(cables.bend_budget(z, d)[0] - needed for z in ((depth - 10, depth + 10) if name == "Pi電源" else (depth - 8, depth + 8)))
+        ok &= report(
+            worst >= 0,
+            f"卓上の配線 {name}（仮定の曲げ半径{p.CABLE_BEND_R}）：後ろへ曲げるのに要る高さ{needed:.1f}、"
+            f"使える高さ{available:.1f}（余裕 {'・'.join(rows)}）",
         )
     models = cables.cables()
     for name, shape in models.items():
         hit_stand = sum(overlap(shape, b) for b in brackets)
         hit_body = overlap(shape, body) + overlap(shape, cover)
-        tag = "OK" if hit_stand <= TOLERANCE and hit_body <= TOLERANCE else "WARN"
-        print(f"[{tag}] 卓上の配線 {name}：モデルとスタンドの重なり{hit_stand:.2f} mm3、本体との重なり{hit_body:.2f} mm3")
-    return True
+        ok &= report(
+            hit_stand <= TOLERANCE and hit_body <= TOLERANCE,
+            f"卓上の配線 {name}：モデルとスタンドの重なり{hit_stand:.2f} mm3、本体との重なり{hit_body:.2f} mm3",
+        )
+    return ok
 
 
 def check_lips():
