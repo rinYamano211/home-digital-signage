@@ -19,6 +19,8 @@ import reference
 import stand
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "out"
+# 画面に貼るUIの画像（検証用モードの合成データ。src/frontend/verify。表示用APIにはつながない）
+UI_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "ui-verify-schedule.jpg"
 BODY_COLOR = (0.30, 0.30, 0.31)  # 仮の色（ダークチャコール）
 SCREEN_COLOR = (0.05, 0.05, 0.06)
 WALL_COLOR = (0.85, 0.84, 0.82)
@@ -26,9 +28,10 @@ DESK_COLOR = (0.55, 0.45, 0.35)
 CABLE_COLOR = (0.85, 0.85, 0.85)  # ケーブルは見分けやすい明るい色（実物は黒）
 
 
-def actor(shape, color, tolerance=0.05):
+def actor(shape, color, tolerance=0.001):
     """CadQueryの形（Workplane）をVTKの表示部品にする。"""
-    poly = shape.val().toVtkPolyData(tolerance, 0.2)
+    # tolerance は形の大きさに対する比（OCCの偏差係数）。小さい丸い穴が角張らないよう細かくする
+    poly = shape.val().toVtkPolyData(tolerance, 0.1)
     normals = vtk.vtkPolyDataNormals()
     normals.SetInputData(poly)
     normals.SetFeatureAngle(35)
@@ -65,6 +68,64 @@ def scene_parts(with_stand=False, with_cables=False):
     return parts
 
 
+UI_SIZE = (1280, 800)  # UIの画面の大きさ（px。docs/frontend-development.md）
+UI_MIN_WIDTH = 800  # 貼る画像の幅の下限（撮る道具が縮小するため、等倍でなくてよい）
+UI_ASPECT_TOL = 0.005  # 縦横比の許容（1280×800との差の比）
+
+
+def load_ui_image(image=UI_IMAGE):
+    """UIの画像を読み込み、確かめる。読めない・形が違うときは例外にする。
+
+    - ファイルがあること（FileNotFoundError）
+    - JPEGとして読めること（ValueError）
+    - 縦横比が UI_SIZE と同じ（差 UI_ASPECT_TOL 以内）で、幅が UI_MIN_WIDTH 以上（ValueError）
+    戻り値：VTKの読み込み部品（読み込み済み）。
+    """
+    path = Path(image)
+    if not path.is_file():
+        raise FileNotFoundError(f"UIの画像がない：{path}")
+    reader = vtk.vtkJPEGReader()
+    if not reader.CanReadFile(str(path)):
+        raise ValueError(f"UIの画像をJPEGとして読めない：{path}")
+    reader.SetFileName(str(path))
+    reader.Update()
+    w, h, _ = reader.GetOutput().GetDimensions()
+    if w <= 0 or h <= 0:
+        raise ValueError(f"UIの画像の大きさが読めない：{path}")
+    aspect, expected = w / h, UI_SIZE[0] / UI_SIZE[1]
+    if abs(aspect / expected - 1) > UI_ASPECT_TOL or w < UI_MIN_WIDTH:
+        raise ValueError(
+            f"UIの画像が {w}×{h}。縦横比は{UI_SIZE[0]}×{UI_SIZE[1]}と同じ、幅は{UI_MIN_WIDTH}以上にする"
+        )
+    return reader
+
+
+def ui_actor(image=UI_IMAGE):
+    """表示領域（ガラスの端からベゼルの分だけ内側）に、UIの画像を貼った板。
+
+    自ら光る画面に見えるよう、陰影をつけない（光の当たり方で明るさが変わらない）。
+    座標はCAD（Z＝正面へ正）。ガラス面（奥行き0）のわずかに手前に置く。
+    """
+    reader = load_ui_image(image)
+    texture = vtk.vtkTexture()
+    texture.SetInputConnection(reader.GetOutputPort())
+    texture.InterpolateOn()
+    x0, x1 = p.BEZEL_LEFT, p.DISPLAY_W - p.BEZEL_RIGHT
+    y0, y1 = p.BEZEL_BOTTOM, p.DISPLAY_H - p.BEZEL_TOP
+    plane = vtk.vtkPlaneSource()
+    plane.SetOrigin(x0, y0, 0.05)
+    plane.SetPoint1(x1, y0, 0.05)
+    plane.SetPoint2(x0, y1, 0.05)
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(plane.GetOutputPort())
+    a = vtk.vtkActor()
+    a.SetMapper(mapper)
+    a.SetTexture(texture)
+    prop = a.GetProperty()
+    prop.SetLighting(False)
+    return a
+
+
 def render(
     name,
     parts,
@@ -76,6 +137,7 @@ def render(
     rotate_x=0.0,
     parallel=False,
     scale=130,
+    ui=False,
 ):
     ren = vtk.vtkRenderer()
     ren.SetBackground(0.96, 0.96, 0.95)
@@ -84,6 +146,10 @@ def render(
     for shape, color in parts:
         a = actor(shape, color)
         a.SetUserTransform(transform)  # 本体だけ傾ける
+        ren.AddActor(a)
+    if ui:
+        a = ui_actor()
+        a.SetUserTransform(transform)
         ren.AddActor(a)
     for shape, color in extra:
         ren.AddActor(actor(shape, color))  # 壁・机は傾けない
@@ -184,7 +250,52 @@ def main():
         parallel=True,
     )
     render_signature(parts)
+    render_back_mounts(parts)
+    render_ui(parts, sparts, center, d, desk, tilt)
     print(f"PNG: {OUT_DIR}")
+
+
+def render_back_mounts(parts):
+    """背面の壁掛けの構造（キーホール・ワイヤーの穴）の近くの図。斜めの光で穴の段差を見せる。"""
+    z = -rear_cover.Z1
+    cx = p.KEYHOLE_X[0]
+    cy = (p.KEYHOLE_ENTRY_Y + p.KEYHOLE_SLOT_LEN / 2 + p.WIRE_ANCHOR_Y) / 2
+    render(
+        "back-mount",
+        parts,
+        (cx + 40, cy + 60, z - 200),
+        (cx, cy, z),
+        size=(1200, 1000),
+        parallel=True,
+        scale=24,
+    )
+
+
+def render_ui(parts, sparts, center, d, desk, tilt):
+    """画面にUIを表示した状態の外観（UIの画像は検証用モードの合成データ）。"""
+    import cadquery as cq
+
+    wall = cq.Workplane().add(
+        cq.Solid.makeBox(700, 500, 5, cq.Vector(-260, -170, -(rear_cover.Z1 + 5)))
+    )
+    render("ui-front", parts, (center[0], center[1], d), center, parallel=True, ui=True)
+    render(
+        "ui-wall-left45",
+        parts,
+        (center[0] - d * 0.75, center[1] + 60, d * 0.6),
+        center,
+        extra=[(wall, WALL_COLOR)],
+        ui=True,
+    )
+    render(
+        "ui-desk-left45",
+        sparts,
+        (center[0] - d * 0.75, center[1] + 120, d * 0.6),
+        center,
+        rotate_x=-tilt,
+        extra=[(desk, DESK_COLOR)],
+        ui=True,
+    )
 
 
 def render_signature(parts):
