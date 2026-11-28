@@ -196,6 +196,15 @@ STAND_EDGE_CHAMFER = 0.6  # 設計。スタンドの側面の外周の面取り
 STAND_TOP_R = 4.0  # 設計。スタンドの当たり面の上・後ろの角のR
 PRINT_BRIM = 5.0  # 設計。印刷の補助（ブリム）として外形の周りに見込む幅
 
+# --- シンボル・ロゴの刻印（PR 5b。形は src/signature.py。2D案の段階） ---
+SIGN_SYMBOL_H = 18.0  # 設計。シンボル（Phos Sprout）の高さ（線の外側まで）
+SIGN_SYMBOL_LINE = 1.0  # 設計。シンボルの線幅
+SIGN_LETTER_H = 4.5  # 設計。ロゴ（PHOS）の文字の高さ（線の外側まで）
+SIGN_LETTER_LINE = 0.8  # 設計。文字の線幅
+SIGN_LETTER_GAP = 2.6  # 設計。文字と文字の間（線の外側どうし）。広めの字間
+SIGN_STACK_GAP = 7.0  # 設計。シンボルの下端とロゴの上端の間
+SIGN_MIN_GAP = 0.6  # 設計。刻印の線と線の間に残す最小の幅。これより狭い所は埋めて刻印に含める（ノズル0.4で1.5本分）
+
 # --- 卓上の配線（PR 5aのレビューで確認） ---
 CABLE_D_PI = 3.9  # 実測。Pi電源のケーブル外径
 CABLE_D_DISPLAY = 4.0  # 実測。Display電源のケーブル外径
