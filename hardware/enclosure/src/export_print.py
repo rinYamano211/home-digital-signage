@@ -1,4 +1,7 @@
-"""本印刷用データ（部品ごとのSTL）の書き出しと確認（Issue #21）。
+"""印刷用データ（部品ごとのSTL）の書き出しと確認（Issue #21）。
+
+2組を書き出す：本印刷用（print/full。筐体の部品）と、仮印刷用（print/trial。小さなテストピース。
+trial_pieces.py）。印刷当日に仮印刷で確かめてから本印刷する（docs/enclosure-design.md 8章）。
 
 各部品を、印刷の向き（docs/enclosure-design.md 2章）で床（Z=0）に置き、STL（バイナリ、単位mm）で
 書き出す。書き出したSTLを読み直し、CADと合っているかを確かめる。
@@ -9,8 +12,8 @@
 - 部品の向きは、実物の形（reference.to_cad で直した形）を回すだけにする（鏡像にしない）
 
 実行：venvのPythonで `python hardware/enclosure/src/export_print.py`
-出力：hardware/enclosure/print/full/*.stl、manifest.md
-- いったん一時フォルダに書き出して確かめ、全部OKのときだけ出力先に置き換える。
+出力：hardware/enclosure/print/full/・trial/ の *.stl と manifest.md
+- いったん一時フォルダに2組とも書き出して確かめ、全部OKのときだけ出力先に置き換える。
   NGのときは出力先を変えず、終了コード1で終わる（NGのデータを印刷用と取り違えないため）
 - `--verify`：出力先を変えずに一時フォルダに作り直し、出力先のSTLとSHA-256が一致するか確かめる
   （コミット済みのデータが今のソースから作ったものか。一致しなければ終了コード1）
@@ -36,9 +39,10 @@ import chassis
 import params as p
 import rear_cover
 import stand
+import trial_pieces
 from engraving import read_stl
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "print" / "full"
+PRINT_DIR = Path(__file__).resolve().parent.parent / "print"
 MESH_TOL = 0.01  # mm。弦の誤差（曲面と三角形の間の最大の距離）
 MESH_ANGLE = 0.1  # ラジアン。隣り合う三角形の角度の差の上限
 VOLUME_TOL = 0.005  # STLとCADの体積の差の許容（比）
@@ -73,6 +77,39 @@ PARTS = {
         2,
         [rot((0, 1, 0), -90)],
         "輪郭を床に置く（厚み12が高さ。任意の部品）",
+    ),
+}
+
+# 仮印刷のテストピース（trial_pieces.py）。印刷の向きは、元の部品と同じ
+TRIAL_PARTS = {
+    "trial-engraving": (
+        trial_pieces.engraving_piece,
+        1,
+        [rot((1, 0, 0), 180)],
+        "刻印の面を下（前面の板と同じ）",
+    ),
+    "trial-pilot-holes": (
+        trial_pieces.pilot_piece,
+        1,
+        [],
+        "土台の板を下（ボスは上向き。シャーシのボスと同じ）",
+    ),
+    "trial-front-corner": (
+        trial_pieces.front_corner_piece,
+        1,
+        [rot((1, 0, 0), 180)],
+        "前面を下（メインシャーシと同じ）",
+    ),
+    "trial-keyhole": (trial_pieces.keyhole_piece, 1, [], "背面を下（リアカバーと同じ）"),
+}
+
+# 組：名前 → (部品, 表題, 説明)
+SETS = {
+    "full": (PARTS, "本印刷用データ（部品の一覧）", "筐体の部品。STLは1個分なので、スライサーで数を増やす"),
+    "trial": (
+        TRIAL_PARTS,
+        "仮印刷用データ（テストピースの一覧）",
+        "本印刷の前に小さく印刷して確かめる。見る点はdocs/enclosure-design.md 8章・README",
     ),
 }
 
@@ -229,12 +266,16 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def write_manifest(out_dir, rows, fingerprint):
+def write_manifest(out_dir, rows, fingerprint, title="本印刷用データ（部品の一覧）", note=""):
     lines = [
-        "# 本印刷用データ（部品の一覧）",
+        f"# {title}",
         "",
         "`hardware/enclosure/src/export_print.py`で書き出した。手で編集しない。",
         "",
+    ]
+    if note:
+        lines += [note, ""]
+    lines += [
         f"- CADのソースの指紋：`{fingerprint}`（`src/*.py`〈テストを除く〉のSHA-256の先頭12文字。同じソースなら同じ値）",
         "- 形式：STL（バイナリ）、単位mm。部品は印刷の向きで床（Z=0）に置いてある",
         f"- 分割の細かさ：弦の誤差{MESH_TOL} mm、角度{MESH_ANGLE}ラジアン",
@@ -269,7 +310,7 @@ def write_manifest(out_dir, rows, fingerprint):
     lines += markdown_table(header, body)
     lines += [
         "",
-        f"合計（数を掛けた重さ、スタンドを含む）：{total:.0f} g（充填100%の見積もり）",
+        f"合計（数を掛けた重さ）：{total:.0f} g（充填100%の見積もり）",
         "",
         "印刷の前に、スライサーで単位（mm）・大きさ・向き・サポートの要否・薄い所を確かめる（docs/enclosure-design.md 8章）。",
         "",
@@ -279,12 +320,12 @@ def write_manifest(out_dir, rows, fingerprint):
     (out_dir / "manifest.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
-def build(out_dir):
+def build(out_dir, parts, title="本印刷用データ（部品の一覧）", note=""):
     """out_dir にSTLとmanifestを書き出して確かめる。(合否, ファイル名→SHA-256)"""
     ok = True
     rows = []
     digests = {}
-    for name, (make, count, rotations, orient) in PARTS.items():
+    for name, (make, count, rotations, orient) in parts.items():
         shape = place(make(), rotations)
         path = out_dir / f"{name}.stl"
         write_stl(shape, path)
@@ -293,16 +334,16 @@ def build(out_dir):
         digests[path.name] = sha256(path)
         rows.append((name, count, orient, result["size"], result["volume"], digests[path.name]))
         print(f"[INFO] {name}：三角形 {result['triangles']}、{path.stat().st_size / 1e6:.2f} MB")
-    write_manifest(out_dir, rows, source_fingerprint())
+    write_manifest(out_dir, rows, source_fingerprint(), title, note)
     return ok, digests
 
 
-def staging_dir():
-    return OUT_DIR.parent / (OUT_DIR.name + ".new")
+def staging_dir(out_dir):
+    return out_dir.parent / (out_dir.name + ".new")
 
 
-def backup_dir():
-    return OUT_DIR.parent / (OUT_DIR.name + ".old")
+def backup_dir(out_dir):
+    return out_dir.parent / (out_dir.name + ".old")
 
 
 def folder_intact(folder):
@@ -316,44 +357,44 @@ def folder_intact(folder):
     return all((folder / name).exists() and sha256(folder / name).startswith(digest) for name, digest in rows)
 
 
-def recover():
+def recover(out_dir):
     """前の実行が途中で止まった（停電・強制終了など）あとの片付け。前のデータは失わない。
 
-    - full.new：途中までのコピー。元のデータは別にあるため、消してよい
-    - full がなく full.old だけある：入れ替えの途中で止まった。full.old を full に戻す
-    - full と full.old の両方がある：入れ替えは済み、full.old を消す前に止まった。
-      full の中身が manifest.md のSHA-256と全部合うときだけ full.old を消す。
+    - X.new：途中までのコピー。元のデータは別にあるため、消してよい
+    - X がなく X.old だけある：入れ替えの途中で止まった。X.old を X に戻す
+    - X と X.old の両方がある：入れ替えは済み、X.old を消す前に止まった。
+      X の中身が manifest.md のSHA-256と全部合うときだけ X.old を消す。
       合わないときは、どちらも消さずに止める（手で確かめる）
     """
-    staging, backup = staging_dir(), backup_dir()
+    staging, backup = staging_dir(out_dir), backup_dir(out_dir)
     if staging.exists():
         shutil.rmtree(staging)
     if not backup.exists():
         return
-    if not OUT_DIR.exists():
-        backup.rename(OUT_DIR)
-        print(f"[INFO] 前の実行が途中で止まっていたため、{backup.name} を {OUT_DIR.name} に戻した")
-    elif folder_intact(OUT_DIR):
+    if not out_dir.exists():
+        backup.rename(out_dir)
+        print(f"[INFO] 前の実行が途中で止まっていたため、{backup.name} を {out_dir.name} に戻した")
+    elif folder_intact(out_dir):
         shutil.rmtree(backup)
-        print(f"[INFO] 前の実行で残った {backup.name} を消した（{OUT_DIR.name} の中身はmanifestと一致）")
+        print(f"[INFO] 前の実行で残った {backup.name} を消した（{out_dir.name} の中身はmanifestと一致）")
     else:
         raise RuntimeError(
-            f"{OUT_DIR.name} と {backup.name} の両方があり、{OUT_DIR.name} の中身がmanifestと合わない。"
+            f"{out_dir.name} と {backup.name} の両方があり、{out_dir.name} の中身がmanifestと合わない。"
             "どちらが正しいかを手で確かめてから、不要な方を消す"
         )
 
 
-def publish(tmp):
+def publish(tmp, out_dir):
     """一時フォルダの中身で、出力先を置き換える。途中で失敗しても、前のデータを残す。
 
-    1. 出力先の隣に新しいフォルダ（full.new）を作り、全部をコピーする。失敗したら消して終わる
-    2. 前のフォルダを full.old に名前を変え、full.new を full に名前を変える。
-       2つ目が失敗したら、full.old を full に戻す
-    3. 成功したら full.old を消す
+    1. 出力先の隣に新しいフォルダ（X.new）を作り、全部をコピーする。失敗したら消して終わる
+    2. 前のフォルダを X.old に名前を変え、X.new を X に名前を変える。
+       2つ目が失敗したら、X.old を X に戻す
+    3. 成功したら X.old を消す
     途中で止まった（停電など）ときの片付けは、次の実行の始めに recover() が行う。
     """
-    OUT_DIR.parent.mkdir(parents=True, exist_ok=True)
-    staging, backup = staging_dir(), backup_dir()
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging, backup = staging_dir(out_dir), backup_dir(out_dir)
     try:
         staging.mkdir()
         for new in sorted(tmp.iterdir()):
@@ -361,46 +402,59 @@ def publish(tmp):
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    had_old = OUT_DIR.exists()
+    had_old = out_dir.exists()
     if had_old:
-        OUT_DIR.rename(backup)
+        out_dir.rename(backup)
     try:
-        staging.rename(OUT_DIR)
+        staging.rename(out_dir)
     except BaseException:
         if had_old:
-            backup.rename(OUT_DIR)
+            backup.rename(out_dir)
         shutil.rmtree(staging, ignore_errors=True)
         raise
     if had_old:
         shutil.rmtree(backup, ignore_errors=True)
 
 
+def compare(tmp, out_dir, digests):
+    """作り直したデータ（tmp）と出力先が一致するか。"""
+    same = True
+    for name, digest in digests.items():
+        target = out_dir / name
+        match = target.exists() and sha256(target) == digest
+        same &= match
+        print(f"[{'OK' if match else 'NG'}] 照合 {out_dir.name}/{name}：{'一致' if match else '不一致'}")
+    manifest = out_dir / "manifest.md"
+    match = manifest.exists() and manifest.read_bytes() == (tmp / "manifest.md").read_bytes()
+    same &= match
+    print(f"[{'OK' if match else 'NG'}] 照合 {out_dir.name}/manifest.md：{'一致' if match else '不一致'}")
+    return same
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     verify = "--verify" in argv
-    recover()
+    for name in SETS:
+        recover(PRINT_DIR / name)
     with tempfile.TemporaryDirectory() as tmp_name:
-        tmp = Path(tmp_name)
-        ok, digests = build(tmp)
+        built = {}
+        ok = True
+        for name, (parts, title, note) in SETS.items():
+            tmp = Path(tmp_name) / name
+            tmp.mkdir()
+            good, digests = build(tmp, parts, title, note)
+            ok &= good
+            built[name] = (tmp, digests)
         if not ok:
             print("NGあり。出力先は変えていない")
             return 1
         if verify:
-            same = True
-            for name, digest in digests.items():
-                target = OUT_DIR / name
-                match = target.exists() and sha256(target) == digest
-                same &= match
-                print(f"[{'OK' if match else 'NG'}] 照合 {name}：出力先のSTLと{'一致' if match else '不一致'}")
-            manifest_match = (OUT_DIR / "manifest.md").exists() and (OUT_DIR / "manifest.md").read_bytes() == (
-                tmp / "manifest.md"
-            ).read_bytes()
-            same &= manifest_match
-            print(f"[{'OK' if manifest_match else 'NG'}] 照合 manifest.md：{'一致' if manifest_match else '不一致'}")
+            same = all(compare(tmp, PRINT_DIR / name, digests) for name, (tmp, digests) in built.items())
             print("すべて一致" if same else "不一致あり（作り直してCommitする）")
             return 0 if same else 1
-        publish(tmp)
-    print(f"出力: {OUT_DIR}")
+        for name, (tmp, _) in built.items():
+            publish(tmp, PRINT_DIR / name)
+    print(f"出力: {PRINT_DIR}（{'・'.join(SETS)}）")
     print("すべてOK")
     return 0
 

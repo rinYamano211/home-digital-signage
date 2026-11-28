@@ -73,12 +73,12 @@ class PublishTest(unittest.TestCase):
         self.out = Path(self.dir.name) / "full"
         self.out.mkdir()
         (self.out / "old.stl").write_bytes(b"old")
-        self.saved = (ep.OUT_DIR, ep.PARTS)
-        ep.OUT_DIR = self.out
-        ep.PARTS = {"box": (lambda: cq.Workplane().box(10, 10, 2), 1, [], "test")}
+        self.saved = (ep.PRINT_DIR, ep.SETS)
+        ep.PRINT_DIR = self.out.parent
+        ep.SETS = {"full": ({"box": (lambda: cq.Workplane().box(10, 10, 2), 1, [], "test")}, "テスト", "")}
 
     def tearDown(self):
-        ep.OUT_DIR, ep.PARTS = self.saved
+        ep.PRINT_DIR, ep.SETS = self.saved
         self.dir.cleanup()
 
     def test_ng_keeps_output(self):
@@ -179,6 +179,36 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(ep.main(["--verify"]), 0)
         (self.out / "box.stl").write_bytes(b"changed")
         self.assertEqual(ep.main(["--verify"]), 1)
+
+
+class PilotPieceTest(unittest.TestCase):
+    """仮印刷の下穴のテストピース：下穴の径・深さ・目印の点の数。"""
+
+    def test_holes(self):
+        import cadquery as cq
+
+        import params as p
+        import trial_pieces as tp
+
+        solid = tp.pilot_piece().val()
+        top = tp.PILOT_PLATE_T + tp.PILOT_BOSS_H
+        depth = tp.p.COVER_SCREW_DEPTH
+        cy = p.COVER_BOSS_D + 7.0 - p.COVER_BOSS_D / 2 - 1.0
+        for i, d in enumerate(tp.PILOT_DIAMETERS):
+            cx = tp.PILOT_PITCH * (i + 0.5)
+            with self.subTest(d=d):
+                # 穴の縁のすぐ内側は空き、すぐ外側は材料。深さの底より下は材料
+                z = top - depth / 2
+                self.assertFalse(solid.isInside(cq.Vector(cx + d / 2 - 0.05, cy, z)))
+                self.assertTrue(solid.isInside(cq.Vector(cx + d / 2 + 0.05, cy, z)))
+                self.assertTrue(solid.isInside(cq.Vector(cx, cy, top - depth - 0.2)))
+                # 目印の点の数＝順番（点の並びの両隣1つ分も含めて数える。板の外は除く）
+                width = tp.PILOT_PITCH * len(tp.PILOT_DIAMETERS)
+                xs = [cx + (k - i / 2) * tp.DOT_PITCH for k in range(-1, i + 2)]
+                dots = sum(
+                    not solid.isInside(cq.Vector(x, 2.5, tp.PILOT_PLATE_T - 0.2)) for x in xs if 0 < x < width
+                )
+                self.assertEqual(dots, i + 1)
 
 
 class ManifestTest(unittest.TestCase):
