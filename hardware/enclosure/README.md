@@ -59,6 +59,7 @@ Repoのルートで実行する。
 | `src/check.py`                        | 形状・干渉・押さえ板・リアカバーの載り・前面の縁・造形範囲の確認                                                           |
 | `src/export.py`                       | 参照モデル・メインシャーシ・リアカバー・組み立てた状態・卓上スタンド・外観（壁掛け・卓上）の図（SVG）の出力と、範囲の表示  |
 | `src/cables.py`                       | 卓上の配線の簡易モデル（ケーブルの道筋と、曲げに要る高さ）                                                                 |
+| `src/export_print.py`                 | 本印刷用データ（部品ごとのSTL）の書き出しと確認                                                                            |
 | `src/render.py`                       | 外観確認用の陰影つきの画像（PNG）。VTK（CadQueryと一緒に入る）で描く                                                       |
 | `src/signature.py`                    | シンボル（Phos Sprout）・ロゴ（PHOS）・背面の文字の2Dの形、SVG・プレビューの出力、刻印の形の確認                           |
 | `src/engraving.py`                    | 前面・背面の凹刻印（CAD）と、意匠確認用のテストピース（STL）                                                               |
@@ -458,6 +459,20 @@ CAD（`check.py`）：
 この確認は、CADの形の上でのもの。造形できること・見え方は、テストピースとスライサーで確かめる。実際の印刷・組立・見え方の確認は#21で扱う。
 
 作り直し：SVG・PNG・STLは、`signature.py`・`engraving.py`・`render.py`を実行すると`out/`に作り直される。形・値を変えたら、これらと`test_signature.py`・`check.py`を実行し、出力をCommitする。GitHub ActionsではPythonのテストを実行しないため、結果はPRに書く。
+
+## 印刷用データ（#21）
+
+本印刷用データ（部品ごとのSTL）は`src/export_print.py`で書き出し、`print/full/`に置く。部品の一覧・数・向き・重さの見積もりは`print/full/manifest.md`。
+
+```powershell
+& $env:USERPROFILE\.venvs\hds-enclosure\Scripts\python hardware/enclosure/src/export_print.py
+```
+
+- 形式：STL（バイナリ）、単位mm。各部品を印刷の向き（docs/enclosure-design.md 2章）で床（Z=0）に置く。向きは実物の形（`reference.to_cad`で直した形）を回すだけで、鏡像にしない
+- 分割の細かさ：弦の誤差0.01mm・角度0.1ラジアン。CadQueryの書き出しは細かさを形の大きさに対する比で扱い、前に作った分割を使い回すため、分割を消してから長さで決めた細かさで作り直す（小さい丸い穴が粗くならないように）
+- 書き出したSTLを読み直して確かめる（NGなら終了コード1）：Zの最小が0、外形がCADと一致（0.05以内。CADは面の形から求めた正確な外形）、体積がCADと一致（0.5%以内）で面の向きが外向き、閉じた形（どの辺も2つの三角形で共有）、床に着く面がある
+- `manifest.md`の「CADのソースの指紋」は、`src/*.py`（改行をLFにそろえる）のSHA-256の先頭12文字。同じソースからは同じ値・同じSTLになる（2回書き出してファイルが一致することを確かめた）
+- 部品の数：メインシャーシ1、リアカバー1、押さえ板2、上部ストッパー2、スタンドのブラケット2（任意）。STLは1個分なので、スライサーで数を増やす
 
 ## 後続のPRで扱うこと
 
