@@ -9,6 +9,8 @@
 - 保持：リアカバーがなくても、Displayの下（押さえ板）と上（上部ストッパー）が押さえられるか
 - 前面の縁：ガラスに被る幅が、表示領域にかからないか（LIP_MIN_GAP以上の余裕）
 - 造形範囲：各部品がプリンタの造形範囲（余裕込み）に収まるか
+- 刻印（PR 5b）：2Dの形（線と線の間・線幅・溝の幅）、CADで本当に彫れているか、
+  刻印の底から裏までの残りの厚み、窓・面取り・穴・スタンドからの距離
 - 卓上スタンド：CADを傾けたときの実際の接地点から、重さの中心（筐体の重さを変えた3通り）が
   前後・左右の支点の内側に余裕をもってあるか、本体と机の間に隙間があるか、
   取り付けの動き（押し込み・10下ろす）の途中で重ならないか
@@ -26,6 +28,8 @@ import sys
 import cadquery as cq
 
 import chassis
+import engraving
+import signature
 import params as p
 import rear_cover
 import reference
@@ -488,6 +492,165 @@ def check_cables(brackets, body, cover):
     return ok
 
 
+BRIDGE_MAX = 3.0  # 仮定。刻印の面を下にして印刷するとき、溝の上に渡す線（ブリッジ）の長さの目安の上限
+
+
+def remain_thickness(body, probe_fn, limit=5.0, step=0.02):
+    """刻印の底から、材料が続く厚み（刻印の形の全体で）。probe_fn(厚み) は底から下の範囲の型（CAD）。"""
+
+    def solid_below(t):
+        probe = probe_fn(t)
+        vol = probe.val().Volume()
+        return overlap(probe, body) >= vol - TOLERANCE * 10
+
+    lo, hi = 0.0, limit
+    if solid_below(hi):
+        return hi
+    while hi - lo > step:
+        mid = (lo + hi) / 2
+        if solid_below(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def ray_thickness(part, origin, direction, start=0.002):
+    """origin（CAD）から direction へ進み、part の面に最初に当たるまでの距離＋start。"""
+    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
+    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
+
+    inter = BRepIntCurveSurface_Inter()
+    inter.Init(part.val().wrapped, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-6)
+    hits = []
+    while inter.More():
+        if inter.W() > 1e-6:
+            hits.append(inter.W())
+        inter.Next()
+    return (min(hits) + start) if hits else None
+
+
+def check_engraving(body, cover, brackets):
+    """シンボル・ロゴ・背面の文字の凹刻印。body・cover はCADの座標。"""
+    ok = True
+    # 2Dの形（線と線の間・線幅）と溝の幅（ブリッジ）
+    for name, strokes in (
+        ("前面のマーク", signature.mark_strokes()),
+        ("背面の文字", signature.back_text_strokes()),
+    ):
+        ok &= signature.report(f"刻印 {name}（2D）", strokes)
+        mask, _, _, _ = signature.engrave_mask(strokes)
+        bridge = signature.max_bridge(mask)
+        ok &= report(
+            bridge <= BRIDGE_MAX,
+            f"刻印 {name}：溝の一番広い所（ブリッジの長さの目安）{bridge:.2f}（上限{BRIDGE_MAX}、仮定）",
+        )
+
+    margin = p.SIGN_MARGIN
+    cases = (
+        (
+            "前面",
+            body,
+            chassis.Z_FRONT,
+            1,
+            engraving.front_faces(),
+            chassis.chassis_raw,
+            signature.mark_strokes(),
+            engraving.front_place(),
+        ),
+        (
+            "背面",
+            cover,
+            engraving.back_surface(),
+            -1,
+            engraving.back_faces(),
+            rear_cover.rear_cover_raw,
+            signature.back_text_strokes(),
+            engraving.back_place(),
+        ),
+    )
+    for name, part, surface, sign, faces, build_raw, strokes, place in cases:
+        # 本当に彫れているか（引き算の失敗がないか）：刻印なしの部品との体積の差が、面積×深さと合うこと
+        area = sum(f.Area() for f in faces)
+        expected = area * p.SIGN_DEPTH
+        removed = build_raw(engrave=False).val().Volume() - part.val().Volume()
+        ok &= report(
+            abs(removed - expected) <= max(expected * 0.005, TOLERANCE * 10),
+            f"刻印 {name}：彫れた体積 {removed:.2f} mm3（面積 {area:.1f} mm2×深さ {p.SIGN_DEPTH}＝{expected:.2f}）",
+        )
+        # 刻印の底から裏までの残りの厚み。刻印の外形を囲む四角の範囲で測る
+        # （刻印の形そのものより広いため、結果は安全側）。計算を軽くするため、
+        # 部品のうち、その四角の下（刻印の底より奥）だけを切り出して調べる
+        fb = cq.Compound.makeCompound(faces).BoundingBox()
+        floor = surface + sign * p.SIGN_DEPTH
+        limit = 5.0
+        z0, z1 = sorted((floor + sign * 0.001, floor + sign * limit))
+        part = part.intersect(to_cad(chassis.box(fb.xmin, fb.ymin, z0, fb.xmax, fb.ymax, z1)))
+
+        def probe_fn(t, fb=fb, floor=floor, sign=sign):
+            z0, z1 = sorted((floor + sign * 0.001, floor + sign * t))
+            return to_cad(chassis.box(fb.xmin, fb.ymin, z0, fb.xmax, fb.ymax, z1))
+
+        remain = remain_thickness(part, probe_fn, limit=limit)
+        ok &= report(
+            remain >= p.SIGN_MIN_REMAIN,
+            f"刻印 {name}：底から裏までの残りの厚み {remain:.2f}（最小{p.SIGN_MIN_REMAIN}。深さ{p.SIGN_DEPTH}。"
+            "刻印の外形を囲む四角の範囲で測った値）",
+        )
+        # 断面での確認：刻印の底の点（線の中心を約0.5ごと＋輪郭の点）から、内側へ直線を伸ばし、
+        # 裏の面に最初に当たるまでの距離を測る（点ごとの実際の厚み）
+        pts = [pt for stroke, _ in strokes for pt in signature.sample(stroke, step=0.5)]
+        xy = [place(x, y) for x, y in pts]
+        for outer, holes in signature.outlines(strokes):
+            for loop in [outer, *holes]:
+                xy += [place(x, y) for x, y in loop[:: max(1, len(loop) // 20)]]
+        start = floor + sign * 0.002
+        rays = [ray_thickness(part, (X, Y, -start), (0, 0, -sign)) for X, Y in xy]
+        missing = sum(r is None for r in rays)
+        thin = min(r for r in rays if r is not None)
+        ok &= report(
+            missing == 0 and thin >= p.SIGN_MIN_REMAIN,
+            f"刻印 {name}：断面（{len(rays)}点で底から裏の面まで）の厚みの最小 {thin:.2f}"
+            f"（最小{p.SIGN_MIN_REMAIN}。{limit:.0f}以上は{limit:.0f}と表示）",
+        )
+
+    # 前面：窓・外周の面取りからの距離（正面から見た外形で）
+    bb = engraving.front_tool().val().BoundingBox()
+    edges = {
+        "左の面取り": bb.xmin - (chassis.X_FRONT0 + p.FRONT_CHAMFER),
+        "窓": p.LIP_LEFT - bb.xmax,
+        "下の面取り": bb.ymin - (chassis.Y_OUT0 + p.FRONT_CHAMFER),
+        "上の面取り": (chassis.Y_FRONT1 - p.FRONT_CHAMFER) - bb.ymax,
+    }
+    text = "・".join(f"{k} {v:.1f}" for k, v in edges.items())
+    ok &= report(min(edges.values()) >= margin, f"刻印 前面の位置：{text}（最小{margin}）")
+
+    # 背面：穴・キーホール・スタンド・外周からの距離（CADの最短距離）
+    tool = engraving.back_tool().val()
+    features = {"通気口": rear_cover.vents(), "ネジの穴": rear_cover.screw_holes()}
+    for i, cx in enumerate(p.KEYHOLE_X, start=1):
+        _, pocket, through = rear_cover.keyhole_parts(cx)
+        _, channel, holes = rear_cover.wire_anchor_parts(cx)
+        features[f"キーホール{i}"] = through.union(pocket)
+        features[f"ワイヤーの穴{i}"] = holes.union(channel)
+    dists = {k: tool.distance(v.val()) for k, v in features.items()}
+    # スタンドはCADの座標で受け取るため、型もCADの座標にして測る
+    tool_cad = to_cad(engraving.back_tool()).val()
+    for i, b in enumerate(brackets, start=1):
+        dists[f"スタンド{i}"] = tool_cad.distance(b.val())
+    bb = tool.BoundingBox()
+    i_c = p.SHADOW_INSET + p.COVER_BACK_CHAMFER
+    dists["外周の面取り"] = min(
+        bb.xmin - (chassis.X_OUT0 + i_c),
+        (chassis.X_OUT1 - i_c) - bb.xmax,
+        bb.ymin - (chassis.Y_OUT0 + i_c),
+        (chassis.Y_OUT1 - i_c) - bb.ymax,
+    )
+    text = "・".join(f"{k} {v:.1f}" for k, v in dists.items())
+    ok &= report(min(dists.values()) >= margin, f"刻印 背面の位置：{text}（最小{margin}）")
+    return ok
+
+
 def check_lips():
     ok = True
     lips = {
@@ -565,6 +728,7 @@ def main():
     results.append(check_window_corners())
     results.append(check_walls(body))
     results.append(check_openings(body, cover))
+    results.append(check_engraving(body, cover, brackets))
     for name, part in parts.items():
         grams = part.val().Volume() / 1000.0 * p.PETG_DENSITY
         print(f"[INFO] 重さ（充填100%の見積もり）{name}：{grams:.1f} g")

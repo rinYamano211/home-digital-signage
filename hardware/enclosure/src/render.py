@@ -66,7 +66,16 @@ def scene_parts(with_stand=False, with_cables=False):
 
 
 def render(
-    name, parts, camera_pos, focal, view_up=(0, 1, 0), extra=(), size=(1600, 1000), rotate_x=0.0, parallel=False
+    name,
+    parts,
+    camera_pos,
+    focal,
+    view_up=(0, 1, 0),
+    extra=(),
+    size=(1600, 1000),
+    rotate_x=0.0,
+    parallel=False,
+    scale=130,
 ):
     ren = vtk.vtkRenderer()
     ren.SetBackground(0.96, 0.96, 0.95)
@@ -104,7 +113,7 @@ def render(
     if parallel:
         # 真横・真正面は平行投影（遠近で手前が大きく見えないように）
         cam.ParallelProjectionOn()
-        cam.SetParallelScale(130)
+        cam.SetParallelScale(scale)
     ren.ResetCameraClippingRange()
     win = vtk.vtkRenderWindow()
     win.SetOffScreenRendering(1)
@@ -174,7 +183,38 @@ def main():
         view_up=(0, 0, 1),
         parallel=True,
     )
+    render_signature(parts)
     print(f"PNG: {OUT_DIR}")
+
+
+def render_signature(parts):
+    """刻印の近くの図（PR 5b）。光を斜めから当てて、凹みの陰が見えるようにする。"""
+    import engraving
+
+    # 前面のマーク：少し斜めから
+    bb = engraving.front_tool().val().BoundingBox()  # Displayの座標
+    fx, fy = (bb.xmin + bb.xmax) / 2, (bb.ymin + bb.ymax) / 2
+    focal = (fx, fy, -chassis.Z_FRONT)
+    render("signature-front", parts, (fx - 60, fy + 50, 180), focal, size=(1200, 1200), parallel=True, scale=24)
+    # 背面の文字：真後ろから少し斜め
+    bb = engraving.back_tool().val().BoundingBox()
+    bx, by = (bb.xmin + bb.xmax) / 2, (bb.ymin + bb.ymax) / 2
+    focal = (bx, by, -rear_cover.Z1)
+    render("signature-back", parts, (bx + 40, by + 60, -rear_cover.Z1 - 200), focal, size=(1400, 900), parallel=True, scale=20)
+    # テストピース（刻印の面を上にして置いた状態）
+    from reference import to_cad
+
+    piece = to_cad(engraving.test_piece())
+    w, h, _, _ = engraving.test_piece_layout()
+    render(
+        "test-piece",
+        [(piece, BODY_COLOR)],
+        (w / 2 - 40, h / 2 + 40, 200),
+        (w / 2, h / 2, 0),
+        size=(1400, 900),
+        parallel=True,
+        scale=h * 0.75,
+    )
 
 
 if __name__ == "__main__":
