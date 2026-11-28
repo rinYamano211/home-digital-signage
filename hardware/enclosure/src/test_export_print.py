@@ -129,6 +129,50 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(sorted(x.name for x in self.out.iterdir()), ["old.stl"])
         self.assertFalse(self.out.with_name("full.old").exists())
 
+    def fail_checks(self):
+        original = ep.check_part
+        ep.check_part = lambda name, cad, path: (False, original(name, cad, path)[1])
+        return original
+
+    def test_recover_after_crash_mid_swap(self):
+        # full → full.old の直後に止まった：full がなく full.old だけ。次の実行の始めに戻す
+        self.out.rename(self.out.with_name("full.old"))
+        original = self.fail_checks()  # 今回の書き出しはNGにして、戻すだけを確かめる
+        try:
+            self.assertEqual(ep.main([]), 1)
+        finally:
+            ep.check_part = original
+        self.assertEqual((self.out / "old.stl").read_bytes(), b"old")
+        self.assertFalse(self.out.with_name("full.old").exists())
+
+    def test_recover_removes_backup_when_output_is_intact(self):
+        # 入れ替えは済み、full.old を消す前に止まった：full がmanifestと合えば full.old を消す
+        self.assertEqual(ep.main([]), 0)
+        backup = self.out.with_name("full.old")
+        backup.mkdir()
+        (backup / "old.stl").write_bytes(b"old")
+        self.assertEqual(ep.main(["--verify"]), 0)
+        self.assertFalse(backup.exists())
+
+    def test_recover_keeps_both_when_output_is_broken(self):
+        # 両方あり、full がmanifestと合わない：どちらも消さずに止める
+        self.assertEqual(ep.main([]), 0)
+        (self.out / "box.stl").write_bytes(b"broken")
+        backup = self.out.with_name("full.old")
+        backup.mkdir()
+        (backup / "old.stl").write_bytes(b"old")
+        with self.assertRaises(RuntimeError):
+            ep.main([])
+        self.assertTrue((backup / "old.stl").exists())
+        self.assertEqual((self.out / "box.stl").read_bytes(), b"broken")
+
+    def test_recover_removes_leftover_staging(self):
+        staging = self.out.with_name("full.new")
+        staging.mkdir()
+        (staging / "half.stl").write_bytes(b"half")
+        self.assertEqual(ep.main([]), 0)
+        self.assertFalse(staging.exists())
+
     def test_ok_replaces_output_and_verify_matches(self):
         self.assertEqual(ep.main([]), 0)
         self.assertEqual(sorted(x.name for x in self.out.iterdir()), ["box.stl", "manifest.md"])

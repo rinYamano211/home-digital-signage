@@ -17,6 +17,7 @@
 """
 
 import hashlib
+import re
 import shutil
 import sys
 import tempfile
@@ -296,6 +297,52 @@ def build(out_dir):
     return ok, digests
 
 
+def staging_dir():
+    return OUT_DIR.parent / (OUT_DIR.name + ".new")
+
+
+def backup_dir():
+    return OUT_DIR.parent / (OUT_DIR.name + ".old")
+
+
+def folder_intact(folder):
+    """folder の中のSTLが、manifest.md に書いたSHA-256（先頭16文字）と全部合うか。"""
+    manifest = folder / "manifest.md"
+    if not manifest.exists():
+        return False
+    rows = re.findall(r"^\| `([^`]+\.stl)` \|.*\| `([0-9a-f]{16})` +\|$", manifest.read_text(encoding="utf-8"), re.M)
+    if not rows:
+        return False
+    return all((folder / name).exists() and sha256(folder / name).startswith(digest) for name, digest in rows)
+
+
+def recover():
+    """前の実行が途中で止まった（停電・強制終了など）あとの片付け。前のデータは失わない。
+
+    - full.new：途中までのコピー。元のデータは別にあるため、消してよい
+    - full がなく full.old だけある：入れ替えの途中で止まった。full.old を full に戻す
+    - full と full.old の両方がある：入れ替えは済み、full.old を消す前に止まった。
+      full の中身が manifest.md のSHA-256と全部合うときだけ full.old を消す。
+      合わないときは、どちらも消さずに止める（手で確かめる）
+    """
+    staging, backup = staging_dir(), backup_dir()
+    if staging.exists():
+        shutil.rmtree(staging)
+    if not backup.exists():
+        return
+    if not OUT_DIR.exists():
+        backup.rename(OUT_DIR)
+        print(f"[INFO] 前の実行が途中で止まっていたため、{backup.name} を {OUT_DIR.name} に戻した")
+    elif folder_intact(OUT_DIR):
+        shutil.rmtree(backup)
+        print(f"[INFO] 前の実行で残った {backup.name} を消した（{OUT_DIR.name} の中身はmanifestと一致）")
+    else:
+        raise RuntimeError(
+            f"{OUT_DIR.name} と {backup.name} の両方があり、{OUT_DIR.name} の中身がmanifestと合わない。"
+            "どちらが正しいかを手で確かめてから、不要な方を消す"
+        )
+
+
 def publish(tmp):
     """一時フォルダの中身で、出力先を置き換える。途中で失敗しても、前のデータを残す。
 
@@ -303,15 +350,10 @@ def publish(tmp):
     2. 前のフォルダを full.old に名前を変え、full.new を full に名前を変える。
        2つ目が失敗したら、full.old を full に戻す
     3. 成功したら full.old を消す
-    同じ場所での名前の変更なので、前のデータが消えた状態は残らない。
+    途中で止まった（停電など）ときの片付けは、次の実行の始めに recover() が行う。
     """
-    parent = OUT_DIR.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    staging = parent / (OUT_DIR.name + ".new")
-    backup = parent / (OUT_DIR.name + ".old")
-    for leftover in (staging, backup):
-        if leftover.exists():
-            shutil.rmtree(leftover)
+    OUT_DIR.parent.mkdir(parents=True, exist_ok=True)
+    staging, backup = staging_dir(), backup_dir()
     try:
         staging.mkdir()
         for new in sorted(tmp.iterdir()):
@@ -336,6 +378,7 @@ def publish(tmp):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     verify = "--verify" in argv
+    recover()
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         ok, digests = build(tmp)
