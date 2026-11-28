@@ -9,7 +9,10 @@
 - どちらも、刻印の面を下にして印刷する（前面の板・リアカバーの背面が床側）
 """
 
+import sys
+
 import cadquery as cq
+import numpy as np
 
 import chassis as ch
 import params as p
@@ -131,8 +134,64 @@ def test_piece():
     return plate.cut(_tool(faces, -OUTSIDE, p.SIGN_DEPTH))
 
 
+def read_stl(path):
+    """STL（バイナリ・テキスト）の三角形を、(n, 3, 3) の配列で読む。"""
+    data = open(path, "rb").read()
+    n = int.from_bytes(data[80:84], "little") if len(data) >= 84 else 0
+    if len(data) == 84 + 50 * n:
+        rec = np.frombuffer(data[84:], dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]))
+        return rec["v"].astype(float)
+    pts = [
+        [float(x) for x in line.split()[1:4]]
+        for line in data.decode("ascii", "ignore").splitlines()
+        if line.strip().startswith("vertex")
+    ]
+    return np.array(pts).reshape(-1, 3, 3)
+
+
+def flat_area(tris, z, up, tol=1e-3):
+    """高さ z にある水平な三角形の面積の合計。up=True なら上向き、False なら下向きの面。"""
+    a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
+    cross = np.cross(b - a, c - a)
+    area = np.linalg.norm(cross, axis=1) / 2
+    nz = cross[:, 2] / np.maximum(np.linalg.norm(cross, axis=1), 1e-12)
+    flat = np.all(np.abs(tris[:, :, 2] - z) < tol, axis=1)
+    facing = nz > 0.999 if up else nz < -0.999
+    return float(area[flat & facing].sum())
+
+
+def check_test_piece_stl(path):
+    """書き出したSTLの向きと厚みを確かめる。合否を返す。
+
+    - Zの最小が0（床）、最大が板の厚み
+    - 刻印の面が床側：Z=0の下向きの面の面積＝板の面積−刻印の面積、
+      Z=深さの下向きの面（溝の底）の面積＝刻印の面積、Z=厚みの上向きの面＝板の面積（刻印なし）
+    """
+    tris = read_stl(path)
+    zmin, zmax = tris[:, :, 2].min(), tris[:, :, 2].max()
+    width, height, (mdx, mdy), (tdx, tdy) = test_piece_layout()
+    plate_area = ch.rounded_rect_solid(0, 0, width, height, 0, 1, p.CORNER_R).val().Volume()
+    faces = _faces(sg.mark_strokes(), lambda x, y: (x + mdx, y + mdy))
+    faces += _faces(sg.back_text_strokes(), lambda x, y: (x + tdx, y + tdy))
+    engraved = sum(f.Area() for f in faces)
+    bottom = flat_area(tris, 0.0, up=False)
+    floor = flat_area(tris, p.SIGN_DEPTH, up=False)
+    top = flat_area(tris, TEST_T, up=True)
+    checks = [
+        (abs(zmin) < 1e-3 and abs(zmax - TEST_T) < 1e-3, f"Zの範囲 {zmin:.3f}〜{zmax:.3f}（0〜{TEST_T}）"),
+        (abs(bottom - (plate_area - engraved)) < 0.5, f"床に着く面 {bottom:.1f} mm2（板{plate_area:.1f}−刻印{engraved:.1f}）"),
+        (abs(floor - engraved) < 0.5, f"Z={p.SIGN_DEPTH}の溝の底（下向き）{floor:.1f} mm2（刻印{engraved:.1f}）"),
+        (abs(top - plate_area) < 0.5, f"上の面 {top:.1f} mm2（板{plate_area:.1f}。刻印なし）"),
+    ]
+    ok = True
+    for good, text in checks:
+        print(f"[{'OK' if good else 'NG'}] テストピースのSTL：{text}")
+        ok &= good
+    return ok
+
+
 def main():
-    """テストピースのSTLを書き出す。"""
+    """テストピースのSTLを書き出し、向きと厚みを確かめる。NGなら終了コード1。"""
     from reference import to_cad
 
     sg.OUT_DIR.mkdir(exist_ok=True)
@@ -144,6 +203,8 @@ def main():
     w, h, _, _ = test_piece_layout()
     print(f"テストピース：{w:.1f}×{h:.1f}×{TEST_T}、刻印の深さ {p.SIGN_DEPTH}")
     print(f"STL: {path}")
+    if not check_test_piece_stl(path):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

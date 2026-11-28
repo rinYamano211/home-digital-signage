@@ -515,6 +515,21 @@ def remain_thickness(body, probe_fn, limit=5.0, step=0.02):
     return lo
 
 
+def ray_thickness(part, origin, direction, start=0.002):
+    """origin（CAD）から direction へ進み、part の面に最初に当たるまでの距離＋start。"""
+    from OCP.BRepIntCurveSurface import BRepIntCurveSurface_Inter
+    from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
+
+    inter = BRepIntCurveSurface_Inter()
+    inter.Init(part.val().wrapped, gp_Lin(gp_Pnt(*origin), gp_Dir(*direction)), 1e-6)
+    hits = []
+    while inter.More():
+        if inter.W() > 1e-6:
+            hits.append(inter.W())
+        inter.Next()
+    return (min(hits) + start) if hits else None
+
+
 def check_engraving(body, cover, brackets):
     """シンボル・ロゴ・背面の文字の凹刻印。body・cover はCADの座標。"""
     ok = True
@@ -533,10 +548,28 @@ def check_engraving(body, cover, brackets):
 
     margin = p.SIGN_MARGIN
     cases = (
-        ("前面", body, chassis.Z_FRONT, 1, engraving.front_faces(), chassis.chassis_raw),
-        ("背面", cover, engraving.back_surface(), -1, engraving.back_faces(), rear_cover.rear_cover_raw),
+        (
+            "前面",
+            body,
+            chassis.Z_FRONT,
+            1,
+            engraving.front_faces(),
+            chassis.chassis_raw,
+            signature.mark_strokes(),
+            engraving.front_place(),
+        ),
+        (
+            "背面",
+            cover,
+            engraving.back_surface(),
+            -1,
+            engraving.back_faces(),
+            rear_cover.rear_cover_raw,
+            signature.back_text_strokes(),
+            engraving.back_place(),
+        ),
     )
-    for name, part, surface, sign, faces, build_raw in cases:
+    for name, part, surface, sign, faces, build_raw, strokes, place in cases:
         # 本当に彫れているか（引き算の失敗がないか）：刻印なしの部品との体積の差が、面積×深さと合うこと
         area = sum(f.Area() for f in faces)
         expected = area * p.SIGN_DEPTH
@@ -563,6 +596,22 @@ def check_engraving(body, cover, brackets):
             remain >= p.SIGN_MIN_REMAIN,
             f"刻印 {name}：底から裏までの残りの厚み {remain:.2f}（最小{p.SIGN_MIN_REMAIN}。深さ{p.SIGN_DEPTH}。"
             "刻印の外形を囲む四角の範囲で測った値）",
+        )
+        # 断面での確認：刻印の底の点（線の中心を約0.5ごと＋輪郭の点）から、内側へ直線を伸ばし、
+        # 裏の面に最初に当たるまでの距離を測る（点ごとの実際の厚み）
+        pts = [pt for stroke, _ in strokes for pt in signature.sample(stroke, step=0.5)]
+        xy = [place(x, y) for x, y in pts]
+        for outer, holes in signature.outlines(strokes):
+            for loop in [outer, *holes]:
+                xy += [place(x, y) for x, y in loop[:: max(1, len(loop) // 20)]]
+        start = floor + sign * 0.002
+        rays = [ray_thickness(part, (X, Y, -start), (0, 0, -sign)) for X, Y in xy]
+        missing = sum(r is None for r in rays)
+        thin = min(r for r in rays if r is not None)
+        ok &= report(
+            missing == 0 and thin >= p.SIGN_MIN_REMAIN,
+            f"刻印 {name}：断面（{len(rays)}点で底から裏の面まで）の厚みの最小 {thin:.2f}"
+            f"（最小{p.SIGN_MIN_REMAIN}。{limit:.0f}以上は{limit:.0f}と表示）",
         )
 
     # 前面：窓・外周の面取りからの距離（正面から見た外形で）
