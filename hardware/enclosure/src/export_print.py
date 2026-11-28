@@ -384,36 +384,47 @@ def recover(out_dir):
         )
 
 
-def publish(tmp, out_dir):
-    """一時フォルダの中身で、出力先を置き換える。途中で失敗しても、前のデータを残す。
+def publish(pairs):
+    """一時フォルダの中身で、出力先をまとめて置き換える。途中で失敗したら、全部を前のデータに戻す。
 
-    1. 出力先の隣に新しいフォルダ（X.new）を作り、全部をコピーする。失敗したら消して終わる
-    2. 前のフォルダを X.old に名前を変え、X.new を X に名前を変える。
-       2つ目が失敗したら、X.old を X に戻す
-    3. 成功したら X.old を消す
-    途中で止まった（停電など）ときの片付けは、次の実行の始めに recover() が行う。
+    pairs：[(一時フォルダ, 出力先), ...]（本印刷・仮印刷の2組）
+    1. 全部の組について、出力先の隣に X.new を作ってコピーする。失敗したら X.new を全部消して終わる
+    2. 組ごとに、X を X.old に、X.new を X に名前を変える。途中で失敗したら、
+       それまでに入れ替えた組も含めて X.old を X に戻す（片方の組だけ新しくならない）
+    3. 全部成功したら X.old を消す
+    停電などで途中で止まったときの片付けは、次の実行の始めに recover() が組ごとに行う。
     """
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging, backup = staging_dir(out_dir), backup_dir(out_dir)
+    stagings = [staging_dir(out) for _, out in pairs]
     try:
-        staging.mkdir()
-        for new in sorted(tmp.iterdir()):
-            shutil.copy2(new, staging / new.name)
+        for (tmp, out), staging in zip(pairs, stagings):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            staging.mkdir()
+            for new in sorted(tmp.iterdir()):
+                shutil.copy2(new, staging / new.name)
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        for staging in stagings:
+            shutil.rmtree(staging, ignore_errors=True)
         raise
-    had_old = out_dir.exists()
-    if had_old:
-        out_dir.rename(backup)
+    swapped = []  # (出力先, 前のデータがあったか)
     try:
-        staging.rename(out_dir)
+        for (_, out), staging in zip(pairs, stagings):
+            had_old = out.exists()
+            if had_old:
+                out.rename(backup_dir(out))
+            swapped.append((out, had_old))
+            staging.rename(out)
     except BaseException:
+        for out, had_old in reversed(swapped):
+            if out.exists() and (not had_old or backup_dir(out).exists()):
+                shutil.rmtree(out)  # 入れ替え済みの新しいデータ（前のデータがなかった組も、前の状態＝なしに戻す）
+            if had_old and backup_dir(out).exists():
+                backup_dir(out).rename(out)
+        for staging in stagings:
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+    for out, had_old in swapped:
         if had_old:
-            backup.rename(out_dir)
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    if had_old:
-        shutil.rmtree(backup, ignore_errors=True)
+            shutil.rmtree(backup_dir(out), ignore_errors=True)
 
 
 def compare(tmp, out_dir, digests):
@@ -449,11 +460,12 @@ def main(argv=None):
             print("NGあり。出力先は変えていない")
             return 1
         if verify:
-            same = all(compare(tmp, PRINT_DIR / name, digests) for name, (tmp, digests) in built.items())
+            # 全部の組を最後まで照合してから判定する（最初の不一致で止めない）
+            results = [compare(tmp, PRINT_DIR / name, digests) for name, (tmp, digests) in built.items()]
+            same = all(results)
             print("すべて一致" if same else "不一致あり（作り直してCommitする）")
             return 0 if same else 1
-        for name, (tmp, _) in built.items():
-            publish(tmp, PRINT_DIR / name)
+        publish([(tmp, PRINT_DIR / name) for name, (tmp, _) in built.items()])
     print(f"出力: {PRINT_DIR}（{'・'.join(SETS)}）")
     print("すべてOK")
     return 0
