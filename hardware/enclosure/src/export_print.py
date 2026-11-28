@@ -1,7 +1,7 @@
 """印刷用データ（部品ごとのSTL）の書き出しと確認（Issue #21）。
 
-2組を書き出す：本印刷用（print/full。筐体の部品）と、仮印刷用（print/trial。小さなテストピース。
-trial_pieces.py）。印刷当日に仮印刷で確かめてから本印刷する（docs/enclosure-design.md 8章）。
+3組を書き出す：本印刷用（print/full。筐体の部品）、仮印刷用（print/trial。小さなテストピース。
+trial_pieces.py）、本印刷の予備（print/full-variants。下穴の径を変えたもの）。印刷当日に仮印刷で確かめてから本印刷する（docs/enclosure-design.md 8章）。
 
 各部品を、印刷の向き（docs/enclosure-design.md 2章）で床（Z=0）に置き、STL（バイナリ、単位mm）で
 書き出す。書き出したSTLを読み直し、CADと合っているかを確かめる。
@@ -103,13 +103,50 @@ TRIAL_PARTS = {
     "trial-keyhole": (trial_pieces.keyhole_piece, 1, [], "背面を下（リアカバーと同じ）"),
 }
 
+# 本印刷の予備：下穴の径だけを変えたもの（仮印刷の下穴のテストピースで合った径を、当日にPCを使わずに選ぶ）
+PILOT_VARIANTS = (2.4, 2.6)
+
+
+def with_pilot(make, name, d):
+    """下穴の径を d にして形を作る関数（params を一時的に変える）。"""
+
+    def make_variant():
+        from signature import override
+
+        with override(**{name: d}):
+            return make()
+
+    return make_variant
+
+
+VARIANT_PARTS = {}
+for _d in PILOT_VARIANTS:
+    VARIANT_PARTS[f"main-chassis-pilot{_d}"] = (
+        with_pilot(chassis.chassis, "SCREW_PILOT_D", _d),
+        1,
+        [rot((1, 0, 0), 180)],
+        f"前面を下。リアカバー・押さえ板・上部ストッパーの下穴を{_d}にしたもの",
+    )
+    VARIANT_PARTS[f"stand-bracket-pilot{_d}"] = (
+        with_pilot(lambda: stand.brackets()[0], "STAND_SCREW_PILOT_D", _d),
+        2,
+        [rot((0, 1, 0), -90)],
+        f"輪郭を床に置く。キーホール用ネジの下穴を{_d}にしたもの（任意の部品）",
+    )
+
 # 組：名前 → (部品, 表題, 説明)
 SETS = {
     "full": (PARTS, "本印刷用データ（部品の一覧）", "筐体の部品。STLは1個分なので、スライサーで数を増やす"),
     "trial": (
         TRIAL_PARTS,
         "仮印刷用データ（テストピースの一覧）",
-        "本印刷の前に小さく印刷して確かめる。見る点はdocs/enclosure-design.md 8章・README",
+        "本印刷の前に小さく印刷して確かめる。見る点はprint/README.md",
+    ),
+    "full-variants": (
+        VARIANT_PARTS,
+        "本印刷の予備データ（下穴の径を変えたもの）",
+        f"仮印刷の下穴のテストピースで{'・'.join(str(d) for d in PILOT_VARIANTS)}が合ったときに、"
+        "print/full/ の同じ部品の代わりに使う。ほかの部品はprint/full/のまま",
     ),
 }
 

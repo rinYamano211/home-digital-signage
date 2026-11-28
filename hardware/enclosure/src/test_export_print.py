@@ -263,6 +263,25 @@ class PilotPieceTest(unittest.TestCase):
                 self.assertEqual(dots, i + 1)
 
 
+class VariantTest(unittest.TestCase):
+    def test_pilot_override_is_temporary(self):
+        # 予備データを作る関数は、下穴の径を一時的に変え、終わったら元に戻す
+        import params as p
+
+        seen = []
+        make = ep.with_pilot(lambda: seen.append(p.SCREW_PILOT_D), "SCREW_PILOT_D", 2.4)
+        before = p.SCREW_PILOT_D
+        make()
+        self.assertEqual(seen, [2.4])
+        self.assertEqual(p.SCREW_PILOT_D, before)
+
+    def test_variant_names(self):
+        names = set(ep.VARIANT_PARTS)
+        for d in ep.PILOT_VARIANTS:
+            self.assertIn(f"main-chassis-pilot{d}", names)
+            self.assertIn(f"stand-bracket-pilot{d}", names)
+
+
 class ManifestTest(unittest.TestCase):
     def test_table_is_aligned(self):
         lines = ep.markdown_table(["名前", "x"], [["ab", "長い値"]])

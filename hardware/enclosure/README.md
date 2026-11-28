@@ -464,7 +464,7 @@ CAD（`check.py`）：
 
 ## 印刷用データ（#21）
 
-本印刷用データ（部品ごとのSTL）は`src/export_print.py`で書き出し、`print/full/`に置く。仮印刷用のテストピースも同時に`print/trial/`に書き出す（下の節）。部品の一覧・数・向き・重さの見積もりは`print/full/manifest.md`。
+本印刷用データ（部品ごとのSTL）は`src/export_print.py`で書き出し、`print/full/`に置く。仮印刷用のテストピース（`print/trial/`。下の節）と、本印刷の予備（`print/full-variants/`。下穴の径だけを2.4・2.6に変えたメインシャーシとスタンド）も同時に書き出す。印刷当日の手順は[print/README.md](print/README.md)。部品の一覧・数・向き・重さの見積もりは`print/full/manifest.md`。
 
 ```powershell
 & $env:USERPROFILE\.venvs\hds-enclosure\Scripts\python hardware/enclosure/src/export_print.py
