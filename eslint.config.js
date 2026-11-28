@@ -10,6 +10,7 @@ export default defineConfig([
     "**/dist/**",
     "**/coverage/**",
     "**/*.tsbuildinfo",
+    ".claude/worktrees/**",
   ]),
   {
     files: ["**/*.{js,mjs,cjs}"],

@@ -4,6 +4,9 @@
 **/*.tsbuildinfo
 package-lock.json
 
+# Claude Code worktrees are separate checkouts and are checked in their own tree.
+/.claude/worktrees/
+
 # Existing documentation is excluded to avoid unrelated bulk formatting.
 # New Markdown documents are checked by default.
 /README.md
