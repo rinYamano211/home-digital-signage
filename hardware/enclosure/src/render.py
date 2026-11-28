@@ -68,14 +68,45 @@ def scene_parts(with_stand=False, with_cables=False):
     return parts
 
 
+UI_SIZE = (1280, 800)  # UIの画面の大きさ（px。docs/frontend-development.md）
+UI_MIN_WIDTH = 800  # 貼る画像の幅の下限（撮る道具が縮小するため、等倍でなくてよい）
+UI_ASPECT_TOL = 0.005  # 縦横比の許容（1280×800との差の比）
+
+
+def load_ui_image(image=UI_IMAGE):
+    """UIの画像を読み込み、確かめる。読めない・形が違うときは例外にする。
+
+    - ファイルがあること（FileNotFoundError）
+    - JPEGとして読めること（ValueError）
+    - 縦横比が UI_SIZE と同じ（差 UI_ASPECT_TOL 以内）で、幅が UI_MIN_WIDTH 以上（ValueError）
+    戻り値：VTKの読み込み部品（読み込み済み）。
+    """
+    path = Path(image)
+    if not path.is_file():
+        raise FileNotFoundError(f"UIの画像がない：{path}")
+    reader = vtk.vtkJPEGReader()
+    if not reader.CanReadFile(str(path)):
+        raise ValueError(f"UIの画像をJPEGとして読めない：{path}")
+    reader.SetFileName(str(path))
+    reader.Update()
+    w, h, _ = reader.GetOutput().GetDimensions()
+    if w <= 0 or h <= 0:
+        raise ValueError(f"UIの画像の大きさが読めない：{path}")
+    aspect, expected = w / h, UI_SIZE[0] / UI_SIZE[1]
+    if abs(aspect / expected - 1) > UI_ASPECT_TOL or w < UI_MIN_WIDTH:
+        raise ValueError(
+            f"UIの画像が {w}×{h}。縦横比は{UI_SIZE[0]}×{UI_SIZE[1]}と同じ、幅は{UI_MIN_WIDTH}以上にする"
+        )
+    return reader
+
+
 def ui_actor(image=UI_IMAGE):
     """表示領域（ガラスの端からベゼルの分だけ内側）に、UIの画像を貼った板。
 
     自ら光る画面に見えるよう、陰影をつけない（光の当たり方で明るさが変わらない）。
     座標はCAD（Z＝正面へ正）。ガラス面（奥行き0）のわずかに手前に置く。
     """
-    reader = vtk.vtkJPEGReader()
-    reader.SetFileName(str(image))
+    reader = load_ui_image(image)
     texture = vtk.vtkTexture()
     texture.SetInputConnection(reader.GetOutputPort())
     texture.InterpolateOn()
