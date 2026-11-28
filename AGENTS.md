@@ -77,6 +77,14 @@ Git操作とPRの作成は、承認なしで行う（Issue #164）。
 - 1つのPRは1つの目的に絞る。設計文書（`docs:`）と実装（`feat:`）は原則として別PRにする。正本の更新を伴う設計変更は、設計文書のPRを先に出す。
 - 次の場合は、文書と実装を1つのPRにまとめてよい（Issue #167）：設計の変更を伴わない小さな修正、検証記録の追加、実装済みの印を付けるだけの正本の更新。
 
+### 計画とMilestone
+
+計画と進捗は、GitHubのMilestoneとIssueを正とする（Issue #170）。
+
+- v1以降に作るIssueには、Milestoneを付ける。どのMilestoneに入れるかは、Issueの本文と一緒に提示して承認を得る。
+- 計画の見直しは、区切り（Milestoneの完了、v1の範囲の変更等）ごとに行う。
+- 作業の開始時に、対象のMilestoneの残りのIssueを確認する（`gh issue list --milestone "<名前>"`）。
+
 ## 5. 品質検証
 
 [development-quality.md](docs/development-quality.md)に従う。
