@@ -134,7 +134,7 @@ for _d in PILOT_VARIANTS:
         f"輪郭を床に置く。キーホール用ネジの下穴を{_d}にしたもの（任意の部品）",
     )
 
-# 組：名前 → (部品, 表題, 説明)
+# 組：名前 → (部品, 表題, 説明[, 合計の重さの代わりに書く文])
 SETS = {
     "full": (PARTS, "本印刷用データ（部品の一覧）", "筐体の部品。STLは1個分なので、スライサーで数を増やす"),
     "trial": (
@@ -147,6 +147,8 @@ SETS = {
         "本印刷の予備データ（下穴の径を変えたもの）",
         f"仮印刷の下穴のテストピースで{'・'.join(str(d) for d in PILOT_VARIANTS)}が合ったときに、"
         "print/full/ の同じ部品の代わりに使う。ほかの部品はprint/full/のまま",
+        "合計の重さは出さない。2.4・2.6のどちらか片方だけを、print/full/ の同じ部品の代わりに使うため、"
+        "材料の見積もりは print/full/manifest.md の合計を使う（1個の重さは上の表のとおり、full/とほぼ同じ）",
     ),
 }
 
@@ -303,7 +305,7 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def write_manifest(out_dir, rows, fingerprint, title="本印刷用データ（部品の一覧）", note=""):
+def write_manifest(out_dir, rows, fingerprint, title="本印刷用データ（部品の一覧）", note="", total_note=None):
     lines = [
         f"# {title}",
         "",
@@ -347,7 +349,7 @@ def write_manifest(out_dir, rows, fingerprint, title="本印刷用データ（�
     lines += markdown_table(header, body)
     lines += [
         "",
-        f"合計（数を掛けた重さ）：{total:.0f} g（充填100%の見積もり）",
+        total_note or f"合計（数を掛けた重さ）：{total:.0f} g（充填100%の見積もり）",
         "",
         "印刷の前に、スライサーで単位（mm）・大きさ・向き・サポートの要否・薄い所を確かめる（docs/enclosure-design.md 8章）。",
         "",
@@ -357,7 +359,7 @@ def write_manifest(out_dir, rows, fingerprint, title="本印刷用データ（�
     (out_dir / "manifest.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
-def build(out_dir, parts, title="本印刷用データ（部品の一覧）", note=""):
+def build(out_dir, parts, title="本印刷用データ（部品の一覧）", note="", total_note=None):
     """out_dir にSTLとmanifestを書き出して確かめる。(合否, ファイル名→SHA-256)"""
     ok = True
     rows = []
@@ -371,7 +373,7 @@ def build(out_dir, parts, title="本印刷用データ（部品の一覧）", no
         digests[path.name] = sha256(path)
         rows.append((name, count, orient, result["size"], result["volume"], digests[path.name]))
         print(f"[INFO] {name}：三角形 {result['triangles']}、{path.stat().st_size / 1e6:.2f} MB")
-    write_manifest(out_dir, rows, source_fingerprint(), title, note)
+    write_manifest(out_dir, rows, source_fingerprint(), title, note, total_note)
     return ok, digests
 
 
@@ -487,10 +489,10 @@ def main(argv=None):
     with tempfile.TemporaryDirectory() as tmp_name:
         built = {}
         ok = True
-        for name, (parts, title, note) in SETS.items():
+        for name, (parts, title, note, *rest) in SETS.items():
             tmp = Path(tmp_name) / name
             tmp.mkdir()
-            good, digests = build(tmp, parts, title, note)
+            good, digests = build(tmp, parts, title, note, rest[0] if rest else None)
             ok &= good
             built[name] = (tmp, digests)
         if not ok:
