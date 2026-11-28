@@ -10,11 +10,16 @@
 
 実行：venvのPythonで `python hardware/enclosure/src/export_print.py`
 出力：hardware/enclosure/print/full/*.stl、manifest.md
-確認に失敗すると、終了コード1で終わる。
+- いったん一時フォルダに書き出して確かめ、全部OKのときだけ出力先に置き換える。
+  NGのときは出力先を変えず、終了コード1で終わる（NGのデータを印刷用と取り違えないため）
+- `--verify`：出力先を変えずに一時フォルダに作り直し、出力先のSTLとSHA-256が一致するか確かめる
+  （コミット済みのデータが今のソースから作ったものか。一致しなければ終了コード1）
 """
 
 import hashlib
+import shutil
 import sys
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -91,19 +96,41 @@ def write_stl(shape, path):
 
 
 def mesh_stats(tris):
-    """三角形の並びから、体積（向きつき）・外形・閉じているか（辺が2つの三角形で共有）。"""
+    """三角形の並びから、体積（向きつき）・外形と、形の不具合の数。
+
+    頂点は1e-4 mmで丸めて同じ点にまとめる。不具合の数：
+    - open_edges：2つの三角形で共有されない辺（穴・重なり）
+    - flipped_edges：向きの合わない辺。閉じた形で面の向きがそろっていれば、
+      どの辺も「a→b」と「b→a」が1回ずつ現れる（同じ向きが2回、または逆向きがない辺を数える）
+    - degenerate：面積0の三角形（2つ以上の頂点が同じ点）
+    """
     a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
     volume = float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6)
     lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)
-    # 頂点を1e-4 mmで丸めて同じ点にまとめ、向きを無視した辺の数を数える
     keys = np.round(tris.reshape(-1, 3) / 1e-4).astype(np.int64)
     _, idx = np.unique(keys, axis=0, return_inverse=True)
     idx = idx.reshape(-1, 3)
-    edges = np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]])
-    edges = np.sort(edges, axis=1)
-    _, counts = np.unique(edges, axis=0, return_counts=True)
-    degenerate = int(np.sum((idx[:, 0] == idx[:, 1]) | (idx[:, 1] == idx[:, 2]) | (idx[:, 0] == idx[:, 2])))
-    return volume, lo, hi, int(np.sum(counts != 2)), degenerate
+    degenerate = int(
+        np.sum((idx[:, 0] == idx[:, 1]) | (idx[:, 1] == idx[:, 2]) | (idx[:, 0] == idx[:, 2]))
+    )
+    directed = np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]])
+    undirected = np.sort(directed, axis=1)
+    _, counts = np.unique(undirected, axis=0, return_counts=True)
+    open_edges = int(np.sum(counts != 2))
+    uniq, dcounts = np.unique(directed, axis=0, return_counts=True)
+    n = int(idx.max()) + 1
+    code = uniq[:, 0] * n + uniq[:, 1]
+    reverse = uniq[:, 1] * n + uniq[:, 0]
+    has_reverse = np.isin(reverse, code)
+    flipped_edges = int(np.sum(dcounts > 1) + np.sum(~has_reverse))
+    return {
+        "volume": volume,
+        "lo": lo,
+        "hi": hi,
+        "open_edges": open_edges,
+        "flipped_edges": flipped_edges,
+        "degenerate": degenerate,
+    }
 
 
 def bed_area(tris, tol=1e-3):
@@ -127,7 +154,9 @@ def exact_size(shape):
 def check_part(name, cad, path):
     """書き出したSTLを読み直して確かめる。(合否, 結果の辞書)"""
     tris = read_stl(path)
-    volume, lo, hi, open_edges, degenerate = mesh_stats(tris)
+    stats = mesh_stats(tris)
+    volume, lo, hi = stats["volume"], stats["lo"], stats["hi"]
+    open_edges, flipped, degenerate = stats["open_edges"], stats["flipped_edges"], stats["degenerate"]
     cad_size = exact_size(cad)
     size = hi - lo
     cad_volume = cad.Volume()
@@ -138,6 +167,7 @@ def check_part(name, cad, path):
         "cad_volume": cad_volume,
         "bed": bed_area(tris),
         "open_edges": open_edges,
+        "flipped_edges": flipped,
         "degenerate": degenerate,
     }
     checks = [
@@ -151,24 +181,26 @@ def check_part(name, cad, path):
             f"体積 {volume:.1f} mm3（CAD {cad_volume:.1f}、差 {100 * (volume / cad_volume - 1):+.3f}%。正＝面の向きが外向き）",
         ),
         (open_edges == 0, f"閉じた形：2つの三角形で共有されない辺 {open_edges}"),
+        (flipped == 0, f"面の向きがそろっている：向きの合わない辺 {flipped}"),
+        (degenerate == 0, f"面積0の三角形 {degenerate}"),
         (result["bed"] > 0, f"床に着く面 {result['bed']:.1f} mm2"),
     ]
     ok = True
     for good, text in checks:
         print(f"[{'OK' if good else 'NG'}] {name}：{text}")
         ok &= bool(good)
-    if degenerate:
-        print(f"[INFO] {name}：面積0の三角形 {degenerate}（スライサーは通常無視する）")
     return ok, result
 
 
 def source_fingerprint():
-    """CADのソース（src/*.py）の指紋：改行をLFにそろえて並べたもののSHA-256の先頭12文字。
+    """CADのソース（src/*.py。test_*.pyを除く）の指紋：改行をLFにそろえて並べたもののSHA-256の先頭12文字。
 
     同じソースからは同じ値になる。データがどのソースから作られたかを、Commitに頼らずに示す。
     """
     digest = hashlib.sha256()
     for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        if path.name.startswith("test_"):
+            continue  # テストは形に影響しない
         digest.update(path.name.encode())
         digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
     return digest.hexdigest()[:12]
@@ -190,22 +222,34 @@ def markdown_table(header, rows):
     return [line(header), "| " + " | ".join("-" * w for w in widths) + " |"] + [line(r) for r in rows]
 
 
-def write_manifest(rows, fingerprint):
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def write_manifest(out_dir, rows, fingerprint):
     lines = [
         "# 本印刷用データ（部品の一覧）",
         "",
         "`hardware/enclosure/src/export_print.py`で書き出した。手で編集しない。",
         "",
-        f"- CADのソースの指紋：`{fingerprint}`（`src/*.py`のSHA-256の先頭12文字。同じソースなら同じ値）",
+        f"- CADのソースの指紋：`{fingerprint}`（`src/*.py`〈テストを除く〉のSHA-256の先頭12文字。同じソースなら同じ値）",
         "- 形式：STL（バイナリ）、単位mm。部品は印刷の向きで床（Z=0）に置いてある",
         f"- 分割の細かさ：弦の誤差{MESH_TOL} mm、角度{MESH_ANGLE}ラジアン",
         f"- 重さは、PETG（密度{p.PETG_DENSITY}）で中身を詰めた（充填100%）ときの見積もり。実際はスライサーの充填率で変わる",
         "",
     ]
-    header = ["ファイル", "数", "印刷の向き", "外形（X×Y×高さ）", "体積 mm³", "重さの見積もり g（1個）"]
+    header = [
+        "ファイル",
+        "数",
+        "印刷の向き",
+        "外形（X×Y×高さ）",
+        "体積 mm³",
+        "重さの見積もり g（1個）",
+        "SHA-256（先頭16文字）",
+    ]
     body = []
     total = 0.0
-    for name, count, orient, size, volume in rows:
+    for name, count, orient, size, volume, digest in rows:
         grams = volume / 1000 * p.PETG_DENSITY
         total += grams * count
         body.append(
@@ -216,6 +260,7 @@ def write_manifest(rows, fingerprint):
                 f"{size[0]:.1f}×{size[1]:.1f}×{size[2]:.1f}",
                 f"{volume:.0f}",
                 f"{grams:.1f}",
+                f"`{digest[:16]}`",
             ]
         )
     lines += markdown_table(header, body)
@@ -225,28 +270,68 @@ def write_manifest(rows, fingerprint):
         "",
         "印刷の前に、スライサーで単位（mm）・大きさ・向き・サポートの要否・薄い所を確かめる（docs/enclosure-design.md 8章）。",
         "",
+        "今のソースから作り直したデータと一致するかは、`python hardware/enclosure/src/export_print.py --verify`で確かめる。",
+        "",
     ]
-    (OUT_DIR / "manifest.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    (out_dir / "manifest.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
-def main():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def build(out_dir):
+    """out_dir にSTLとmanifestを書き出して確かめる。(合否, ファイル名→SHA-256)"""
     ok = True
     rows = []
+    digests = {}
     for name, (make, count, rotations, orient) in PARTS.items():
         shape = place(make(), rotations)
-        path = OUT_DIR / f"{name}.stl"
+        path = out_dir / f"{name}.stl"
         write_stl(shape, path)
         good, result = check_part(name, shape, path)
         ok &= good
-        rows.append((name, count, orient, result["size"], result["volume"]))
+        digests[path.name] = sha256(path)
+        rows.append((name, count, orient, result["size"], result["volume"], digests[path.name]))
         print(f"[INFO] {name}：三角形 {result['triangles']}、{path.stat().st_size / 1e6:.2f} MB")
-    write_manifest(rows, source_fingerprint())
+    write_manifest(out_dir, rows, source_fingerprint())
+    return ok, digests
+
+
+def publish(tmp):
+    """一時フォルダの中身で、出力先を置き換える（前のSTL・manifestは消す）。"""
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    for old in list(OUT_DIR.glob("*.stl")) + [OUT_DIR / "manifest.md"]:
+        if old.exists():
+            old.unlink()
+    for new in tmp.iterdir():
+        shutil.copy2(new, OUT_DIR / new.name)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    verify = "--verify" in argv
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        ok, digests = build(tmp)
+        if not ok:
+            print("NGあり。出力先は変えていない")
+            return 1
+        if verify:
+            same = True
+            for name, digest in digests.items():
+                target = OUT_DIR / name
+                match = target.exists() and sha256(target) == digest
+                same &= match
+                print(f"[{'OK' if match else 'NG'}] 照合 {name}：出力先のSTLと{'一致' if match else '不一致'}")
+            manifest_match = (OUT_DIR / "manifest.md").exists() and (OUT_DIR / "manifest.md").read_bytes() == (
+                tmp / "manifest.md"
+            ).read_bytes()
+            same &= manifest_match
+            print(f"[{'OK' if manifest_match else 'NG'}] 照合 manifest.md：{'一致' if manifest_match else '不一致'}")
+            print("すべて一致" if same else "不一致あり（作り直してCommitする）")
+            return 0 if same else 1
+        publish(tmp)
     print(f"出力: {OUT_DIR}")
-    print("すべてOK" if ok else "NGあり")
-    if not ok:
-        sys.exit(1)
+    print("すべてOK")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
