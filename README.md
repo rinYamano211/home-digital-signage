@@ -16,7 +16,7 @@ Raspberry Piを利用した家庭用デジタルサイネージ。
 - [MVP要件・検討経過](docs/requirements.md)
 - [UI設計](docs/ui-design.md)
 - [学習記録](docs/learning-log.md)
-- [Home Digital Signage - Development Roadmap](https://github.com/users/rinYamano211/projects/1)
+- [Development Roadmap（Milestone）](https://github.com/rinYamano211/home-digital-signage/milestones)
 
 ## Weather data
 
