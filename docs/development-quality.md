@@ -33,6 +33,7 @@ PR作成・更新前は`npm ci`と`npm run check`を実行し、diffを確認す
 - TypeScript：`tsconfig.json`で`src/backend/**/*.ts`と`tests/**/*.ts`（`tests/frontend/`を除く）、`tsconfig.frontend.json`で`src/frontend/`と`tests/frontend/`（DOM型・`jsx: react-jsx`・Bundler向けのModule解決）。`npm run typecheck`は両方を実行する。空の対象で成功させず、検証用コードを実際に型チェックする。
 - Vitest：既存のSmoke Testと`tests/backend/`のConfig・Secrets・HTTP・Lifecycleテスト。実Credential・外部APIには依存しない。HTTPはLoopbackを利用する。Processテスト内でtscによるBackendのCompileと起動を検証し、成果物は配布・Deployしない。Linux固有のPermission・Signal確認はUbuntu CIで実行する。詳細は[Backend開発手順](backend-development.md)を参照。
 - `node_modules/`、`dist/`、`coverage/`、TypeScriptの生成キャッシュはLint / Format対象外。新しい生成物が増えた際は除外設定も更新する。
+- Claude Codeのworktree（`.claude/worktrees/`）は、ESLint・Prettier・Vitestの対象外とする（Issue #166）。worktreeは別の作業ツリーで、それぞれの中で検証する。メインのcheckoutにworktreeが残っていても、その中のファイルを検査・二重実行しない。`.claude/settings.json`はPrettierの対象に残す。
 - Frontend（Issue #7で追加）：`src/frontend/`と`tests/frontend/`を同じ`npm run check`の対象とする。Vitestは`tests/frontend/`の時計の整形・更新規則・利用可否・縮小倍率をNode環境で単体テストし、Reactの描画はBrowserで目視確認する。Backendの既存の検証対象・設定は弱めない。Production BuildはCIで実行しない。構成と設定方針は[Frontend開発手順](frontend-development.md)を参照。
 
 テキストファイルは`.gitattributes`の`* text=auto eol=lf`で改行をLFにそろえ、WindowsでもPrettierとの改行差を避ける（Issue #155）。この設定により、Gitへの追加時には改行をLFに正規化し、Checkout時もLFで書き出す。バイナリ（PNG等）はGitが自動判定し、変換しない。indexはすでにLFのため、ファイルの内容と`.prettierignore`の対象外指定は変わらない。
