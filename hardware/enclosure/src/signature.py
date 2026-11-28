@@ -100,6 +100,49 @@ def sample(stroke, step=0.05):
     return np.array(pts)
 
 
+# --- 寸法の許容範囲 ---------------------------------------------------------
+# 設計上許す値の範囲（下限, 上限）。範囲の外の値や、下の組み合わせの条件を満たさない値は、
+# 形を作る前に ValueError にする。範囲は、FDM（ノズル0.4）での刻印と、前面の左の余白
+# （幅約61）に収まることを目安に決めた。範囲の中でも、最終の確認は inspect() と
+# CAD・スライサーのプレビューで行う。
+RANGES = {
+    "SIGN_SYMBOL_H": (12.0, 24.0),
+    "SIGN_SYMBOL_LINE": (0.6, 1.5),
+    "SIGN_LETTER_H": (3.5, 6.0),
+    "SIGN_LETTER_LINE": (0.5, 1.0),
+    "SIGN_LETTER_GAP": (1.0, 5.0),
+    "SIGN_STACK_GAP": (3.0, 10.0),
+    "SIGN_MIN_GAP": (0.4, 1.0),
+}
+
+
+def validate():
+    """params の刻印の値が、許容範囲と組み合わせの条件を満たすか確かめる。満たさなければ ValueError。"""
+    errors = []
+    for name, (lo, hi) in RANGES.items():
+        v = getattr(p, name)
+        if not (isinstance(v, (int, float)) and math.isfinite(v) and lo <= v <= hi):
+            errors.append(f"{name}={v!r} は範囲 {lo}〜{hi} の外")
+    if not errors:
+        H, w, g = p.SIGN_LETTER_H, p.SIGN_LETTER_LINE, p.SIGN_MIN_GAP
+        span = H - w
+        # 文字の中で一番狭い隙間：Sの上下の曲線の間（中心線の間 span/2 から線幅を引く）と、
+        # Pの丸い部分の内側（中心線の間 span×比 から線幅を引く）
+        s_gap = span / 2 - w
+        p_gap = span * _P_BOWL_RATIO - w
+        if min(s_gap, p_gap) < g:
+            errors.append(
+                f"文字の中の隙間（S {s_gap:.2f}・P {p_gap:.2f}）が SIGN_MIN_GAP={g} より狭い。"
+                "文字を高くするか、線を細くする"
+            )
+        if p.SIGN_LETTER_GAP < g:
+            errors.append(f"字間 SIGN_LETTER_GAP={p.SIGN_LETTER_GAP} が SIGN_MIN_GAP={g} より狭い")
+        if p.SIGN_SYMBOL_LINE < w:
+            errors.append("シンボルの線は、文字の線より細くしない（見た目の重さの順）")
+    if errors:
+        raise ValueError("刻印の寸法が不正：" + "／".join(errors))
+
+
 # --- シンボル（Phos Sprout） -------------------------------------------------
 # 基準の形：高さ18・線幅1.0で描いた線の中心。中心線は Y=0.5（地面の線）〜17.5（右の葉の先）。
 # SIGN_SYMBOL_H・SIGN_SYMBOL_LINE が変わっても、線の外側までの高さが SIGN_SYMBOL_H になるよう、
@@ -110,6 +153,7 @@ _SYMBOL_CENTER_Y1 = 17.5
 
 def symbol_strokes():
     """シンボルの線（道筋, 線幅）の並び。下端（線の外側）が Y=0、茎が X=0。"""
+    validate()
     w = p.SIGN_SYMBOL_LINE
     base = _SYMBOL_CENTER_Y0
     j = (0.0, 8.0)  # 茎と葉の付け根
@@ -145,6 +189,7 @@ _S_END_DEG = -145  # Sの下の端の向き
 
 def letter_strokes(ch):
     """1文字の線の並びと、文字の幅（線の外側まで）。左下（線の外側）が原点。"""
+    validate()
     H, w = p.SIGN_LETTER_H, p.SIGN_LETTER_LINE
     h = w / 2
     top, bot, mid = H - h, h, H / 2

@@ -116,6 +116,46 @@ class DimensionTest(unittest.TestCase):
         self.assertAlmostEqual(sy0 - y1, sg.p.SIGN_STACK_GAP, delta=0.01)
 
 
+class ValidateTest(unittest.TestCase):
+    def test_current_values_pass(self):
+        sg.validate()
+
+    def test_out_of_range(self):
+        cases = [
+            {"SIGN_LETTER_H": 3.0},
+            {"SIGN_LETTER_H": 7.0},
+            {"SIGN_LETTER_LINE": 0.3},
+            {"SIGN_SYMBOL_H": 40.0},
+            {"SIGN_SYMBOL_LINE": 0.0},
+            {"SIGN_STACK_GAP": -1.0},
+            {"SIGN_LETTER_H": float("nan")},
+            {"SIGN_LETTER_LINE": "0.8"},
+        ]
+        for values in cases:
+            with self.subTest(values=values), sg.override(**values):
+                with self.assertRaises(ValueError):
+                    sg.validate()
+                with self.assertRaises(ValueError):
+                    sg.mark_strokes()
+
+    def test_inner_gap_too_narrow(self):
+        # 範囲の中でも、低い文字に太い線は、Sの中の隙間が狭すぎる
+        with sg.override(SIGN_LETTER_H=3.5, SIGN_LETTER_LINE=1.0):
+            with self.assertRaises(ValueError):
+                sg.letter_strokes("S")
+
+    def test_letter_gap_narrower_than_min_gap(self):
+        with sg.override(SIGN_LETTER_GAP=1.0, SIGN_MIN_GAP=1.0):
+            sg.validate()
+        with sg.override(SIGN_LETTER_GAP=1.0, SIGN_MIN_GAP=1.0, SIGN_LETTER_LINE=0.5):
+            sg.validate()
+
+    def test_symbol_line_thinner_than_letters(self):
+        with sg.override(SIGN_SYMBOL_LINE=0.6, SIGN_LETTER_LINE=0.8):
+            with self.assertRaises(ValueError):
+                sg.validate()
+
+
 class NarrowSpotTest(unittest.TestCase):
     def two_lines(self, gap):
         """幅1の平行な2本の線。縁どうしの間が gap。"""
