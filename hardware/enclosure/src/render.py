@@ -252,7 +252,31 @@ def main():
     render_signature(parts)
     render_back_mounts(parts)
     render_ui(parts, sparts, center, d, desk, tilt)
+    render_trial()
     print(f"PNG: {OUT_DIR}")
+
+
+def render_trial():
+    """仮印刷のテストピース（印刷の向き。床に置いた状態を斜め上から）。"""
+    import export_print
+
+    for name, (make, _, rotations, _) in export_print.TRIAL_PARTS.items():
+        shape = export_print.place(make(), rotations)
+        bb = shape.BoundingBox()
+        focal = ((bb.xmin + bb.xmax) / 2, (bb.ymin + bb.ymax) / 2, (bb.zmin + bb.zmax) / 2)
+        size = max(bb.xlen, bb.ylen, bb.zlen)
+        import cadquery as cq
+
+        render(
+            f"{name}",
+            [(cq.Workplane().add(shape), BODY_COLOR)],
+            (focal[0] - size * 0.8, focal[1] - size * 1.2, focal[2] + size * 1.5),
+            focal,
+            view_up=(0, 0, 1),
+            size=(1200, 900),
+            parallel=True,
+            scale=size * 0.6,
+        )
 
 
 def render_back_mounts(parts):

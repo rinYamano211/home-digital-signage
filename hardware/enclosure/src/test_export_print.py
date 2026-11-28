@@ -73,12 +73,12 @@ class PublishTest(unittest.TestCase):
         self.out = Path(self.dir.name) / "full"
         self.out.mkdir()
         (self.out / "old.stl").write_bytes(b"old")
-        self.saved = (ep.OUT_DIR, ep.PARTS)
-        ep.OUT_DIR = self.out
-        ep.PARTS = {"box": (lambda: cq.Workplane().box(10, 10, 2), 1, [], "test")}
+        self.saved = (ep.PRINT_DIR, ep.SETS)
+        ep.PRINT_DIR = self.out.parent
+        ep.SETS = {"full": ({"box": (lambda: cq.Workplane().box(10, 10, 2), 1, [], "test")}, "テスト", "")}
 
     def tearDown(self):
-        ep.OUT_DIR, ep.PARTS = self.saved
+        ep.PRINT_DIR, ep.SETS = self.saved
         self.dir.cleanup()
 
     def test_ng_keeps_output(self):
@@ -173,12 +173,94 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(ep.main([]), 0)
         self.assertFalse(staging.exists())
 
+    def two_sets(self):
+        import cadquery as cq
+
+        trial = self.out.with_name("trial")
+        trial.mkdir()
+        (trial / "old.stl").write_bytes(b"old-trial")
+        ep.SETS = {
+            "full": ({"box": (lambda: cq.Workplane().box(10, 10, 2), 1, [], "test")}, "テスト", ""),
+            "trial": ({"small": (lambda: cq.Workplane().box(5, 5, 2), 1, [], "test")}, "テスト", ""),
+        }
+        return trial
+
+    def test_second_swap_failure_restores_both(self):
+        # 2組目の入れ替えで失敗したら、1組目も前のデータに戻る
+        trial = self.two_sets()
+        original = Path.rename
+
+        def failing_rename(path, target):
+            if Path(path).name == "trial.new":
+                raise OSError("名前の変更の失敗（テスト）")
+            return original(path, target)
+
+        Path.rename = failing_rename
+        try:
+            with self.assertRaises(OSError):
+                ep.main([])
+        finally:
+            Path.rename = original
+        self.assertEqual(sorted(x.name for x in self.out.iterdir()), ["old.stl"])
+        self.assertEqual((trial / "old.stl").read_bytes(), b"old-trial")
+        for leftover in ("full.new", "full.old", "trial.new", "trial.old"):
+            self.assertFalse(self.out.with_name(leftover).exists(), leftover)
+
+    def test_verify_checks_all_sets(self):
+        # 1組目が不一致でも、2組目まで照合する
+        self.two_sets()
+        self.assertEqual(ep.main([]), 0)
+        (self.out / "box.stl").write_bytes(b"changed")
+        calls = []
+        original = ep.compare
+
+        def counting_compare(tmp, out_dir, digests):
+            calls.append(out_dir.name)
+            return original(tmp, out_dir, digests)
+
+        ep.compare = counting_compare
+        try:
+            self.assertEqual(ep.main(["--verify"]), 1)
+        finally:
+            ep.compare = original
+        self.assertEqual(calls, ["full", "trial"])
+
     def test_ok_replaces_output_and_verify_matches(self):
         self.assertEqual(ep.main([]), 0)
         self.assertEqual(sorted(x.name for x in self.out.iterdir()), ["box.stl", "manifest.md"])
         self.assertEqual(ep.main(["--verify"]), 0)
         (self.out / "box.stl").write_bytes(b"changed")
         self.assertEqual(ep.main(["--verify"]), 1)
+
+
+class PilotPieceTest(unittest.TestCase):
+    """仮印刷の下穴のテストピース：下穴の径・深さ・目印の点の数。"""
+
+    def test_holes(self):
+        import cadquery as cq
+
+        import params as p
+        import trial_pieces as tp
+
+        solid = tp.pilot_piece().val()
+        top = tp.PILOT_PLATE_T + tp.PILOT_BOSS_H
+        depth = tp.p.COVER_SCREW_DEPTH
+        cy = p.COVER_BOSS_D + 7.0 - p.COVER_BOSS_D / 2 - 1.0
+        for i, d in enumerate(tp.PILOT_DIAMETERS):
+            cx = tp.PILOT_PITCH * (i + 0.5)
+            with self.subTest(d=d):
+                # 穴の縁のすぐ内側は空き、すぐ外側は材料。深さの底より下は材料
+                z = top - depth / 2
+                self.assertFalse(solid.isInside(cq.Vector(cx + d / 2 - 0.05, cy, z)))
+                self.assertTrue(solid.isInside(cq.Vector(cx + d / 2 + 0.05, cy, z)))
+                self.assertTrue(solid.isInside(cq.Vector(cx, cy, top - depth - 0.2)))
+                # 目印の点の数＝順番（点の並びの両隣1つ分も含めて数える。板の外は除く）
+                width = tp.PILOT_PITCH * len(tp.PILOT_DIAMETERS)
+                xs = [cx + (k - i / 2) * tp.DOT_PITCH for k in range(-1, i + 2)]
+                dots = sum(
+                    not solid.isInside(cq.Vector(x, 2.5, tp.PILOT_PLATE_T - 0.2)) for x in xs if 0 < x < width
+                )
+                self.assertEqual(dots, i + 1)
 
 
 class ManifestTest(unittest.TestCase):
