@@ -397,8 +397,8 @@ def vents():
     return result
 
 
-def chassis_raw():
-    """Displayの座標（Z＝奥行き）のままの形。"""
+def chassis_raw(engrave=True):
+    """Displayの座標（Z＝奥行き）のままの形。engrave=False なら前面の刻印なし（確認用）。"""
     body = (
         shell()
         .union(left_ribs())
@@ -407,7 +407,7 @@ def chassis_raw():
         .union(top_stop_blocks())
         .union(cover_bosses())
     )
-    return (
+    result = (
         body.cut(clamp_pilots())
         .cut(top_stop_pilots())
         .cut(cover_pilots())
@@ -415,6 +415,14 @@ def chassis_raw():
         .cut(tie_slots())
         .cut(vents())
     )
+    return result.cut(front_engraving()) if engrave else result
+
+
+def front_engraving():
+    """前面のシンボル・ロゴの凹刻印の型（engraving.py。PR 5b）。"""
+    import engraving  # engraving が chassis を使うため、ここで読み込む
+
+    return engraving.front_tool()
 
 
 def chassis():

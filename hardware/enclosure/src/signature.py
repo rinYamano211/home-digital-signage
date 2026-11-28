@@ -113,6 +113,10 @@ RANGES = {
     "SIGN_LETTER_GAP": (1.0, 5.0),
     "SIGN_STACK_GAP": (3.0, 10.0),
     "SIGN_MIN_GAP": (0.4, 1.0),
+    "SIGN_DEPTH": (0.2, 0.8),
+    "SIGN_BACK_LETTER_H": (3.5, 6.0),
+    "SIGN_BACK_LETTER_GAP": (1.0, 5.0),
+    "SIGN_BACK_LINE_GAP": (1.5, 6.0),
 }
 
 
@@ -124,19 +128,22 @@ def validate():
         if not (isinstance(v, (int, float)) and math.isfinite(v) and lo <= v <= hi):
             errors.append(f"{name}={v!r} は範囲 {lo}〜{hi} の外")
     if not errors:
-        H, w, g = p.SIGN_LETTER_H, p.SIGN_LETTER_LINE, p.SIGN_MIN_GAP
-        span = H - w
-        # 文字の中で一番狭い隙間：Sの上下の曲線の間（中心線の間 span/2 から線幅を引く）と、
-        # Pの丸い部分の内側（中心線の間 span×比 から線幅を引く）
-        s_gap = span / 2 - w
-        p_gap = span * _P_BOWL_RATIO - w
-        if min(s_gap, p_gap) < g:
-            errors.append(
-                f"文字の中の隙間（S {s_gap:.2f}・P {p_gap:.2f}）が SIGN_MIN_GAP={g} より狭い。"
-                "文字を高くするか、線を細くする"
-            )
-        if p.SIGN_LETTER_GAP < g:
-            errors.append(f"字間 SIGN_LETTER_GAP={p.SIGN_LETTER_GAP} が SIGN_MIN_GAP={g} より狭い")
+        w, g = p.SIGN_LETTER_LINE, p.SIGN_MIN_GAP
+        # 文字の中で狭くなる隙間（Sの上下の曲線の間、Pの丸い部分の内側など）が g 以上
+        for label, H in (("ロゴ", p.SIGN_LETTER_H), ("背面", p.SIGN_BACK_LETTER_H)):
+            gaps = inner_gaps(H, w)
+            if min(gaps.values()) < g:
+                detail = "・".join(f"{k} {v:.2f}" for k, v in gaps.items())
+                errors.append(
+                    f"{label}の文字の中の隙間（{detail}）が SIGN_MIN_GAP={g} より狭い。"
+                    "文字を高くするか、線を細くする"
+                )
+        for name in ("SIGN_LETTER_GAP", "SIGN_BACK_LETTER_GAP"):
+            if getattr(p, name) < g:
+                errors.append(f"字間 {name}={getattr(p, name)} が SIGN_MIN_GAP={g} より狭い")
+        bad = sorted({c for c in "".join(p.SIGN_BACK_TEXT) if c not in GLYPHS})
+        if bad:
+            errors.append("背面の刻印に形のない文字がある：" + "".join(bad))
         if p.SIGN_SYMBOL_LINE < w:
             errors.append("シンボルの線は、文字の線より細くしない（見た目の重さの順）")
     if errors:
@@ -176,24 +183,43 @@ def symbol_strokes():
     return [(_scale(s, k, dy=dy), w) for s in strokes]
 
 
-# --- ロゴ（PHOS） -----------------------------------------------------------
-# 文字は、高さ SIGN_LETTER_H・線幅 SIGN_LETTER_LINE から直接作る（拡大・縮小しない）。
-# 線の中心を 線幅/2 〜 高さ−線幅/2 に置くので、線の外側までの高さは常に SIGN_LETTER_H。
+# --- 文字（ロゴ・背面の刻印） -------------------------------------------------
+# 文字は、高さ H・線幅 w から直接作る（拡大・縮小しない）。
+# 線の中心を w/2 〜 H−w/2 に置くので、線の外側までの高さは常に H。
 # 横の寸法は高さに対する比で決める（高さ4.5・線幅0.8で見た目を合わせた比）。
 _P_BOWL_REACH = 2.1 / 4.5  # Pの縦の線の中心から、丸い部分の右端の中心まで（高さに対する比）
 _P_BOWL_RATIO = 2.0 / 3.7  # Pの丸い部分の高さ（中心線どうし。中心線の高さに対する比）
+_B_UPPER_RATIO = 0.48  # Bの上の丸い部分の高さ（中心線どうし。中心線の高さに対する比）。下はその残り
 _H_SPAN = 2.6 / 4.5  # Hの2本の縦の線の中心の間（高さに対する比）
 _S_START_DEG = 35  # Sの上の端の向き
 _S_END_DEG = -145  # Sの下の端の向き
+SPACE_RATIO = 0.5  # 空白の幅（高さに対する比）
+GLYPHS = "PHOSBJECT0126 "  # 形のある文字
 
 
-def letter_strokes(ch):
-    """1文字の線の並びと、文字の幅（線の外側まで）。左下（線の外側）が原点。"""
+def inner_gaps(H, w):
+    """文字の中で狭くなる隙間（線の外側どうし）。名前→幅。"""
+    span = H - w
+    return {
+        "S・E（上下の線の間）": span / 2 - w,
+        "P（丸い部分の内側）": span * _P_BOWL_RATIO - w,
+        "B（上の丸い部分の内側）": span * _B_UPPER_RATIO - w,
+    }
+
+
+def letter_strokes(ch, H=None, w=None):
+    """1文字の線の並びと、文字の幅（線の外側まで）。左下（線の外側）が原点。
+
+    H・w を省くと、ロゴの値（SIGN_LETTER_H・SIGN_LETTER_LINE）を使う。
+    """
     validate()
-    H, w = p.SIGN_LETTER_H, p.SIGN_LETTER_LINE
+    H = p.SIGN_LETTER_H if H is None else H
+    w = p.SIGN_LETTER_LINE if w is None else w
     h = w / 2
     top, bot, mid = H - h, h, H / 2
     span = top - bot  # 中心線の高さ
+    if ch == " ":
+        return [], H * SPACE_RATIO
     if ch == "P":
         r = span * _P_BOWL_RATIO / 2
         right = h + H * _P_BOWL_REACH  # 丸い部分の右端（中心線）
@@ -209,6 +235,27 @@ def letter_strokes(ch):
             ],
             right + h,
         )
+    if ch == "B":
+        r1 = span * _B_UPPER_RATIO / 2  # 上の丸い部分
+        r2 = span / 2 - r1  # 下の丸い部分（少し大きい）
+        right1 = h + H * 0.42
+        right2 = h + H * 0.47
+        yj = top - 2 * r1  # 上下の丸い部分の境
+        return (
+            [
+                [
+                    ("M", (h, bot)),
+                    ("L", (h, top)),
+                    ("L", (right1 - r1, top)),
+                    ("A", (right1 - r1, top - r1), r1, 90, -90),
+                    ("L", (right2 - r2, yj)),
+                    ("A", (right2 - r2, yj - r2), r2, 90, -90),
+                    ("L", (h, bot)),
+                ],
+                [("M", (h, yj)), ("L", (right1 - r1, yj))],
+            ],
+            right2 + h,
+        )
     if ch == "H":
         x1 = h + H * _H_SPAN
         return (
@@ -218,6 +265,36 @@ def letter_strokes(ch):
                 [("M", (h, mid)), ("L", (x1, mid))],
             ],
             x1 + h,
+        )
+    if ch == "E":
+        right = H * 0.52 - h
+        return (
+            [
+                [("M", (right, top)), ("L", (h, top)), ("L", (h, bot)), ("L", (right, bot))],
+                [("M", (h, mid)), ("L", (right - H * 0.06, mid))],
+            ],
+            right + h,
+        )
+    if ch == "T":
+        right = H * 0.62 - h
+        cx = (h + right) / 2
+        return (
+            [[("M", (h, top)), ("L", (right, top))], [("M", (cx, top)), ("L", (cx, bot))]],
+            right + h,
+        )
+    if ch == "J":
+        rj = span * 0.22
+        x = h + 2 * rj  # 縦の線
+        return (
+            [[("M", (x, top)), ("L", (x, bot + rj)), ("A", (x - rj, bot + rj), rj, 0, -180)]],
+            x + h,
+        )
+    if ch == "C":
+        ro = span / 2
+        cx = h + ro
+        return (
+            [[("M", _arc_point((cx, mid), ro, 45)), ("A", (cx, mid), ro, 45, 315)]],
+            cx + ro * math.cos(math.radians(45)) + h,
         )
     if ch == "O":
         ro = span / 2
@@ -236,17 +313,89 @@ def letter_strokes(ch):
             ],
             cx + rs + h,
         )
-    raise ValueError(f"文字 {ch} の形はない")
+    if ch == "0":
+        # 数字の0：縦長の丸（英字のOと区別する）
+        rz = span * 0.3
+        c = h + rz
+        return (
+            [
+                [
+                    ("M", (h, bot + rz)),
+                    ("L", (h, top - rz)),
+                    ("A", (c, top - rz), rz, 180, 0),
+                    ("L", (c + rz, bot + rz)),
+                    ("A", (c, bot + rz), rz, 0, -180),
+                ]
+            ],
+            c + rz + h,
+        )
+    if ch == "1":
+        c = h + H * 0.2
+        return [[("M", (h, top - H * 0.2)), ("L", (c, top)), ("L", (c, bot))]], c + h
+    if ch == "2":
+        r2 = span * 0.27
+        cx = h + r2 * math.cos(math.radians(20))
+        cy = top - r2
+        right = cx + r2
+        return (
+            [
+                [
+                    ("M", _arc_point((cx, cy), r2, 160)),
+                    ("A", (cx, cy), r2, 160, -35),
+                    ("L", (h, bot)),
+                    ("L", (right, bot)),
+                ]
+            ],
+            right + h,
+        )
+    if ch == "6":
+        rb = span * 0.3  # 下の丸
+        c = h + rb
+        cy = bot + rb
+        return (
+            [
+                [("M", (c + rb, cy)), ("A", (c, cy), rb, 0, 360)],
+                [
+                    ("M", (c + rb * 0.6, top)),
+                    ("C", (c - rb * 0.5, top), (h, mid + H * 0.15), (h, cy)),
+                ],
+            ],
+            c + rb + h,
+        )
+    raise ValueError(f"文字 {ch!r} の形はない（使える文字：{GLYPHS!r}）")
 
 
-def wordmark_strokes(text="PHOS"):
-    """ロゴの線（道筋, 線幅）の並びと、全体の幅。左下（線の外側）が原点。"""
+def wordmark_strokes(text="PHOS", H=None, w=None, gap=None):
+    """文字の並びの線（道筋, 線幅）と、全体の幅。左下（線の外側）が原点。
+
+    H・w・gap を省くと、ロゴの値を使う。
+    """
+    H = p.SIGN_LETTER_H if H is None else H
+    w = p.SIGN_LETTER_LINE if w is None else w
+    gap = p.SIGN_LETTER_GAP if gap is None else gap
     strokes, x = [], 0.0
     for i, ch in enumerate(text):
-        lines, width = letter_strokes(ch)
-        strokes += [(_scale(s, 1.0, dx=x), p.SIGN_LETTER_LINE) for s in lines]
-        x += width + (p.SIGN_LETTER_GAP if i < len(text) - 1 else 0.0)
+        lines, width = letter_strokes(ch, H, w)
+        strokes += [(_scale(s, 1.0, dx=x), w) for s in lines]
+        x += width + (gap if i < len(text) - 1 else 0.0)
     return strokes, x
+
+
+def back_text_strokes(lines=None):
+    """背面の刻印（複数行）の線。各行は中央そろえ。外形の中心が原点。
+
+    正面から見た座標で作る（背面から見て読めるようにする左右の反転は、置くときに行う）。
+    """
+    lines = p.SIGN_BACK_TEXT if lines is None else lines
+    H, w, gap = p.SIGN_BACK_LETTER_H, p.SIGN_LETTER_LINE, p.SIGN_BACK_LETTER_GAP
+    out = []
+    n = len(lines)
+    total_h = n * H + (n - 1) * p.SIGN_BACK_LINE_GAP
+    for i, text in enumerate(lines):
+        strokes, width = wordmark_strokes(text, H, w, gap)
+        y = total_h / 2 - (i + 1) * H - i * p.SIGN_BACK_LINE_GAP
+        out += [(_scale(s, 1.0, dx=-width / 2, dy=y), lw) for s, lw in strokes]
+    return out
 
 
 def mark_strokes():
@@ -277,6 +426,7 @@ def override(**values):
 # --- 刻印の形（2D）と確認 ---------------------------------------------------
 
 RES = 0.02  # 計算の細かさ（mm/画素）
+SPOT_TOL = 0.1  # 狭い所の確認で、画素の誤差として数えないかたまりの大きさ（縦横の長い方、mm）
 
 
 def bounds(strokes, margin=0.0):
@@ -354,7 +504,8 @@ def narrow_spots(region, width, origin):
     region の各点が「region の中に収まる直径 width の円」のどれかに含まれるかを調べる
     （形態学の「開く」処理と同じ考え方）。どの円にも含まれない画素のかたまりを、狭い所とする。
     幅が width より狭い帯・とがった角・細い切れ込みは、どこにあっても見つかる。
-    画素の誤差として、1画素分の差は許す。
+    画素の誤差として、距離は1画素分の差を許し、大きさが SPOT_TOL（0.1）以下のかたまりは数えない
+    （円がちょうど収まる所で、画素に分けた誤差だけで出る点。造形の分解能よりずっと小さい）。
     戻り値：[(面積mm², 中心のx, 中心のy), ...]（面積の大きい順）
     """
     r = width / 2
@@ -365,6 +516,9 @@ def narrow_spots(region, width, origin):
     spots = []
     for k in range(1, n + 1):
         jj, ii = np.nonzero(labels == k)
+        extent = max(jj.max() - jj.min(), ii.max() - ii.min()) * RES + RES
+        if extent <= SPOT_TOL:
+            continue
         spots.append(
             (
                 len(jj) * RES * RES,
@@ -401,13 +555,81 @@ def inspect(strokes, min_gap=None):
     }
 
 
+def max_bridge(mask):
+    """刻印の溝の一番広い所（溝に入る一番大きい円の直径、mm）。
+
+    刻印の面を下にして印刷すると、溝の上は空中に渡す線（ブリッジ）になる。その長さの目安。
+    """
+    return float(ndimage.distance_transform_edt(mask).max() * RES * 2)
+
+
+def _simplify(points, tol):
+    """折れ線の点を、形のずれが tol 以下の範囲で減らす（Douglas-Peucker法）。"""
+    keep = np.zeros(len(points), dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        if i1 <= i0 + 1:
+            continue
+        a, b = points[i0], points[i1]
+        ab = b - a
+        seg = points[i0 + 1 : i1]
+        ll = float(ab @ ab)
+        if ll < 1e-18:
+            d = np.hypot(*(seg - a).T)
+        else:
+            d = np.abs(ab[0] * (seg[:, 1] - a[1]) - ab[1] * (seg[:, 0] - a[0])) / math.sqrt(ll)
+        k = int(np.argmax(d))
+        if d[k] > tol:
+            m = i0 + 1 + k
+            keep[m] = True
+            stack += [(i0, m), (m, i1)]
+    return points[keep]
+
+
+def outlines(strokes, tol=0.005):
+    """刻印の形（埋めたあと）の輪郭。CADの刻印に使う。
+
+    戻り値：[(外側の輪郭, [穴の輪郭, ...]), ...]。輪郭は (x, y) の配列（閉じた折れ線）。
+    画素の内外からの距離（符号つき）を作り、その0の線を輪郭にする（画素の階段にならない）。
+    """
+    from contourpy import FillType, contour_generator
+
+    mask, _, _, (x0, y0) = engrave_mask(strokes)
+    sdf = (ndimage.distance_transform_edt(mask) - ndimage.distance_transform_edt(~mask)) * RES
+    xs = x0 + (np.arange(mask.shape[1]) + 0.5) * RES
+    ys = y0 + (np.arange(mask.shape[0]) + 0.5) * RES
+    gen = contour_generator(xs, ys, sdf, fill_type=FillType.OuterOffset)
+    points_list, offsets_list = gen.filled(0.0, np.inf)
+    result = []
+    for pts, offs in zip(points_list, offsets_list):
+        loops = []
+        for a, b in zip(offs[:-1], offs[1:]):
+            loop = pts[a:b]
+            if np.allclose(loop[0], loop[-1]):
+                loop = loop[:-1]
+            if len(loop) >= 3:
+                loops.append(_simplify(np.vstack([loop, loop[:1]]), tol)[:-1])
+        if loops:
+            result.append((loops[0], loops[1:]))
+    return result
+
+
+def polygon_area(loop):
+    x, y = loop[:, 0], loop[:, 1]
+    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
 def report(name, strokes):
     """確認の結果を表示し、合否を返す。"""
     r = inspect(strokes)
     ok = not r["narrow_gaps"] and not r["narrow_lines"]
+    mask, _, _, _ = engrave_mask(strokes)
+    bridge = max_bridge(mask)
     print(
         f"[{'OK' if ok else 'NG'}] {name}：外形 {r['size'][0]:.2f}×{r['size'][1]:.2f}、"
-        f"線幅 {r['lines']}、刻印の面積 {r['area']:.1f} mm2"
+        f"線幅 {r['lines']}、刻印の面積 {r['area']:.1f} mm2、溝の一番広い所 {bridge:.2f}"
     )
     print(
         f"    SVGとの差（狭い所を埋めた分）：{r['fill_count']}か所・{r['fill_area']:.2f} mm2、"
@@ -626,8 +848,18 @@ def main():
     mark = mark_strokes()
     write_svg(OUT_DIR / "phos-symbol.svg", sym)
     write_svg(OUT_DIR / "phos-mark.svg", mark)
-    ok = all([report("シンボル", sym), report("ロゴ", word), report("マーク", mark)])
+    back = back_text_strokes()
+    write_svg(OUT_DIR / "phos-back-text.svg", back)
+    ok = all(
+        [
+            report("シンボル", sym),
+            report("ロゴ", word),
+            report("マーク", mark),
+            report("背面の刻印", back),
+        ]
+    )
     preview(OUT_DIR / "signature-mark.png", mark)
+    preview(OUT_DIR / "signature-back.png", back, scale_px=40)
     compare(OUT_DIR / "signature-compare.png")
     center = mark_center()
     print(f"前面の位置（茎のX、ロゴの下端のY）：({center[0]:.1f}, {center[1]:.1f})")

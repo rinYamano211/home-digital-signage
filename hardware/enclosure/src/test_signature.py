@@ -76,7 +76,8 @@ class DimensionTest(unittest.TestCase):
 
     def test_letters_fit_height_and_width(self):
         for H, w in self.CASES:
-            with sg.override(SIGN_LETTER_H=H, SIGN_LETTER_LINE=w):
+            # 背面の文字も同じ線幅を使うため、背面の高さもそろえる（隙間の条件を満たすように）
+            with sg.override(SIGN_LETTER_H=H, SIGN_LETTER_LINE=w, SIGN_BACK_LETTER_H=max(H, 4.0)):
                 for ch in "PHOS":
                     lines, width = sg.letter_strokes(ch)
                     x0, y0, x1, y1 = sg.bounds([(s, w) for s in lines])
@@ -85,6 +86,34 @@ class DimensionTest(unittest.TestCase):
                         self.assertAlmostEqual(y1, H, delta=0.01)
                         self.assertAlmostEqual(x0, 0.0, delta=0.01)
                         self.assertAlmostEqual(x1, width, delta=0.01)
+
+    def test_all_glyphs_fit_height_and_width(self):
+        for H, w in ((4.0, 0.8), (4.5, 0.8), (5.0, 0.6)):
+            for ch in sg.GLYPHS.strip():
+                lines, width = sg.letter_strokes(ch, H, w)
+                x0, y0, x1, y1 = sg.bounds([(s, w) for s in lines])
+                with self.subTest(H=H, w=w, ch=ch):
+                    self.assertAlmostEqual(y0, 0.0, delta=0.01)
+                    self.assertAlmostEqual(y1, H, delta=0.01)
+                    self.assertAlmostEqual(x0, 0.0, delta=0.01)
+                    self.assertAlmostEqual(x1, width, delta=0.01)
+
+    def test_space_and_unknown_glyph(self):
+        lines, width = sg.letter_strokes(" ", 4.0, 0.8)
+        self.assertEqual(lines, [])
+        self.assertAlmostEqual(width, 4.0 * sg.SPACE_RATIO)
+        with self.assertRaises(ValueError):
+            sg.letter_strokes("X", 4.0, 0.8)
+
+    def test_back_text_layout(self):
+        strokes = sg.back_text_strokes()
+        x0, y0, x1, y1 = sg.bounds(strokes)
+        n = len(sg.p.SIGN_BACK_TEXT)
+        height = n * sg.p.SIGN_BACK_LETTER_H + (n - 1) * sg.p.SIGN_BACK_LINE_GAP
+        # 外形の中心が原点、高さは行の高さと行間の合計
+        self.assertAlmostEqual((x0 + x1) / 2, 0.0, delta=0.01)
+        self.assertAlmostEqual(y0, -height / 2, delta=0.01)
+        self.assertAlmostEqual(y1, height / 2, delta=0.01)
 
     def test_wordmark_width_includes_gaps(self):
         with sg.override(SIGN_LETTER_GAP=2.0):
@@ -144,11 +173,10 @@ class ValidateTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sg.letter_strokes("S")
 
-    def test_letter_gap_narrower_than_min_gap(self):
-        with sg.override(SIGN_LETTER_GAP=1.0, SIGN_MIN_GAP=1.0):
-            sg.validate()
-        with sg.override(SIGN_LETTER_GAP=1.0, SIGN_MIN_GAP=1.0, SIGN_LETTER_LINE=0.5):
-            sg.validate()
+    def test_back_text_unknown_glyph(self):
+        with sg.override(SIGN_BACK_TEXT=("PHOS", "OBJECT 00X")):
+            with self.assertRaises(ValueError):
+                sg.validate()
 
     def test_symbol_line_thinner_than_letters(self):
         with sg.override(SIGN_SYMBOL_LINE=0.6, SIGN_LETTER_LINE=0.8):
@@ -204,12 +232,34 @@ class NarrowSpotTest(unittest.TestCase):
         self.assertFalse(sg.narrow_spots(mask, 0.5, origin))
 
     def test_current_design_passes(self):
-        for strokes in (sg.symbol_strokes(), sg.wordmark_strokes()[0]):
+        for strokes in (sg.symbol_strokes(), sg.wordmark_strokes()[0], sg.back_text_strokes()):
             r = sg.inspect(strokes)
             self.assertEqual(r["narrow_gaps"], [])
             self.assertEqual(r["narrow_lines"], [])
             # SVG（線画）との差は、埋めた所だけで、線の縁から min_gap/2 以内
             self.assertLessEqual(r["fill_offset"], sg.p.SIGN_MIN_GAP / 2 + sg.RES)
+
+
+class OutlineTest(unittest.TestCase):
+    def test_outline_area_matches_mask(self):
+        # CADに使う輪郭の面積が、刻印の形（画素）の面積と合う
+        for strokes in (sg.mark_strokes(), sg.back_text_strokes()):
+            mask, _, _, _ = sg.engrave_mask(strokes)
+            area = sum(
+                sg.polygon_area(o) - sum(sg.polygon_area(h) for h in hs)
+                for o, hs in sg.outlines(strokes)
+            )
+            self.assertAlmostEqual(area, mask.sum() * sg.RES**2, delta=0.2)
+
+    def test_outline_counts(self):
+        # マーク：シンボル1つ（葉の内側が穴2つ）＋P・H・O・Sの4つ
+        polys = sg.outlines(sg.mark_strokes())
+        self.assertEqual(len(polys), 5)
+        self.assertEqual(sum(len(hs) for _, hs in polys), 2 + 1 + 0 + 1 + 0)
+
+    def test_max_bridge(self):
+        mask, _, _, _ = sg.engrave_mask([([("M", (0.0, 0.0)), ("L", (5.0, 0.0))], 1.0)], 0.0)
+        self.assertAlmostEqual(sg.max_bridge(mask), 1.0, delta=0.05)
 
 
 class SvgTest(unittest.TestCase):

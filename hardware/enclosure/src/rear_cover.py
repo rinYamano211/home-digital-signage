@@ -127,8 +127,8 @@ def wire_anchor_parts(cx):
     return block, channel, holes
 
 
-def rear_cover_raw():
-    """Displayの座標（Z＝奥行き）のままの形。"""
+def rear_cover_raw(engrave=True):
+    """Displayの座標（Z＝奥行き）のままの形。engrave=False なら背面の刻印なし（確認用）。"""
     body = plate()
     cuts = screw_holes().union(vents())
     for cx in p.KEYHOLE_X:
@@ -138,7 +138,15 @@ def rear_cover_raw():
         a_block, a_channel, a_holes = wire_anchor_parts(cx)
         body = body.union(a_block)
         cuts = cuts.union(a_channel).union(a_holes)
-    return body.cut(cuts)
+    body = body.cut(cuts)
+    return body.cut(back_engraving()) if engrave else body
+
+
+def back_engraving():
+    """背面の文字の凹刻印の型（engraving.py。PR 5b）。"""
+    import engraving  # engraving が rear_cover を使うため、ここで読み込む
+
+    return engraving.back_tool()
 
 
 def rear_cover():
