@@ -50,6 +50,12 @@ class MeshStatsTest(unittest.TestCase):
         st = ep.mesh_stats(tris)
         self.assertEqual(st["degenerate"], 1)
 
+    def test_collinear_face(self):
+        # 異なる3点が一直線に並ぶ三角形（頂点の重なりでは見つからない）
+        tris = np.concatenate([TETRA, [[V[0], V[1], 2 * V[1]]]])
+        st = ep.mesh_stats(tris)
+        self.assertEqual(st["degenerate"], 1)
+
 
 class BedAreaTest(unittest.TestCase):
     def test_bottom_face(self):
@@ -83,6 +89,45 @@ class PublishTest(unittest.TestCase):
         finally:
             ep.check_part = original
         self.assertEqual(sorted(x.name for x in self.out.iterdir()), ["old.stl"])
+
+    def test_copy_failure_keeps_output(self):
+        # 新しいデータのコピーの途中で失敗しても、前のデータは残る
+        original = ep.shutil.copy2
+        calls = []
+
+        def failing_copy(src, dst):
+            calls.append(src)
+            if len(calls) == 2:
+                raise OSError("コピーの失敗（テスト）")
+            return original(src, dst)
+
+        ep.shutil.copy2 = failing_copy
+        try:
+            with self.assertRaises(OSError):
+                ep.main([])
+        finally:
+            ep.shutil.copy2 = original
+        self.assertEqual(sorted(x.name for x in self.out.iterdir()), ["old.stl"])
+        self.assertEqual((self.out / "old.stl").read_bytes(), b"old")
+        self.assertFalse(self.out.with_name("full.new").exists())
+
+    def test_swap_failure_restores_output(self):
+        # 名前の変更（入れ替え）で失敗しても、前のデータに戻る
+        original = Path.rename
+
+        def failing_rename(path, target):
+            if Path(path).name == "full.new":
+                raise OSError("名前の変更の失敗（テスト）")
+            return original(path, target)
+
+        Path.rename = failing_rename
+        try:
+            with self.assertRaises(OSError):
+                ep.main([])
+        finally:
+            Path.rename = original
+        self.assertEqual(sorted(x.name for x in self.out.iterdir()), ["old.stl"])
+        self.assertFalse(self.out.with_name("full.old").exists())
 
     def test_ok_replaces_output_and_verify_matches(self):
         self.assertEqual(ep.main([]), 0)

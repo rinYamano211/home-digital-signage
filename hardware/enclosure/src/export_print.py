@@ -42,6 +42,7 @@ MESH_TOL = 0.01  # mm。弦の誤差（曲面と三角形の間の最大の距�
 MESH_ANGLE = 0.1  # ラジアン。隣り合う三角形の角度の差の上限
 VOLUME_TOL = 0.005  # STLとCADの体積の差の許容（比）
 SIZE_TOL = 0.05  # mm。STLとCADの外形の差の許容
+DEGENERATE_AREA = 1e-9  # mm²。これより小さい三角形を面積0とみなす（一直線に並んだ3点を含む）
 
 
 def rot(axis, deg):
@@ -102,7 +103,8 @@ def mesh_stats(tris):
     - open_edges：2つの三角形で共有されない辺（穴・重なり）
     - flipped_edges：向きの合わない辺。閉じた形で面の向きがそろっていれば、
       どの辺も「a→b」と「b→a」が1回ずつ現れる（同じ向きが2回、または逆向きがない辺を数える）
-    - degenerate：面積0の三角形（2つ以上の頂点が同じ点）
+    - degenerate：面積0の三角形（2つ以上の頂点が同じ点、または3つの頂点が一直線。
+      面積が DEGENERATE_AREA 未満）
     """
     a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
     volume = float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6)
@@ -110,9 +112,9 @@ def mesh_stats(tris):
     keys = np.round(tris.reshape(-1, 3) / 1e-4).astype(np.int64)
     _, idx = np.unique(keys, axis=0, return_inverse=True)
     idx = idx.reshape(-1, 3)
-    degenerate = int(
-        np.sum((idx[:, 0] == idx[:, 1]) | (idx[:, 1] == idx[:, 2]) | (idx[:, 0] == idx[:, 2]))
-    )
+    area = np.linalg.norm(np.cross(b - a, c - a), axis=1) / 2
+    same_point = (idx[:, 0] == idx[:, 1]) | (idx[:, 1] == idx[:, 2]) | (idx[:, 0] == idx[:, 2])
+    degenerate = int(np.sum(same_point | (area < DEGENERATE_AREA)))
     directed = np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]])
     undirected = np.sort(directed, axis=1)
     _, counts = np.unique(undirected, axis=0, return_counts=True)
@@ -295,13 +297,40 @@ def build(out_dir):
 
 
 def publish(tmp):
-    """一時フォルダの中身で、出力先を置き換える（前のSTL・manifestは消す）。"""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for old in list(OUT_DIR.glob("*.stl")) + [OUT_DIR / "manifest.md"]:
-        if old.exists():
-            old.unlink()
-    for new in tmp.iterdir():
-        shutil.copy2(new, OUT_DIR / new.name)
+    """一時フォルダの中身で、出力先を置き換える。途中で失敗しても、前のデータを残す。
+
+    1. 出力先の隣に新しいフォルダ（full.new）を作り、全部をコピーする。失敗したら消して終わる
+    2. 前のフォルダを full.old に名前を変え、full.new を full に名前を変える。
+       2つ目が失敗したら、full.old を full に戻す
+    3. 成功したら full.old を消す
+    同じ場所での名前の変更なので、前のデータが消えた状態は残らない。
+    """
+    parent = OUT_DIR.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = parent / (OUT_DIR.name + ".new")
+    backup = parent / (OUT_DIR.name + ".old")
+    for leftover in (staging, backup):
+        if leftover.exists():
+            shutil.rmtree(leftover)
+    try:
+        staging.mkdir()
+        for new in sorted(tmp.iterdir()):
+            shutil.copy2(new, staging / new.name)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    had_old = OUT_DIR.exists()
+    if had_old:
+        OUT_DIR.rename(backup)
+    try:
+        staging.rename(OUT_DIR)
+    except BaseException:
+        if had_old:
+            backup.rename(OUT_DIR)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if had_old:
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def main(argv=None):
