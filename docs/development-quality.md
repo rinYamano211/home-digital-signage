@@ -35,7 +35,16 @@ PR作成・更新前は`npm ci`と`npm run check`を実行し、diffを確認す
 - `node_modules/`、`dist/`、`coverage/`、TypeScriptの生成キャッシュはLint / Format対象外。新しい生成物が増えた際は除外設定も更新する。
 - Frontend（Issue #7で追加）：`src/frontend/`と`tests/frontend/`を同じ`npm run check`の対象とする。Vitestは`tests/frontend/`の時計の整形・更新規則・利用可否・縮小倍率をNode環境で単体テストし、Reactの描画はBrowserで目視確認する。Backendの既存の検証対象・設定は弱めない。Production BuildはCIで実行しない。構成と設定方針は[Frontend開発手順](frontend-development.md)を参照。
 
-新規の設定・テスト・本手順書は`.gitattributes`でLF改行に固定し、WindowsでのCheckout後もPrettierとの改行差を避ける。既存設計文書の改行設定は変更しない。
+テキストファイルは`.gitattributes`の`* text=auto eol=lf`で改行をLFにそろえ、WindowsでもPrettierとの改行差を避ける（Issue #155）。この設定により、Gitへの追加時には改行をLFに正規化し、Checkout時もLFで書き出す。バイナリ（PNG等）はGitが自動判定し、変換しない。indexはすでにLFのため、ファイルの内容と`.prettierignore`の対象外指定は変わらない。
+
+Windowsで、この設定より前に取得した作業ツリーにCRLFのファイルが残っている場合は、次の手順で取り直す。管理下のファイルを書き直すため、未Commitの変更と未追跡ファイルがないことを最初に確認する。途中で中断した場合は、2行目から再実行する。
+
+```sh
+git status --porcelain             # 何も表示されないこと
+git read-tree HEAD                 # indexをHEADから作り直す（内容は同じ）
+git checkout-index --force --all   # 現在の.gitattributesに従って書き出し直す
+git ls-files --eol | grep 'w/crlf' # 何も表示されなければ完了（0件のときgrepは終了コード1）
+```
 
 ## GitHub Actions
 
