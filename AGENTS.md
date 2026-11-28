@@ -10,11 +10,10 @@ Raspberry Piを利用した家庭用デジタルサイネージ。時計・予�
 
 ### 承認なしで行う操作
 
-対象Issueの作業ブランチ上での通常のGit操作は、承認なしで行う。
+Git操作とPRの作成は、承認なしで行う（Issue #164）。
 
-- `git fetch`、作業ブランチの作成・切替（`git switch`）、`git add`、`git commit`
-- 作業ブランチの`git push`（Force Pushを除く）
-- 対象IssueのPR作成（`gh pr create`）
+- すべての`git`コマンド。ブランチの作成・切替・削除、`pull --ff-only`、`worktree add`・`remove`・`prune`、`restore`・`stash`、未Pushの自分のCommitへの`commit --amend`・`rebase`等を含む。ただし、下の「例外的なGit操作」を除く
+- PRの作成（`gh pr create`）
 
 実行後は、対象（ブランチ・Commit・PRのURL等）をチャット上で簡潔に報告する。
 
@@ -26,14 +25,19 @@ Raspberry Piを利用した家庭用デジタルサイネージ。時計・予�
 - Issueの作成・編集・コメント・Close、PRの本文編集・コメント：本文を提示し、承認を得る
 - `npm ci`・`npm install`・`npm run format`：実行前に目的と影響を説明し、確認を得る
 - 例外的なGit操作：理由を説明し、承認を得る
-  - Force Push、履歴の書換え（`reset --hard`・`rebase`・`commit --amend`等）
+  - PushしたCommitの書換え（Force Push）
   - `main`への直接のCommit・Push
-  - ブランチ・タグの削除、未Commitの変更の破棄（`restore`・`clean`・`stash drop`等）
-  - 対象Issue以外のブランチ・PRへのCommit・Push
+  - リモートのブランチ・タグの削除
+  - AIが作っていない未Commitの変更の破棄
 
 ### ユーザーが行う操作
 
 - Merge：ユーザーが行う。AIは実行しない
+
+### レビュー
+
+- AIは、ChatGPT等のレビュー担当に渡すレビュー依頼文を作らない。レビュー担当には、先入観のない状態でPRを見てもらう（Issue #164）
+- PRの作成後は、PRのURLと本文の要点だけを報告する。PRの本文（概要・変更内容・検証結果）はこれまでどおり書く
 
 権限設定の確認ダイアログは、ツール側の安全装置であり、ユーザーの意思確認の代わりにはならない。承認が必要な操作は、操作の直前に対象をチャット上で提示し、明示的な承認を得てから実行する。承認後に内容が変わった場合は改めて承認を得る。
 
